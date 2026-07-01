@@ -56,13 +56,19 @@ def isolate_unit(
     z_margin_m: float = 0.15,
     cell_m: float = 0.25,
     max_gap_cells: int = 1,
-    max_dist_m: float = 8.0,
+    max_dist_m: float = None,
 ):
-    """Extract the unit: Z-band + trajectory-connected XY region + distance cap.
+    """Extract the unit: Z-band, then the largest connected XY region.
+
+    The scanned unit is the dominant connected occupied blob in the primary
+    storey; the neighbouring building glimpsed through a balcony is a smaller,
+    physically disconnected blob (an air gap separates them), so anchoring on
+    the largest connected component removes it robustly -- independent of the
+    (approximate) trajectory, which for a rough gps_time path can otherwise
+    wander onto far geometry. The trajectory is used only for an optional
+    distance cap, which can never re-admit dropped points.
 
     Returns (ScanData, stats). stats = {kept, dropped, z_floor, z_ceiling}.
-    If trajectory is empty, anchors connectivity on the densest XY cell and
-    skips the distance cap.
     """
     z_floor, z_ceiling = z_band
     z = scan.xyz[:, 2]
@@ -80,26 +86,23 @@ def isolate_unit(
     occ = np.zeros((nx, ny), dtype=bool)
     occ[ij[:, 0], ij[:, 1]] = True
 
-    # Bridge small gaps, then connected-component label (8-connectivity).
+    # Bridge small gaps (doorway thresholds), then label 8-connected components.
     struct = ndimage.generate_binary_structure(2, 2)
     occ_bridged = ndimage.binary_dilation(occ, structure=struct, iterations=max_gap_cells)
-    labels, _ = ndimage.label(occ_bridged, structure=struct)
+    labels, n_labels = ndimage.label(occ_bridged, structure=struct)
 
+    point_label = labels[ij[:, 0], ij[:, 1]]  # each point's component
+    if n_labels == 0:
+        return band, {"kept": band.n, "dropped": n_total - band.n, "z_floor": z_floor, "z_ceiling": z_ceiling}
+
+    # Largest component by point count (label 0 is background; ignore it).
+    counts = np.bincount(point_label, minlength=n_labels + 1)
+    counts[0] = 0
+    unit_label = int(np.argmax(counts))
+    point_keep = point_label == unit_label
+
+    # Optional distance-from-path cap (only removes; never adds).
     traj = np.asarray(trajectory, dtype=float)
-    if traj.shape[0] > 0:
-        tij = np.floor((traj[:, :2] - mins) / cell_m).astype(np.int64)
-        tij[:, 0] = np.clip(tij[:, 0], 0, nx - 1)
-        tij[:, 1] = np.clip(tij[:, 1], 0, ny - 1)
-        anchor_labels = np.unique(labels[tij[:, 0], tij[:, 1]])
-    else:
-        flat = int(np.argmax(np.bincount(labels[occ].ravel())[1:]) + 1) if occ.any() else 0
-        anchor_labels = np.array([flat])
-    anchor_labels = anchor_labels[anchor_labels > 0]
-
-    keep_cell = np.isin(labels, anchor_labels) & occ
-    point_keep = keep_cell[ij[:, 0], ij[:, 1]]
-
-    # Distance-from-path cap (only when we have a path).
     if traj.shape[0] > 0 and max_dist_m is not None:
         tree = cKDTree(traj[:, :2])
         dist, _ = tree.query(xy, k=1)

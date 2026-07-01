@@ -65,3 +65,23 @@ def load_scan(path: str, max_points: Optional[int] = None, rng_seed: int = 0) ->
         scan = scan.subset(idx)
 
     return scan
+
+
+def save_scan_las(scan: ScanData, path: str) -> None:
+    """Write a ScanData to a LAS file (point format 3), preserving gps_time/RGB."""
+    header = laspy.LasHeader(point_format=3, version="1.2")
+    header.scales = [0.001, 0.001, 0.001]
+    header.offsets = [0.0, 0.0, 0.0]
+    las = laspy.LasData(header)
+    las.x = scan.xyz[:, 0]
+    las.y = scan.xyz[:, 1]
+    las.z = scan.xyz[:, 2]
+    if scan.gps_time is not None:
+        las.gps_time = scan.gps_time
+    if scan.rgb is not None:
+        las.red = scan.rgb[:, 0].astype(np.uint16) << 8
+        las.green = scan.rgb[:, 1].astype(np.uint16) << 8
+        las.blue = scan.rgb[:, 2].astype(np.uint16) << 8
+    if scan.intensity is not None:
+        las.intensity = np.asarray(scan.intensity).astype(np.uint16)
+    las.write(str(path))

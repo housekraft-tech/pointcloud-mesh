@@ -1,7 +1,8 @@
 import numpy as np
 import laspy
 
-from scripts.recon.io_las import load_scan
+from scripts.recon.io_las import load_scan, save_scan_las
+from scripts.recon.schema import ScanData
 
 
 def _write_las(path, xyz, t=None, rgb=None):
@@ -55,3 +56,14 @@ def test_load_scan_subsample(tmp_path):
     _write_las(p, xyz)
     s = load_scan(str(p), max_points=100)
     assert s.n == 100
+
+
+def test_save_scan_roundtrip(tmp_path):
+    xyz = np.array([[0.1, 0.2, 0.3], [1.0, 2.0, 3.0]])
+    t = np.array([100.0, 101.0])
+    p = tmp_path / "out.las"
+    save_scan_las(ScanData(xyz=xyz, gps_time=t), str(p))
+    s = load_scan(str(p))
+    assert s.n == 2
+    assert np.allclose(np.sort(s.xyz[:, 2]), [0.3, 3.0], atol=1e-3)
+    assert s.gps_time is not None and np.allclose(np.sort(s.gps_time), [100.0, 101.0])
