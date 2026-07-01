@@ -127,3 +127,33 @@ def threshold_density_image(image, min_count=2, morph_kernel=3):
     binary = (image >= min_count).astype(np.uint8) * 255
     kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
     return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+
+# ---------- Phase 2: wall segment extraction ----------
+
+def extract_wall_segments(binary_image, origin, cell_size_m, epsilon_cells=2.0, min_span_cells=3.0):
+    """min_span_cells filters by bounding-box span, NOT area: a wall face
+    seen from only one side (no opposing face within threshold, nothing to
+    'fill' between them) produces a genuinely thin, near-zero-area contour
+    that a naive area filter would incorrectly discard as noise -- confirmed
+    during design validation this silently drops every single-sided wall."""
+    contours, _ = cv2.findContours(binary_image, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    segments = []
+    for contour in contours:
+        _x, _y, w, h = cv2.boundingRect(contour)
+        if max(w, h) < min_span_cells:
+            continue
+        approx = cv2.approxPolyDP(contour, epsilon_cells, closed=True)
+        pts_px = approx.reshape(-1, 2).astype(np.float64)
+        pts_world = origin + pts_px * cell_size_m
+        n = len(pts_world)
+        if n < 2:
+            continue
+        for i in range(n):
+            p0 = pts_world[i]
+            p1 = pts_world[(i + 1) % n]
+            length = float(np.linalg.norm(p1 - p0))
+            if length < cell_size_m:
+                continue
+            segments.append({"p0": p0, "p1": p1, "length": length})
+    return segments

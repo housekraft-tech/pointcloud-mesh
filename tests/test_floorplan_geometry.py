@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
+import cv2
 from scripts.floorplan_geometry import (
     plane_normal, signed_plane_distance, refine_plane_model,
     wall_uv_basis, project_to_plane, points_to_wall_uv,
     crop_to_percentile_bounds,
     points_to_density_image, threshold_density_image,
+    extract_wall_segments,
 )
 from tests.fixtures import two_room_house
 
@@ -95,3 +97,29 @@ def test_threshold_density_image_drops_sparse_cells():
     binary = threshold_density_image(image, min_count=2, morph_kernel=1)
     assert binary[2, 2] == 255
     assert binary[0, 0] == 0
+
+
+# ---------- Phase 2: wall segment extraction ----------
+
+def test_extract_wall_segments_recovers_rectangle():
+    # a filled 3m x 2m rectangle at 20mm cells = 150x100 px, 1px border thickness would
+    # be too thin to test area-filter regression; use a 3px-thick rectangle outline
+    image = np.zeros((100, 150), dtype=np.uint8)
+    cv2.rectangle(image, (10, 10), (140, 90), 255, thickness=3)
+    segments = extract_wall_segments(image, origin=np.array([0.0, 0.0]), cell_size_m=0.02, epsilon_cells=2.0)
+    assert len(segments) >= 4
+    lengths = sorted(s["length"] for s in segments)
+    # long sides ~ (140-10)*0.02=2.6m, short sides ~ (90-10)*0.02=1.6m
+    assert any(abs(l - 2.6) < 0.1 for l in lengths)
+    assert any(abs(l - 1.6) < 0.1 for l in lengths)
+
+
+def test_extract_wall_segments_keeps_single_sided_thin_line():
+    """Regression test for the bug found during design validation: a
+    single-sided wall face (no opposing face) produces a near-zero-area
+    contour that an area-based filter would incorrectly discard."""
+    image = np.zeros((50, 300), dtype=np.uint8)
+    cv2.line(image, (10, 25), (290, 25), 255, thickness=1)
+    segments = extract_wall_segments(image, origin=np.array([0.0, 0.0]), cell_size_m=0.02, epsilon_cells=2.0)
+    assert len(segments) >= 1
+    assert any(s["length"] > 5.0 for s in segments)  # the ~280px*0.02m=5.6m line survives
