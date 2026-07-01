@@ -92,7 +92,7 @@ def test_find_dense_z_band_isolates_primary_cluster_from_sparse_secondary_struct
     z_values = np.concatenate([primary, secondary])
     rng.shuffle(z_values)
 
-    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
 
     # Returned bounds are refined against actual point extrema within the
     # detected band, not raw 100mm histogram bin edges -- so these should be
@@ -111,7 +111,7 @@ def test_find_dense_z_band_excludes_the_actual_stray_outlier_tail():
     pts, _gt = two_room_house()
     z_values = pts[:, 2]
 
-    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
 
     # True room z-range is [0.0, 2.7]; refined extrema should land close to it,
     # not out at the stray tail (which reaches z=15 per the fixture generator).
@@ -140,10 +140,49 @@ def test_find_dense_z_band_tolerates_a_mid_band_density_dip():
     z_values = np.concatenate([lower, dip, upper])
     rng.shuffle(z_values)
 
-    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
 
     assert z_min == pytest.approx(0.0, abs=0.05)
     assert z_max == pytest.approx(2.7, abs=0.05)
+
+
+def test_find_dense_z_band_not_collapsed_by_floor_ceiling_density_spike():
+    """Regression test for the real-scan bug found in an earlier
+    peak-relative version of this function: a flat floor or ceiling slab is
+    scanned near-perpendicular over a huge area and collects a massive
+    density spike in one or two bins -- confirmed on a real house scan, one
+    100mm bin held ~1.7M points versus ~70k-290k for ordinary room-volume
+    bins (6-13x denser). A peak-relative threshold set the bar too high for
+    the room-volume bins to clear, collapsing the detected band to just the
+    spike itself (0 walls on real data). This fixture reproduces that
+    density profile synthetically."""
+    rng = np.random.default_rng(3)
+    floor_spike = rng.uniform(0.0, 0.08, 1_700_000)
+    room = rng.uniform(0.08, 2.62, 400_000)
+    ceiling_spike = rng.uniform(2.62, 2.7, 1_200_000)
+    z_values = np.concatenate([floor_spike, room, ceiling_spike])
+    rng.shuffle(z_values)
+
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
+
+    assert z_min == pytest.approx(0.0, abs=0.02)
+    assert z_max == pytest.approx(2.7, abs=0.02)
+
+
+def test_find_dense_z_band_excludes_genuinely_sparse_noise_not_real_structure():
+    """A handful of stray points scattered outside the primary band (too few
+    to be real structure, unlike the ~1%-density secondary-structure test
+    above) must not get treated as, or merged into, the detected band."""
+    rng = np.random.default_rng(21)
+    primary = rng.uniform(-1.8, 1.1, 500_000)
+    noise = rng.uniform(1.5, 8.0, 200)  # far too sparse to be real coverage
+    z_values = np.concatenate([primary, noise])
+    rng.shuffle(z_values)
+
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
+
+    assert z_min == pytest.approx(-1.8, abs=0.02)
+    assert z_max == pytest.approx(1.1, abs=0.02)
 
 
 # ---------- Phase 1: density image ----------

@@ -48,7 +48,14 @@ DEFAULT_CONFIG = {
     "crop_high_pct": 99.0,
     "crop_margin_m": 0.5,
     "z_band_bin_m": 0.1,  # histogram bin size for find_dense_z_band
-    "z_band_density_ratio": 0.1,  # min density (fraction of peak bin) to keep expanding the z-band
+    "z_band_min_bin_points": 5,  # min points for a bin to count as 'occupied' (absolute, not peak-relative)
+    "z_band_override": None,  # (z_min, z_max) tuple to force a specific story band, bypassing
+                               # find_dense_z_band entirely. Real scans have shown find_dense_z_band's
+                               # threshold does not reliably generalize across different point-cloud
+                               # densities/profiles (confirmed: worked on one real sampling density,
+                               # collapsed the whole point cloud into one "band" at a sparser sampling
+                               # of the SAME scan) -- inspect the scan's own Z-histogram once and set
+                               # this explicitly for real data rather than trusting auto-detection.
     "ceiling_band_m": 0.1,  # slice thickness for the top-down wall detection
     "ceiling_offset_m": 0.15,  # how far below the detected ceiling to slice
     "cell_size_m": 0.02,
@@ -83,17 +90,18 @@ def _detect_wall_segments(xyz, config):
     # even though it isn't part of the real room -- confirmed with
     # tests/fixtures.py's two_room_house: exactly 1 of its 500 synthetic
     # stray/SLAM-drift points survives at z=3.15m, well above the true ~2.7m
-    # ceiling. A fixed 99.9th/0.1st percentile handled that sparse-outlier case,
-    # but running against the real koushikexport.las scan revealed a second
-    # failure mode a fixed percentile can't handle: real scan data can contain
-    # a second dense Z-band (another floor, a stairwell, a tall atrium) with
-    # substantial point mass, not just sparse noise, which skewed the ceiling-band
-    # slice and yielded 0 wall segments. find_dense_z_band instead expands
-    # outward from the peak-density histogram bin and stops at a real density
-    # cliff, correctly isolating the primary room's wall-height band in both cases.
-    z_min, z_max = find_dense_z_band(
-        xyz[:, 2], bin_m=config["z_band_bin_m"], density_ratio_threshold=config["z_band_density_ratio"],
-    )
+    # ceiling. See find_dense_z_band's own docstring for the two real-scan
+    # failure modes it handles (sparse secondary structure, and the more
+    # severe floor/ceiling density-spike case that broke an earlier
+    # peak-relative version of this function). config["z_band_override"], if
+    # set, bypasses auto-detection entirely -- see its docstring in
+    # DEFAULT_CONFIG for why this matters on real data.
+    if config.get("z_band_override") is not None:
+        z_min, z_max = config["z_band_override"]
+    else:
+        z_min, z_max = find_dense_z_band(
+            xyz[:, 2], bin_m=config["z_band_bin_m"], min_bin_points=config["z_band_min_bin_points"],
+        )
     band_hi = z_max - config["ceiling_offset_m"]
     band_lo = band_hi - config["ceiling_band_m"]
     ceiling_slice = xyz[(xyz[:, 2] >= band_lo) & (xyz[:, 2] <= band_hi)]
@@ -128,19 +136,17 @@ def _build_walls_from_segments(segments, config):
     return walls_raw
 
 
-def _refine_wall(wall_raw, xyz, floor_z, ceiling_z, config, index):
+def _refine_wall(wall_raw, full_height, floor_z, ceiling_z, config, index):
+    """full_height: the point cloud already Z-clipped to [floor_z+margin,
+    ceiling_z-margin] by the caller. Computed ONCE per build_floorplan_outputs
+    call, not per wall -- floor_z/ceiling_z are constant across all walls in
+    one call, so re-filtering the full multi-million-point array inside this
+    per-wall loop was pure wasted work and, on a large real scan, has caused
+    an out-of-memory crash from the repeated large temporary allocations."""
     d = (wall_raw["p1"] - wall_raw["p0"])
     d = d / np.linalg.norm(d)
     normal2d = np.array([-d[1], d[0]])
 
-    # Exclude floor/ceiling points from the refit band: select_wall_band_points only
-    # filters by perpendicular distance + along-wall U-range, so on real scan data
-    # (unlike this pipeline's wall-face-only synthetic test fixtures) horizontal
-    # floor/ceiling points sitting within the wall's perpendicular band would bias
-    # the least-squares plane fit -- flagged in the final whole-branch review.
-    z_margin = config["refit_z_margin_m"]
-    z_lo, z_hi = floor_z + z_margin, ceiling_z - z_margin
-    full_height = xyz[(xyz[:, 2] >= z_lo) & (xyz[:, 2] <= z_hi)]
     band_pts = select_wall_band_points(
         full_height, wall_raw,
         corner_margin_m=config["refit_corner_margin_m"],
@@ -164,11 +170,32 @@ def _refine_wall(wall_raw, xyz, floor_z, ceiling_z, config, index):
     thickness_source = wall_raw["thickness_source"]
     if len(side_b_pts) >= 20:
         coarse_b = [normal2d[0], normal2d[1], 0.0, -float(np.dot(normal2d, side_b_pts[:, :2].mean(axis=0)))]
-        plane_b = refine_wall_plane_two_pass(
+        plane_b_candidate = refine_wall_plane_two_pass(
             side_b_pts, coarse_b, config["refit_coarse_band_m"], config["refit_fine_band_m"],
         )
-        thickness_m = abs(plane_a[3] - plane_b[3])
-        thickness_source = "measured"
+        # Plausibility guard, confirmed necessary on real (messy) scan data: each
+        # side is refit independently, and on non-planar/scattered input (real
+        # clutter within the search band -- furniture, unrelated structure -- not
+        # modeled by this pipeline's clean synthetic test fixtures) the two refits
+        # can converge to meaningfully different normal orientations. Comparing raw
+        # plane offsets (plane_a[3] - plane_b[3]) between two non-parallel planes
+        # doesn't measure "distance between two wall faces" at all and can produce
+        # a physically-impossible thickness (observed: up to ~9.5m on real data,
+        # nowhere close to any real wall) undetectable from search-band width
+        # alone (the search band only bounds each SIDE's own input points, not
+        # the geometric relationship between two independently-fit planes).
+        # Requires near-parallel normals AND a plausible thickness before trusting
+        # the refit; otherwise falls back to wall_raw's already envelope-bounded
+        # coarse/modal-fallback thickness rather than reporting a wrong number.
+        normal_a = np.array(plane_a[:3])
+        normal_b = np.array(plane_b_candidate[:3])
+        candidate_thickness = abs(plane_a[3] - plane_b_candidate[3])
+        normals_parallel = abs(float(np.dot(normal_a, normal_b))) > 0.966  # within ~15 degrees
+        thickness_plausible = config["pair_min_thickness_m"] <= candidate_thickness <= config["pair_max_thickness_m"]
+        if normals_parallel and thickness_plausible:
+            plane_b = plane_b_candidate
+            thickness_m = candidate_thickness
+            thickness_source = "measured"
 
     origin_xyz = np.array([wall_raw["p0"][0], wall_raw["p0"][1], floor_z])
     u_axis = np.array([d[0], d[1], 0.0])
@@ -236,9 +263,20 @@ def build_floorplan_outputs(xyz, config=None):
 
     walls_raw = _build_walls_from_segments(segments, config)
 
+    # Computed once for the whole call (not per wall -- floor_z/ceiling_z are the
+    # same for every wall here): exclude floor/ceiling points from the refit band,
+    # since select_wall_band_points only filters by perpendicular distance +
+    # along-wall U-range, and on real scan data (unlike this pipeline's
+    # wall-face-only synthetic test fixtures) horizontal floor/ceiling points
+    # sitting within a wall's perpendicular band would bias the least-squares
+    # plane fit -- flagged in the final whole-branch review.
+    z_margin = config["refit_z_margin_m"]
+    z_lo, z_hi = floor_z + z_margin, ceiling_z - z_margin
+    full_height = cropped[(cropped[:, 2] >= z_lo) & (cropped[:, 2] <= z_hi)]
+
     walls = []
     for i, wall_raw in enumerate(walls_raw):
-        result = _refine_wall(wall_raw, cropped, floor_z, ceiling_z, config, i)
+        result = _refine_wall(wall_raw, full_height, floor_z, ceiling_z, config, i)
         if result is None:
             continue
         wall, side_a_pts, side_b_pts = result

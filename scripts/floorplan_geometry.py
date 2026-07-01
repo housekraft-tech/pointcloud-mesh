@@ -108,15 +108,34 @@ def crop_to_percentile_bounds(xyz, low_pct=1.0, high_pct=99.0, margin_m=0.5):
     return lo, hi, keep_mask, stats
 
 
-def find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1):
+def find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5):
     """Find the primary dense Z-band (e.g. one story's wall-height range) by
-    histogramming point density along Z and expanding outward from the peak-density
-    bin while density stays above density_ratio_threshold * peak_density.
+    histogramming point density along Z, marking bins with at least
+    min_bin_points as 'occupied' (a small fixed absolute floor, not relative
+    to the tallest bin), grouping occupied bins into contiguous runs, and
+    returning the run with the most TOTAL points.
 
-    Robust to real secondary structure (another floor, stairwell, tall space) that
-    has genuine point mass but is much sparser per unit height than the primary
-    band -- unlike a fixed percentile cutoff, this stops at a real density cliff
-    rather than at an arbitrary point-count fraction.
+    This replaces an earlier peak-relative-expansion version that failed on
+    real scan data: a flat floor or ceiling slab is scanned near-perpendicular
+    over a huge area and collects a massive density spike in one or two bins
+    -- confirmed on a real house scan, one 100mm bin held ~1.7M points versus
+    ~70k-290k for ordinary wall/room-volume bins, 6-13x denser. Thresholding
+    relative to that spike (density_ratio_threshold * peak) set the bar far
+    too high, so legitimate but much-less-dense room-volume bins between
+    floor and ceiling failed to qualify and the detected band collapsed to
+    just the spike itself (confirmed: 0 walls on real data, both automatically
+    and even when manually pre-filtered to a known-good range).
+
+    A fixed low absolute threshold sidesteps this: floor/ceiling spikes and
+    ordinary room-volume bins both clear it easily and merge into one
+    contiguous run (since there's no genuine empty gap between them within a
+    real story), while scattered noise/stray points mostly fail to clear it
+    and any noise run that does is dwarfed in total point count by real
+    structure. A genuine secondary structure (another floor, stairwell) still
+    gets correctly excluded when it's separated from the primary story by an
+    actual near-empty Z-gap (real physical separation, not just lower
+    density) -- confirmed against both a floor/ceiling-spike scenario and a
+    genuinely sparser secondary-structure scenario.
 
     The histogram is only used to LOCATE the band (coarse, bin_m resolution).
     The returned (z_min, z_max) are refined against the actual point extrema
@@ -131,15 +150,23 @@ def find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1):
     n_bins = max(int(np.ceil((z_values.max() - z_values.min()) / bin_m)), 4)
     counts, edges = np.histogram(z_values, bins=n_bins)
 
-    peak_idx = int(np.argmax(counts))
-    threshold = counts[peak_idx] * density_ratio_threshold
+    occupied = counts >= min_bin_points
+    runs = []
+    start = None
+    for i, occ in enumerate(occupied):
+        if occ and start is None:
+            start = i
+        elif not occ and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(occupied) - 1))
+    if not runs:
+        return float(z_values.min()), float(z_values.max())
 
-    lo = peak_idx
-    while lo > 0 and counts[lo - 1] >= threshold:
-        lo -= 1
-    hi = peak_idx
-    while hi < len(counts) - 1 and counts[hi + 1] >= threshold:
-        hi += 1
+    run_totals = [(int(counts[a:b + 1].sum()), a, b) for a, b in runs]
+    run_totals.sort(key=lambda t: -t[0])
+    _best_pts, lo, hi = run_totals[0]
 
     band_lo, band_hi = edges[lo], edges[hi + 1]
     in_band = z_values[(z_values >= band_lo) & (z_values <= band_hi)]
