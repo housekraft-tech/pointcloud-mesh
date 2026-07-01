@@ -296,6 +296,12 @@ def snap_wall_endpoints(walls, tolerance_m=0.05):
     for (wi, key, pt) in endpoints:
         found = None
         for ci, members in enumerate(clusters):
+            # Never join a cluster that already contains an endpoint from
+            # this same wall: doing so can collapse a short wall's own p0
+            # and p1 onto a single point (length_m -> 0.0), directly or
+            # transitively via a third-party bridging endpoint.
+            if any(m[0] == wi for m in members):
+                continue
             rep_pt = members[0][2]
             if np.linalg.norm(pt - rep_pt) <= tolerance_m:
                 found = ci

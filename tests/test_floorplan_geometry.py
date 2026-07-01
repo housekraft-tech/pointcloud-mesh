@@ -175,6 +175,32 @@ def test_snap_wall_endpoints_merges_nearby_corners():
     assert "length_m" in walls[0]
 
 
+def test_snap_wall_endpoints_does_not_collapse_short_walls_own_endpoints():
+    # Regression test: a short wall whose own p0/p1 are within tolerance_m of
+    # each other must NOT have both endpoints pulled into the same cluster
+    # (which would collapse length_m to 0.0). Endpoints from the SAME wall
+    # index must never merge with each other, only with other walls' endpoints.
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([0.03, 0.0])},
+    ]
+    walls, clusters = snap_wall_endpoints(walls, tolerance_m=0.05)
+    assert walls[0]["length_m"] > 0.0
+    assert np.isclose(walls[0]["length_m"], 0.03, atol=1e-9)
+
+
+def test_snap_wall_endpoints_does_not_collapse_via_third_party_bridge():
+    # Regression test: a wall whose two endpoints are each within tolerance_m
+    # of a THIRD wall's shared endpoint (but not within tolerance of each
+    # other directly) must not be transitively merged into a single cluster
+    # via that bridging point, which would also collapse length_m to 0.0.
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([10.0, 10.0])},  # bridge wall
+        {"p0": np.array([-0.04, 0.0]), "p1": np.array([0.04, 0.0])},  # wall under test
+    ]
+    walls, clusters = snap_wall_endpoints(walls, tolerance_m=0.05)
+    assert walls[1]["length_m"] > 0.0
+
+
 def test_drop_short_walls_removes_corner_stubs_keeps_real_walls():
     walls = [
         {"p0": np.array([0.0, 0.0]), "p1": np.array([5.0, 0.0]), "length_m": 5.0},
