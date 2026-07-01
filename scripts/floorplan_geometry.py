@@ -450,3 +450,167 @@ def select_wall_band_points(points, wall, corner_margin_m=0.5, band_m=0.06):
     in_band = dist_perp <= band_m
     in_u_range = (u >= corner_margin_m) & (u <= length - corner_margin_m)
     return pts[in_band & in_u_range]
+
+
+# ---------- opening detection (ported void-flood-fill + rectangle merge) ----------
+
+def merge_grid_cells(occupied):
+    """Merge occupied (iu, iv) cells into axis-aligned rectangles (U-runs then V-runs)."""
+    if not occupied:
+        return []
+    bars = []
+    for iv in sorted({iv for _iu, iv in occupied}):
+        row = sorted(iu for iu, jv in occupied if jv == iv)
+        start = prev = row[0]
+        for iu in row[1:]:
+            if iu == prev + 1:
+                prev = iu
+            else:
+                bars.append((start, prev, iv))
+                start = prev = iu
+        bars.append((start, prev, iv))
+
+    by_span = defaultdict(list)
+    for iu0, iu1, iv in bars:
+        by_span[(iu0, iu1)].append(iv)
+
+    rects = []
+    for (iu0, iu1), ivs in by_span.items():
+        ivs = sorted(set(ivs))
+        start = prev = ivs[0]
+        for iv in ivs[1:]:
+            if iv == prev + 1:
+                prev = iv
+            else:
+                rects.append((iu0, iu1, start, prev))
+                start = prev = iv
+        rects.append((iu0, iu1, start, prev))
+    return rects
+
+
+def _interior_void_cells(occupied, iu0, iu1, iv0, iv1, floor_is_boundary=True):
+    """Empty cells not reachable from the grid border (door/window holes).
+
+    The bottom row (iv0, floor level) is NOT seeded as an open border when
+    floor_is_boundary=True: a floor-to-ceiling door's void touches iv0 by
+    construction (there's no wall below floor level to begin with), but the
+    floor itself is a real physical boundary, not open space -- confirmed
+    this bug makes every full-height door silently undetectable without
+    the fix (flood-fill marks the whole void as 'exterior')."""
+    exterior = set()
+    queue = deque()
+
+    def seed(iu, iv):
+        if (iu, iv) in occupied or (iu, iv) in exterior:
+            return
+        exterior.add((iu, iv))
+        queue.append((iu, iv))
+
+    for iu in range(iu0, iu1 + 1):
+        if not floor_is_boundary:
+            seed(iu, iv0)
+        seed(iu, iv1)
+    for iv in range(iv0, iv1 + 1):
+        seed(iu0, iv)
+        seed(iu1, iv)
+
+    while queue:
+        iu, iv = queue.popleft()
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = iu + di, iv + dj
+            if not (iu0 <= ni <= iu1 and iv0 <= nj <= iv1):
+                continue
+            if (ni, nj) in occupied or (ni, nj) in exterior:
+                continue
+            exterior.add((ni, nj))
+            queue.append((ni, nj))
+
+    voids = set()
+    for iu in range(iu0, iu1 + 1):
+        for iv in range(iv0, iv1 + 1):
+            if (iu, iv) not in occupied and (iu, iv) not in exterior:
+                voids.add((iu, iv))
+    return voids
+
+
+def classify_opening(width_m, height_m, sill_m):
+    if width_m >= 1.0 and height_m >= 2.0 and sill_m < 0.25:
+        return "balcony_door"
+    if 0.65 <= width_m <= 1.4 and 1.75 <= height_m <= 2.5 and sill_m < 0.25:
+        return "door"
+    if sill_m >= 0.4 and width_m >= 0.45 and height_m >= 0.45:
+        return "window"
+    return "unknown_opening"
+
+
+def detect_openings_on_wall_face(uv_points, wall_length_m, cell_m=0.05,
+                                  min_points_per_cell=3, min_opening_w=0.45,
+                                  min_opening_h=0.45, edge_margin_cells=1):
+    """uv_points: (N,2) array of (u, v=height) points on ONE wall face."""
+    uv = np.asarray(uv_points, dtype=np.float64)
+    if len(uv) == 0:
+        return []
+    # + 1e-9 guards against float division landing a hair under an exact
+    # cell-boundary multiple of cell_m (e.g. 2.15 / 0.05 == 42.99999999999999),
+    # which would silently floor into the wrong cell and leave a spurious
+    # empty row/column that bridges an interior void to the grid border.
+    iu = np.floor(uv[:, 0] / cell_m + 1e-9).astype(np.int64)
+    iv = np.floor(uv[:, 1] / cell_m + 1e-9).astype(np.int64)
+    counts = defaultdict(int)
+    for k in range(len(uv)):
+        counts[(int(iu[k]), int(iv[k]))] += 1
+    occupied = {key for key, c in counts.items() if c >= min_points_per_cell}
+    if not occupied:
+        return []
+
+    iu0, iu1 = min(c[0] for c in occupied), max(c[0] for c in occupied)
+    iv0, iv1 = min(c[1] for c in occupied), max(c[1] for c in occupied)
+    max_iu = int(np.floor(wall_length_m / cell_m))
+
+    voids = _interior_void_cells(occupied, iu0, iu1, iv0, iv1, floor_is_boundary=True)
+    if not voids:
+        return []
+    rects = merge_grid_cells(voids)
+
+    openings = []
+    for a0, a1, b0, b1 in rects:
+        u_min, u_max = a0 * cell_m, (a1 + 1) * cell_m
+        v_min, v_max = b0 * cell_m, (b1 + 1) * cell_m
+        width, height = u_max - u_min, v_max - v_min
+        if width < min_opening_w or height < min_opening_h:
+            continue
+        if a0 <= edge_margin_cells or a1 >= max_iu - edge_margin_cells:
+            continue  # touches the wall's snapped end -- termination, not an opening
+        sill = v_min
+        openings.append({
+            "u_min": u_min, "u_max": u_max, "v_min": v_min, "v_max": v_max,
+            "width_m": width, "height_m": height, "sill_m": sill,
+            "type": classify_opening(width, height, sill),
+        })
+    return openings
+
+
+def cross_check_opening_both_faces(opening, other_face_uv_points, cell_m=0.05, min_points_per_cell=3):
+    """A true through-wall opening must ALSO be void on the wall's other
+    face; a gap present on only one face is furniture occlusion, not a hole
+    through the wall. Returns True if the opening survives (other face is
+    also mostly empty in that u,v range)."""
+    uv = np.asarray(other_face_uv_points, dtype=np.float64)
+    if len(uv) == 0:
+        return True
+    in_range = (
+        (uv[:, 0] >= opening["u_min"]) & (uv[:, 0] <= opening["u_max"]) &
+        (uv[:, 1] >= opening["v_min"]) & (uv[:, 1] <= opening["v_max"])
+    )
+    pts_in_rect = uv[in_range]
+    if len(pts_in_rect) == 0:
+        return True
+    iu = np.floor((pts_in_rect[:, 0] - opening["u_min"]) / cell_m + 1e-9).astype(np.int64)
+    iv = np.floor((pts_in_rect[:, 1] - opening["v_min"]) / cell_m + 1e-9).astype(np.int64)
+    counts = defaultdict(int)
+    for k in range(len(pts_in_rect)):
+        counts[(int(iu[k]), int(iv[k]))] += 1
+    occupied_cells = sum(1 for c in counts.values() if c >= min_points_per_cell)
+    total_cells = max(1, int((opening["u_max"] - opening["u_min"]) / cell_m) *
+                      int((opening["v_max"] - opening["v_min"]) / cell_m))
+    return (occupied_cells / total_cells) < 0.3
