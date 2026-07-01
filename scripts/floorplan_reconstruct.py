@@ -80,8 +80,8 @@ def _detect_wall_segments(xyz, config):
     # stray/SLAM-drift points survives at z=3.15m, well above the true ~2.7m
     # ceiling. Using raw xyz[:, 2].max() there skews the ceiling-band slice
     # entirely above every real wall point, yielding 0 wall segments.
-    z_max = float(np.percentile(xyz[:, 2], 99.5))
-    z_min = float(np.percentile(xyz[:, 2], 0.5))
+    z_max = float(np.percentile(xyz[:, 2], 99.9))
+    z_min = float(np.percentile(xyz[:, 2], 0.1))
     band_hi = z_max - config["ceiling_offset_m"]
     band_lo = band_hi - config["ceiling_band_m"]
     ceiling_slice = xyz[(xyz[:, 2] >= band_lo) & (xyz[:, 2] <= band_hi)]
