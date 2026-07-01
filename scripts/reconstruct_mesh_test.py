@@ -15,13 +15,13 @@ from mesh_common import ROOT, MeshConfig, run_pipeline
 DEFAULT_INPUT = ROOT / "data" / "koushikexport.laz"
 DEFAULT_OUTPUT = ROOT / "output" / "mesh_test.obj"
 
-# ~1-3 min on a 32-core VM: tiny crop, 100k point cap, coarse voxel, low Poisson depth.
+# ~1-3 min on a 32-core VM: 100k point cap from file start, coarse voxel, low Poisson depth.
 TEST_CONFIG = MeshConfig(
     name="SMOKE TEST (flow check only — not for quality)",
-    voxel_size=0.05,
+    voxel_size=0.03,
     poisson_depth=8,
     density_trim_percentile=5,
-    crop_radius_m=1.5,
+    crop_radius_m=None,
     max_points=100_000,
     skip_outlier_removal=True,
 )

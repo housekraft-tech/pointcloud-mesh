@@ -164,6 +164,13 @@ def _stream_las_points(path, header, crop_radius_m, max_points):
             f"for meshing"
         )
 
+    if total_kept == 0 and crop_radius_m is not None:
+        log(
+            f"WARNING: spatial crop ({crop_radius_m:.1f}m) kept 0 points after scanning "
+            f"{total_scanned:,}; retrying without crop"
+        )
+        return _stream_las_points(path, header, None, max_points)
+
     if not xyz_parts:
         xyz = np.empty((0, 3), dtype=np.float64)
         colors = None
@@ -203,6 +210,12 @@ def load_las_as_o3d(path, crop_radius_m=None, max_points=None):
                 xyz = xyz[mask]
                 if colors is not None:
                     colors = colors[mask]
+
+    if xyz.shape[0] == 0:
+        raise ValueError(
+            "No points loaded for meshing. Check LAS file contents, crop_radius_m, "
+            "and max_points settings."
+        )
 
     log(f"Using {xyz.shape[0]:,} points for meshing")
 
@@ -330,22 +343,35 @@ def run_pipeline(input_path, output_path, config: MeshConfig):
         crop_radius_m=config.crop_radius_m,
         max_points=config.max_points,
     )
+    n_after_load = len(pcd.points)
     recenter_pcd(pcd)
 
     with log_stage(f"Voxel downsampling at {config.voxel_size * 1000:.1f}mm"):
         pcd = pcd.voxel_down_sample(voxel_size=config.voxel_size)
-    log(f"Points after downsample: {len(pcd.points):,}")
+    n_after_downsample = len(pcd.points)
+    log(f"Points after downsample: {n_after_downsample:,}")
 
     if config.skip_outlier_removal:
         log("Skipping statistical outlier removal")
+        n_after_outlier = n_after_downsample
     else:
         with log_stage("Statistical outlier removal"):
             pcd, _ = pcd.remove_statistical_outlier(
                 nb_neighbors=20, std_ratio=config.outlier_std_ratio
             )
-        log(f"Points after outlier removal: {len(pcd.points):,}")
+        n_after_outlier = len(pcd.points)
+        log(f"Points after outlier removal: {n_after_outlier:,}")
 
-    n_after = len(pcd.points)
+    if n_after_outlier < 100:
+        raise ValueError(
+            "Need at least 100 points after preprocessing for normal estimation; "
+            f"got {n_after_outlier:,}. Stage counts: "
+            f"after_load={n_after_load:,}, after_downsample={n_after_downsample:,}, "
+            f"after_outlier_removal={n_after_outlier:,}. "
+            "Try a smaller voxel_size, disable crop, or increase max_points."
+        )
+
+    n_after = n_after_outlier
     fast_normals = n_after < 500_000
     if fast_normals:
         log("Using fast normal computation (small point count)")
