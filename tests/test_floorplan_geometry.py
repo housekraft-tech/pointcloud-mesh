@@ -262,3 +262,142 @@ def test_merge_duplicate_walls_full_pipeline_recovers_five_walls():
     assert len(walls) == 20  # confirmed count before dedup -- documents the gap
     merged = merge_duplicate_walls(walls)
     assert len(merged) == 5  # 4 exterior + 1 partition
+
+
+# ---------- Phase 6: corner-aware point selection + two-pass plane refit ----------
+
+from scripts.floorplan_geometry import (
+    select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
+)
+
+
+def test_refine_wall_plane_two_pass_recovers_known_plane():
+    rng = np.random.default_rng(1)
+    n = 5000
+    pts = np.column_stack([
+        rng.uniform(0, 6, n),
+        np.full(n, 0.1) + rng.normal(0, 0.002, n),
+        rng.uniform(0, 2.7, n),
+    ])
+    coarse = [0.0, 1.0, 0.0, -0.08]  # off by 20mm
+    refined = refine_wall_plane_two_pass(pts, coarse)
+    assert abs(refined[3] - (-0.1)) < 0.001
+    resid = np.abs(signed_plane_distance(pts, refined))
+    assert resid.mean() < 0.005
+
+
+def test_select_wall_band_points_and_refit_corrects_t_junction_contamination():
+    """Full-scale regression for the corner-contamination bug found during
+    design validation: without corner exclusion this measured ~96.8mm
+    (residual mean ~23mm); with select_wall_band_points's corner margin it
+    should land within 1mm of the true 100mm partition thickness."""
+    pts, _gt = two_room_house()
+    lo = np.percentile(pts, 1, axis=0) - 0.5
+    hi = np.percentile(pts, 99, axis=0) + 0.5
+    cropped = pts[np.all((pts >= lo) & (pts <= hi), axis=1)]
+
+    partition_wall = {
+        "p0": np.array([3.0, 0.0]), "p1": np.array([3.0, 5.0]), "length_m": 5.0,
+    }
+    full_height = cropped[(cropped[:, 0] > 1) & (cropped[:, 0] < 5) &
+                           (cropped[:, 1] >= 0) & (cropped[:, 1] <= 5)]
+    band_pts = select_wall_band_points(full_height, partition_wall, corner_margin_m=0.5, band_m=0.06)
+    assert len(band_pts) > 1000
+
+    d = partition_wall["p1"] - partition_wall["p0"]
+    d = d / np.linalg.norm(d)
+    normal2d = np.array([-d[1], d[0]])
+    mid = band_pts[:, 0] * normal2d[0] + band_pts[:, 1] * normal2d[1]
+    med = np.median(mid)
+    side_a, side_b = band_pts[mid < med], band_pts[mid >= med]
+
+    coarse_a = [normal2d[0], normal2d[1], 0.0, -np.dot(normal2d, side_a[:, :2].mean(axis=0))]
+    coarse_b = [normal2d[0], normal2d[1], 0.0, -np.dot(normal2d, side_b[:, :2].mean(axis=0))]
+    refined_a = refine_wall_plane_two_pass(side_a, coarse_a)
+    refined_b = refine_wall_plane_two_pass(side_b, coarse_b)
+    thickness = abs(refined_a[3] - refined_b[3])
+    assert abs(thickness - 0.1) < 0.005  # within 5mm of the true 100mm
+
+
+# ---------- Phase 7: opening detection (void flood-fill + classification) ----------
+
+from scripts.floorplan_geometry import (
+    merge_grid_cells, classify_opening, detect_openings_on_wall_face,
+    cross_check_opening_both_faces,
+)
+
+
+def test_classify_opening_thresholds():
+    assert classify_opening(1.2, 1.2, 0.9) == "window"
+    assert classify_opening(0.9, 2.1, 0.0) == "door"
+    assert classify_opening(1.5, 2.2, 0.1) == "balcony_door"
+
+
+def test_merge_grid_cells_merges_rectangle():
+    occupied = {(0, 0), (1, 0), (0, 1), (1, 1)}
+    rects = merge_grid_cells(occupied)
+    assert rects == [(0, 1, 0, 1)]
+
+
+def test_detect_openings_on_wall_face_window_case():
+    rng = np.random.default_rng(2)
+    n_per_cell = 5
+    u = np.arange(0, 6, 0.05)
+    v = np.arange(0, 2.7, 0.05)
+    uu, vv = np.meshgrid(u, v)
+    uu, vv = uu.ravel(), vv.ravel()
+    keep = ~((uu >= 4.0) & (uu <= 5.2) & (vv >= 0.9) & (vv <= 2.1))
+    uv = np.column_stack([uu[keep], vv[keep]])
+    uv = np.repeat(uv, n_per_cell, axis=0)
+    openings = detect_openings_on_wall_face(uv, wall_length_m=6.0, cell_m=0.05)
+    assert len(openings) == 1
+    op = openings[0]
+    assert abs(op["width_m"] - 1.2) < 0.06
+    assert abs(op["height_m"] - 1.2) < 0.06
+    assert abs(op["sill_m"] - 0.9) < 0.06
+    assert op["type"] == "window"
+
+
+def test_detect_openings_on_wall_face_floor_level_door_case():
+    """Regression test for the floor-boundary flood-fill bug: a full-height
+    door (sill=0) must still be detected as an enclosed opening."""
+    n_per_cell = 5
+    u = np.arange(0, 5, 0.05)
+    v = np.arange(0, 2.7, 0.05)
+    uu, vv = np.meshgrid(u, v)
+    uu, vv = uu.ravel(), vv.ravel()
+    keep = ~((uu >= 2.0) & (uu <= 2.9) & (vv >= 0.0) & (vv <= 2.1))
+    uv = np.column_stack([uu[keep], vv[keep]])
+    uv = np.repeat(uv, n_per_cell, axis=0)
+    openings = detect_openings_on_wall_face(uv, wall_length_m=5.0, cell_m=0.05)
+    assert len(openings) == 1
+    op = openings[0]
+    assert abs(op["sill_m"] - 0.0) < 1e-9
+    assert op["type"] == "door"
+
+
+def test_cross_check_opening_both_faces_rejects_one_sided_occlusion():
+    opening = {"u_min": 1.0, "u_max": 2.0, "v_min": 0.5, "v_max": 1.5}
+    # other face is fully occupied in that rect => furniture occlusion, not a real opening
+    u = np.arange(1.0, 2.0, 0.05)
+    v = np.arange(0.5, 1.5, 0.05)
+    uu, vv = np.meshgrid(u, v)
+    other_face = np.repeat(np.column_stack([uu.ravel(), vv.ravel()]), 5, axis=0)
+    assert cross_check_opening_both_faces(opening, other_face) is False
+
+
+# ---------- Phase 8: floor plan image rendering ----------
+
+import os
+from scripts.floorplan_geometry import render_floorplan_image
+
+
+def test_render_floorplan_image_writes_nonempty_png(tmp_path):
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([6.0, 0.0]), "thickness_m": 0.2, "length_m": 6.0},
+        {"p0": np.array([6.0, 0.0]), "p1": np.array([6.0, 5.0]), "thickness_m": 0.2, "length_m": 5.0},
+    ]
+    out = tmp_path / "floorplan.png"
+    render_floorplan_image(walls, {}, str(out), px_per_meter=50)
+    assert out.exists()
+    assert out.stat().st_size > 0
