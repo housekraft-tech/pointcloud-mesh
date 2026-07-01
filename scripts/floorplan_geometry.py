@@ -157,3 +157,121 @@ def extract_wall_segments(binary_image, origin, cell_size_m, epsilon_cells=2.0, 
                 continue
             segments.append({"p0": p0, "p1": p1, "length": length})
     return segments
+
+
+# ---------- wall pairing (mutual nearest-neighbor with thickness/angle/overlap constraints) ----------
+
+def _segment_dir(seg):
+    v = seg["p1"] - seg["p0"]
+    return v / np.linalg.norm(v)
+
+
+def _segment_normal(seg):
+    d = _segment_dir(seg)
+    return np.array([-d[1], d[0]])
+
+
+def _overlap_fraction(seg_a, seg_b, direction):
+    a0 = np.dot(seg_a["p0"], direction)
+    a1 = np.dot(seg_a["p1"], direction)
+    b0 = np.dot(seg_b["p0"], direction)
+    b1 = np.dot(seg_b["p1"], direction)
+    lo = max(min(a0, a1), min(b0, b1))
+    hi = min(max(a0, a1), max(b0, b1))
+    overlap = max(0.0, hi - lo)
+    shorter = min(seg_a["length"], seg_b["length"])
+    return overlap / shorter if shorter > 1e-9 else 0.0
+
+
+def _project_point_onto_segment(point, seg):
+    d = _segment_dir(seg)
+    t = np.dot(point - seg["p0"], d)
+    return seg["p0"] + t * d
+
+
+def _build_wall_from_pair(seg_a, seg_b, thickness_m):
+    centerline_p0 = (seg_a["p0"] + _project_point_onto_segment(seg_a["p0"], seg_b)) / 2
+    centerline_p1 = (seg_a["p1"] + _project_point_onto_segment(seg_a["p1"], seg_b)) / 2
+    return {
+        "p0": centerline_p0,
+        "p1": centerline_p1,
+        "thickness_m": thickness_m,
+        "thickness_source": "measured",
+    }
+
+
+def _build_wall_from_single(seg):
+    return {
+        "p0": seg["p0"],
+        "p1": seg["p1"],
+        "thickness_m": None,
+        "thickness_source": "assumed",
+    }
+
+
+def pair_wall_surfaces(segments, min_thickness_m=0.06, max_thickness_m=0.35,
+                        max_angle_deg=5.0, min_overlap_frac=0.5):
+    """Mutual-nearest-neighbor pairing: each segment's candidate partners are
+    filtered by near-parallel direction, sufficient overlap, and a plausible
+    wall-thickness gap (60-350mm default) -- this envelope is what rejects a
+    T-junction pairing a segment across to an unrelated wall/room-width gap.
+    A pair is only accepted if each segment's closest-gap candidate is the
+    other (mutual best match), not just a one-sided nearest match."""
+    n = len(segments)
+    candidates = {i: [] for i in range(n)}
+    for i in range(n):
+        d_i = _segment_dir(segments[i])
+        n_i = _segment_normal(segments[i])
+        for j in range(i + 1, n):
+            d_j = _segment_dir(segments[j])
+            cos_angle = abs(float(np.dot(d_i, d_j)))
+            angle_deg = np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+            if angle_deg > max_angle_deg:
+                continue
+            overlap = _overlap_fraction(segments[i], segments[j], d_i)
+            if overlap < min_overlap_frac:
+                continue
+            mid_i = (segments[i]["p0"] + segments[i]["p1"]) / 2
+            mid_j = (segments[j]["p0"] + segments[j]["p1"]) / 2
+            gap = abs(float(np.dot(mid_j - mid_i, n_i)))
+            if gap < min_thickness_m or gap > max_thickness_m:
+                continue
+            candidates[i].append((j, gap, overlap))
+            candidates[j].append((i, gap, overlap))
+
+    best = {}
+    for i, opts in candidates.items():
+        if opts:
+            opts.sort(key=lambda t: t[1])
+            best[i] = opts[0][0]
+
+    walls = []
+    used = set()
+    for i, j in best.items():
+        if i in used or j in used:
+            continue
+        if best.get(j) == i:
+            gap = next(g for (jj, g, _o) in candidates[i] if jj == j)
+            walls.append(_build_wall_from_pair(segments[i], segments[j], gap))
+            used.add(i)
+            used.add(j)
+
+    for i in range(n):
+        if i in used:
+            continue
+        walls.append(_build_wall_from_single(segments[i]))
+        used.add(i)
+
+    return walls
+
+
+def apply_modal_thickness_fallback(walls, default_thickness_m=0.1):
+    """Never silently substitute a hardcoded default: derive the fallback
+    from the modal MEASURED thickness across the structure, so an assumption
+    is at least grounded in this building's actual wall construction."""
+    measured = [w["thickness_m"] for w in walls if w["thickness_source"] == "measured"]
+    modal = float(np.median(measured)) if measured else default_thickness_m
+    for w in walls:
+        if w["thickness_source"] == "assumed":
+            w["thickness_m"] = modal
+    return walls

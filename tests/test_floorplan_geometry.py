@@ -123,3 +123,38 @@ def test_extract_wall_segments_keeps_single_sided_thin_line():
     segments = extract_wall_segments(image, origin=np.array([0.0, 0.0]), cell_size_m=0.02, epsilon_cells=2.0)
     assert len(segments) >= 1
     assert any(s["length"] > 5.0 for s in segments)  # the ~280px*0.02m=5.6m line survives
+
+
+# ---------- Phase 3: wall pairing (mutual nearest-neighbor) ----------
+
+from scripts.floorplan_geometry import pair_wall_surfaces, apply_modal_thickness_fallback
+
+
+def _seg(p0, p1):
+    p0, p1 = np.array(p0, dtype=np.float64), np.array(p1, dtype=np.float64)
+    return {"p0": p0, "p1": p1, "length": float(np.linalg.norm(p1 - p0))}
+
+
+def test_pair_wall_surfaces_pairs_parallel_segments_within_thickness_envelope():
+    # two parallel 3m segments 200mm apart (a real wall)
+    segs = [_seg((0, 0), (3, 0)), _seg((0, 0.2), (3, 0.2))]
+    walls = pair_wall_surfaces(segs)
+    assert len(walls) == 1
+    assert walls[0]["thickness_source"] == "measured"
+    assert abs(walls[0]["thickness_m"] - 0.2) < 0.01
+
+
+def test_pair_wall_surfaces_rejects_gap_outside_thickness_envelope():
+    # two parallel segments 3m apart (a room width, not a wall) must NOT pair
+    segs = [_seg((0, 0), (3, 0)), _seg((0, 3.0), (3, 3.0))]
+    walls = pair_wall_surfaces(segs)
+    assert all(w["thickness_source"] == "assumed" for w in walls)
+
+
+def test_apply_modal_thickness_fallback_fills_assumed_walls():
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([1.0, 0.0]), "thickness_m": 0.2, "thickness_source": "measured"},
+        {"p0": np.array([0.0, 1.0]), "p1": np.array([1.0, 1.0]), "thickness_m": None, "thickness_source": "assumed"},
+    ]
+    walls = apply_modal_thickness_fallback(walls)
+    assert walls[1]["thickness_m"] == 0.2
