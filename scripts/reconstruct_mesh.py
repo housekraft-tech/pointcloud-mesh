@@ -29,27 +29,41 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def load_las_as_o3d(path):
-    log(f"Loading {path} in chunks ...")
-    xyz_chunks = []
-    color_chunks = []
+def validate_las_file(path):
+    path = Path(path)
+    size = path.stat().st_size
     with laspy.open(path) as reader:
-        has_intensity = "intensity" in reader.header.point_format.dimension_names
-        for chunk in reader.chunk_iterator(CHUNK_SIZE):
-            xyz_chunks.append(np.column_stack([chunk.x, chunk.y, chunk.z]))
-            if has_intensity:
-                gray = (np.asarray(chunk.intensity, dtype=np.float64) / 255.0).clip(0, 1)
-                color_chunks.append(np.column_stack([gray, gray, gray]))
+        header = reader.header
+        point_size = header.point_format.size
+        expected = header.offset_to_point_data + header.point_count * point_size
+    if size < expected:
+        raise ValueError(
+            f"LAS file looks truncated: {size:,} bytes on disk, "
+            f"header expects at least {expected:,} bytes "
+            f"({header.point_count:,} points x {point_size} bytes). "
+            f"Re-upload the full file (~753 MB)."
+        )
+    return header.point_count, point_size, size
 
-    xyz = np.concatenate(xyz_chunks, axis=0)
-    del xyz_chunks
+
+def load_las_as_o3d(path):
+    path = Path(path)
+    point_count, point_size, size = validate_las_file(path)
+    log(
+        f"Loading {path} ({size / 1e6:.1f} MB, {point_count:,} points, "
+        f"{point_size} bytes/point) ..."
+    )
+
+    las = laspy.read(path)
+    xyz = np.column_stack([las.x, las.y, las.z])
     log(f"Loaded {xyz.shape[0]:,} points")
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
-    if color_chunks:
-        colors = np.concatenate(color_chunks, axis=0)
-        pcd.colors = o3d.utility.Vector3dVector(colors)
+    dims = las.point_format.dimension_names
+    if "intensity" in dims:
+        gray = (np.asarray(las.intensity, dtype=np.float64) / 255.0).clip(0, 1)
+        pcd.colors = o3d.utility.Vector3dVector(np.column_stack([gray, gray, gray]))
     return pcd
 
 
