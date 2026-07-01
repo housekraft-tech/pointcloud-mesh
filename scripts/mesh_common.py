@@ -122,6 +122,101 @@ def load_las_as_o3d(path, crop_radius_m=None):
     return pcd
 
 
+
+def recenter_pcd(pcd):
+    """Subtract point mean so KD-tree normal search works on large survey coordinates."""
+    pts = np.asarray(pcd.points)
+    if pts.size == 0:
+        return np.zeros(3, dtype=np.float64)
+    center = pts.mean(axis=0)
+    pcd.points = o3d.utility.Vector3dVector(pts - center)
+    log(
+        f"Recentered cloud by ({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}) "
+        f"for stable normal estimation"
+    )
+    return center
+
+
+def _finite_normal_fraction(pcd):
+    if not pcd.has_normals():
+        return 0.0
+    normals = np.asarray(pcd.normals)
+    if normals.size == 0:
+        return 0.0
+    return float(np.isfinite(normals).all(axis=1).mean())
+
+
+def _normals_acceptable(pcd, min_fraction=0.9):
+    return pcd.has_normals() and _finite_normal_fraction(pcd) >= min_fraction
+
+
+def _try_estimate_normals(pcd, search_param, label):
+    pcd.estimate_normals(
+        search_param=search_param,
+        fast_normal_computation=False,
+    )
+    frac = _finite_normal_fraction(pcd)
+    ok = _normals_acceptable(pcd)
+    log(
+        f"Normal estimate ({label}): has_normals={pcd.has_normals()}, "
+        f"finite={frac * 100:.1f}%"
+    )
+    return ok
+
+
+def _orient_normals(pcd):
+    try:
+        pcd.orient_normals_consistent_tangent_plane(k=15)
+        log("Normals oriented with consistent tangent plane (k=15)")
+    except RuntimeError as exc:
+        log(
+            f"Tangent-plane orientation failed ({exc}); "
+            "falling back to orient_normals_towards_camera_location"
+        )
+        pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
+
+
+def estimate_and_orient_normals(pcd, voxel_size):
+    n_points = len(pcd.points)
+    if n_points < 100:
+        raise ValueError(
+            f"Need at least 100 points for normal estimation, got {n_points:,}"
+        )
+
+    radius_primary = max(voxel_size * 4.0, 0.05)
+    radius_wide = max(voxel_size * 8.0, 0.15)
+
+    strategies = [
+        (
+            "hybrid",
+            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_primary, max_nn=30),
+            f"radius={radius_primary:.4f}m, max_nn=30",
+        ),
+        (
+            "hybrid-wide",
+            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_wide, max_nn=50),
+            f"radius={radius_wide:.4f}m, max_nn=50",
+        ),
+        (
+            "knn",
+            o3d.geometry.KDTreeSearchParamKNN(knn=30),
+            "knn=30",
+        ),
+    ]
+
+    last_label = None
+    for _name, param, label in strategies:
+        last_label = label
+        if _try_estimate_normals(pcd, param, label):
+            break
+    else:
+        raise RuntimeError(
+            f"Normal estimation failed after all strategies (last try: {last_label})"
+        )
+
+    _orient_normals(pcd)
+
+
 def run_pipeline(input_path, output_path, config: MeshConfig):
     pipeline_t0 = time.time()
     output_path = Path(output_path)
@@ -137,6 +232,7 @@ def run_pipeline(input_path, output_path, config: MeshConfig):
         log(f"Test patch crop: {config.crop_radius_m:.1f}m radius")
 
     pcd = load_las_as_o3d(input_path, crop_radius_m=config.crop_radius_m)
+    recenter_pcd(pcd)
 
     with log_stage(f"Voxel downsampling at {config.voxel_size * 1000:.1f}mm"):
         pcd = pcd.voxel_down_sample(voxel_size=config.voxel_size)
@@ -148,19 +244,8 @@ def run_pipeline(input_path, output_path, config: MeshConfig):
         )
     log(f"Points after outlier removal: {len(pcd.points):,}")
 
-    normal_radius = config.voxel_size * 4
-    with log_stage(
-        f"Normal estimation (radius={normal_radius * 1000:.1f}mm, "
-        f"{len(pcd.points):,} points)"
-    ):
-        pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                radius=normal_radius, max_nn=30
-            )
-        )
-
-    with log_stage(f"Normal orientation (k=15, {len(pcd.points):,} points)"):
-        pcd.orient_normals_consistent_tangent_plane(k=15)
+    with log_stage(f"Normal estimation + orientation ({len(pcd.points):,} points)"):
+        estimate_and_orient_normals(pcd, config.voxel_size)
 
     with log_stage(
         f"Poisson reconstruction (depth={config.poisson_depth}, n_threads={n_threads})"
