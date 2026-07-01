@@ -179,7 +179,11 @@ def _overlap_fraction(seg_a, seg_b, direction):
     lo = max(min(a0, a1), min(b0, b1))
     hi = min(max(a0, a1), max(b0, b1))
     overlap = max(0.0, hi - lo)
-    shorter = min(seg_a["length"], seg_b["length"])
+    # raw segments (Phase 2) use "length"; paired walls (Phase 3+) use
+    # "length_m" -- support both so this helper works on either shape.
+    len_a = seg_a["length"] if "length" in seg_a else seg_a["length_m"]
+    len_b = seg_b["length"] if "length" in seg_b else seg_b["length_m"]
+    shorter = min(len_a, len_b)
     return overlap / shorter if shorter > 1e-9 else 0.0
 
 
@@ -319,3 +323,67 @@ def drop_short_walls(walls, min_length_m=0.3):
     building has a legitimate short partition stub, lower this threshold and
     add a corresponding case to validate_measurements.py's ground truth."""
     return [w for w in walls if w["length_m"] >= min_length_m]
+
+
+# ---------- wall dedup/merge ----------
+
+def _walls_are_duplicates(a, b, angle_tol_deg=3.0, offset_tol_m=0.05, u_gap_tol_m=0.1):
+    d_a = _segment_dir(a)
+    d_b = _segment_dir(b)
+    cos_angle = abs(float(np.dot(d_a, d_b)))
+    angle_deg = np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+    if angle_deg > angle_tol_deg:
+        return False
+    n_a = _segment_normal(a)
+    mid_a = (a["p0"] + a["p1"]) / 2
+    mid_b = (b["p0"] + b["p1"]) / 2
+    perp_offset = abs(float(np.dot(mid_b - mid_a, n_a)))
+    if perp_offset > offset_tol_m:
+        return False
+    # require overlapping or near-adjacent u-ranges along the shared direction
+    overlap = _overlap_fraction(a, b, d_a)
+    if overlap > 0.0:
+        return True
+    a0, a1 = np.dot(a["p0"], d_a), np.dot(a["p1"], d_a)
+    b0, b1 = np.dot(b["p0"], d_a), np.dot(b["p1"], d_a)
+    gap = max(min(b0, b1) - max(a0, a1), min(a0, a1) - max(b0, b1))
+    return gap <= u_gap_tol_m
+
+
+def merge_duplicate_walls(walls, angle_tol_deg=3.0, offset_tol_m=0.05, u_gap_tol_m=0.1):
+    """Collapse near-collinear, overlapping-or-adjacent wall entries that
+    describe the same physical wall run. Confirmed necessary during design
+    validation: a connected wall network traced through multiple findContours
+    loops (exterior boundary + one void per room) produces several duplicate
+    entries per physical wall, since mutual-NN pairing is one-to-one and
+    doesn't itself deduplicate across contours."""
+    n = len(walls)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _walls_are_duplicates(walls[i], walls[j], angle_tol_deg, offset_tol_m, u_gap_tol_m):
+                union(i, j)
+
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(walls[i])
+
+    merged = []
+    for group in groups.values():
+        measured = [w for w in group if w["thickness_source"] == "measured"]
+        chosen_pool = measured if measured else group
+        best = max(chosen_pool, key=lambda w: w["length_m"])
+        merged.append(best)
+    return merged

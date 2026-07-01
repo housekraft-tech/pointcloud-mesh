@@ -183,3 +183,83 @@ def test_drop_short_walls_removes_corner_stubs_keeps_real_walls():
     kept = drop_short_walls(walls, min_length_m=0.3)
     assert len(kept) == 1
     assert kept[0]["length_m"] == 5.0
+
+
+# ---------- Phase 5: wall dedup/merge ----------
+
+from scripts.floorplan_geometry import merge_duplicate_walls
+
+
+def test_merge_duplicate_walls_collapses_collinear_overlapping_entries():
+    # two near-identical entries for the "same" 5m wall run, one measured one assumed,
+    # plus one genuinely different wall
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([5.0, 0.02]),
+         "thickness_m": 0.2, "thickness_source": "measured", "length_m": 5.0},
+        {"p0": np.array([0.02, 0.01]), "p1": np.array([4.98, 0.0]),
+         "thickness_m": 0.197, "thickness_source": "assumed", "length_m": 4.96},
+        {"p0": np.array([0.0, 5.0]), "p1": np.array([6.0, 5.0]),
+         "thickness_m": 0.2, "thickness_source": "measured", "length_m": 6.0},
+    ]
+    merged = merge_duplicate_walls(walls)
+    assert len(merged) == 2
+    kept = [w for w in merged if w["length_m"] < 5.5][0]
+    assert kept["thickness_source"] == "measured"  # prefers the measured duplicate
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ESCALATED, not silently patched (see task-8-report.md): with the "
+        "brief's exact default tolerances (offset_tol_m=0.05), this converges "
+        "to 15 groups, not 5. Root cause diagnosed: pair_wall_surfaces's "
+        "_build_wall_from_single (Task 6, already committed) keeps a "
+        "single-sided/'assumed' wall's raw detected face position as its "
+        "'centerline' -- it is never shifted inward by half the (later, "
+        "modal-fallback) assumed thickness. So two 'assumed' duplicate "
+        "entries for the same physical wall, detected from opposite faces "
+        "across different findContours loops, can be a full wall-thickness "
+        "apart (~0.2m measured on this fixture, e.g. walls[19] vs walls[10] "
+        "perp_offset=0.205) -- 4x the default offset_tol_m=0.05. Forcing "
+        "offset_tol_m up to ~0.25 (5x default) does converge to 5 groups, but "
+        "that's a large, risky change to a shared default with no principled "
+        "safe value (real buildings can have genuinely distinct parallel "
+        "walls only ~0.2-0.3m apart, e.g. double partitions), and it still "
+        "doesn't fix the deeper issue that the surviving group representative "
+        "can be a short partial-length 'measured' sub-segment rather than the "
+        "true full wall run. Needs an architect decision: widen the default "
+        "tolerance, re-center single-face walls upstream in Task 6's "
+        "_build_wall_from_single/apply_modal_thickness_fallback (requires "
+        "knowing which side is building-interior, not currently tracked), or "
+        "another approach."
+    ),
+)
+def test_merge_duplicate_walls_full_pipeline_recovers_five_walls():
+    """End-to-end regression: confirmed this fixture produces 20 raw entries
+    without dedup; after merge_duplicate_walls only the 5 real walls (4
+    exterior + 1 partition) should remain."""
+    from scripts.floorplan_geometry import (
+        crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
+        extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
+        snap_wall_endpoints, drop_short_walls,
+    )
+    from tests.fixtures import two_room_house
+
+    pts, _gt = two_room_house()
+    _lo, _hi, keep_mask, _stats = crop_to_percentile_bounds(pts)
+    cropped = pts[keep_mask]
+    ceiling = cropped[(cropped[:, 2] >= 2.4) & (cropped[:, 2] <= 2.6)]
+    xy = ceiling[:, :2]
+    cell_size = 0.02
+    bmin, bmax = xy.min(axis=0) - 0.1, xy.max(axis=0) + 0.1
+    image, origin = points_to_density_image(xy, cell_size, bmin, bmax)
+    binary = threshold_density_image(image, min_count=2, morph_kernel=3)
+    segments = extract_wall_segments(binary, origin, cell_size, epsilon_cells=2.0, min_span_cells=3.0)
+    segments = [s for s in segments if s["length"] >= 5 * cell_size]
+    walls = pair_wall_surfaces(segments)
+    walls = apply_modal_thickness_fallback(walls)
+    walls, _clusters = snap_wall_endpoints(walls, tolerance_m=0.08)
+    walls = drop_short_walls(walls, min_length_m=0.3)
+    assert len(walls) == 20  # confirmed count before dedup -- documents the gap
+    merged = merge_duplicate_walls(walls)
+    assert len(merged) == 5  # 4 exterior + 1 partition
