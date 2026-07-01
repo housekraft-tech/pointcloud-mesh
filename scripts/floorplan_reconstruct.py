@@ -17,7 +17,7 @@ try:
         select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
         plane_normal, wall_uv_basis, points_to_wall_uv,
         detect_openings_on_wall_face, cross_check_opening_both_faces,
-        render_floorplan_image,
+        refine_opening_edges, render_floorplan_image,
     )
     from floorplan_schema import Wall, Opening, new_wall_id, wall_to_dict
 except ImportError:
@@ -35,7 +35,7 @@ except ImportError:
         select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
         plane_normal, wall_uv_basis, points_to_wall_uv,
         detect_openings_on_wall_face, cross_check_opening_both_faces,
-        render_floorplan_image,
+        refine_opening_edges, render_floorplan_image,
     )
     from scripts.floorplan_schema import Wall, Opening, new_wall_id, wall_to_dict
 
@@ -69,6 +69,9 @@ DEFAULT_CONFIG = {
     "opening_cell_m": 0.05,
     "opening_min_w": 0.45,
     "opening_min_h": 0.45,
+    "opening_edge_search_band_m": 0.15,
+    "opening_edge_bin_m": 0.004,
+    "refit_z_margin_m": 0.1,  # excludes floor/ceiling points from the wall-thickness refit band
 }
 
 
@@ -130,7 +133,14 @@ def _refine_wall(wall_raw, xyz, floor_z, ceiling_z, config, index):
     d = d / np.linalg.norm(d)
     normal2d = np.array([-d[1], d[0]])
 
-    full_height = xyz  # region selector below restricts by perpendicular band + U-range anyway
+    # Exclude floor/ceiling points from the refit band: select_wall_band_points only
+    # filters by perpendicular distance + along-wall U-range, so on real scan data
+    # (unlike this pipeline's wall-face-only synthetic test fixtures) horizontal
+    # floor/ceiling points sitting within the wall's perpendicular band would bias
+    # the least-squares plane fit -- flagged in the final whole-branch review.
+    z_margin = config["refit_z_margin_m"]
+    z_lo, z_hi = floor_z + z_margin, ceiling_z - z_margin
+    full_height = xyz[(xyz[:, 2] >= z_lo) & (xyz[:, 2] <= z_hi)]
     band_pts = select_wall_band_points(
         full_height, wall_raw,
         corner_margin_m=config["refit_corner_margin_m"],
@@ -194,11 +204,19 @@ def _detect_wall_openings(wall, side_a_pts, side_b_pts, config):
             both_faces = cross_check_opening_both_faces(op, uv_b, cell_m=config["opening_cell_m"])
         if not both_faces:
             continue
+        # Refine the coarse 50mm-grid-detected rectangle to sub-cell accuracy using
+        # a density half-max crossing on the original points -- never trust the
+        # coarse detection as the final number (this pipeline's core accuracy rule).
+        refined = refine_opening_edges(
+            op, uv_a,
+            search_band_m=config["opening_edge_search_band_m"],
+            bin_m=config["opening_edge_bin_m"],
+        )
         openings.append(Opening(
-            opening_id=f"{wall.wall_id}_op_{i:02d}", wall_id=wall.wall_id, type=op["type"],
-            u_min_m=op["u_min"], u_max_m=op["u_max"], sill_m=op["sill_m"],
-            height_m=op["height_m"], width_m=op["width_m"],
-            edge_method="density_half_max", both_faces_confirmed=(uv_b is not None),
+            opening_id=f"{wall.wall_id}_op_{i:02d}", wall_id=wall.wall_id, type=refined["type"],
+            u_min_m=refined["u_min"], u_max_m=refined["u_max"], sill_m=refined["sill_m"],
+            height_m=refined["height_m"], width_m=refined["width_m"],
+            edge_method=refined["edge_method"], both_faces_confirmed=(uv_b is not None),
         ))
     return openings
 
@@ -214,7 +232,7 @@ def build_floorplan_outputs(xyz, config=None):
 
     segments, floor_z, ceiling_z = _detect_wall_segments(cropped, config)
     if not segments:
-        return {"wall_count": 0, "walls": []}, []
+        return {"wall_count": 0, "walls": [], "floor_z_m": floor_z, "ceiling_z_m": ceiling_z}, []
 
     walls_raw = _build_walls_from_segments(segments, config)
 

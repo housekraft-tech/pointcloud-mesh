@@ -94,23 +94,56 @@ def test_find_dense_z_band_isolates_primary_cluster_from_sparse_secondary_struct
 
     z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
 
-    assert z_min == pytest.approx(-1.8, abs=0.2)
-    assert z_max == pytest.approx(1.1, abs=0.2)
+    # Returned bounds are refined against actual point extrema within the
+    # detected band, not raw 100mm histogram bin edges -- so these should be
+    # tight (near the true uniform-range bounds), not merely bin_m-close.
+    assert z_min == pytest.approx(-1.8, abs=0.02)
+    assert z_max == pytest.approx(1.1, abs=0.02)
     # Must not extend up into the secondary structure.
     assert z_max < 1.5
 
 
-def test_find_dense_z_band_handles_single_uniform_cluster():
+def test_find_dense_z_band_excludes_the_actual_stray_outlier_tail():
+    """Regression test for the original bug this code replaced: feeds the
+    real two_room_house fixture (including its 500-point synthetic
+    SLAM-drift stray tail, unfiltered) directly through find_dense_z_band,
+    rather than pre-filtering the stray points out before calling it."""
     pts, _gt = two_room_house()
     z_values = pts[:, 2]
-    # Restrict to the real wall points (drop the synthetic stray tail) so this
-    # is a clean single dense cluster with no confounding secondary structure.
-    real_z = z_values[(z_values >= -0.5) & (z_values <= 3.0)]
 
-    z_min, z_max = find_dense_z_band(real_z, bin_m=0.1, density_ratio_threshold=0.1)
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
 
-    assert z_min == pytest.approx(0.0, abs=0.3)
-    assert z_max == pytest.approx(2.7, abs=0.3)
+    # True room z-range is [0.0, 2.7]; refined extrema should land close to it,
+    # not out at the stray tail (which reaches z=15 per the fixture generator).
+    # Looser than the clean-uniform-density test above since real fixture noise
+    # (jitter + the occasional stray point landing just outside the main
+    # cluster) can nudge the exact extrema by a few cm -- still two orders of
+    # magnitude tighter than the stray tail this guards against.
+    assert z_min == pytest.approx(0.0, abs=0.1)
+    assert z_max == pytest.approx(2.7, abs=0.1)
+    assert z_max < 3.0  # must not include any of the stray tail
+
+
+def test_find_dense_z_band_tolerates_a_mid_band_density_dip():
+    """A real room isn't uniformly dense at every height -- a band of window/
+    door coverage, or a sparser-scanned section, can locally dip well below
+    the primary peak without being a genuinely separate structure. Confirms
+    the density-ratio threshold doesn't prematurely truncate the band at such
+    a dip, only at a real cliff down to near-secondary-structure sparsity."""
+    rng = np.random.default_rng(11)
+    lower = rng.uniform(0.0, 1.2, 200_000)
+    # a mid-band dip to ~30% of peak density -- still much denser than the
+    # 1% used for a genuine secondary structure, so should NOT be treated as
+    # a cliff.
+    dip = rng.uniform(1.2, 1.5, 20_000)
+    upper = rng.uniform(1.5, 2.7, 200_000)
+    z_values = np.concatenate([lower, dip, upper])
+    rng.shuffle(z_values)
+
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
+
+    assert z_min == pytest.approx(0.0, abs=0.05)
+    assert z_max == pytest.approx(2.7, abs=0.05)
 
 
 # ---------- Phase 1: density image ----------
@@ -418,6 +451,64 @@ def test_cross_check_opening_both_faces_rejects_one_sided_occlusion():
     assert cross_check_opening_both_faces(opening, other_face) is False
 
 
+# ---------- opening edge refinement (density half-max crossing) ----------
+
+from scripts.floorplan_geometry import refine_opening_edges
+
+
+def _wall_face_uv_with_hole(u_range, v_range, hole_u, hole_v, spacing=0.016, noise_std=0.002, seed=1):
+    """Synthetic wall-face (u,v) points with a rectangular void (door/window)
+    cut at sub-cell-precision bounds, for testing edge refinement against a
+    known ground-truth edge that does NOT land on a 50mm grid line."""
+    rng = np.random.default_rng(seed)
+    u = np.arange(u_range[0], u_range[1], spacing)
+    v = np.arange(v_range[0], v_range[1], spacing)
+    uu, vv = np.meshgrid(u, v)
+    uu, vv = uu.ravel(), vv.ravel()
+    keep = ~((uu >= hole_u[0]) & (uu <= hole_u[1]) & (vv >= hole_v[0]) & (vv <= hole_v[1]))
+    uv = np.repeat(np.column_stack([uu[keep], vv[keep]]), 3, axis=0)
+    uv = uv + rng.normal(0, noise_std, uv.shape)
+    return uv
+
+
+def test_refine_opening_edges_recovers_subcell_door_edges_from_coarse_grid_rect():
+    # true door edges (NOT 50mm-grid-aligned): u in [2.03, 2.91], v in [0.0, 2.087]
+    uv = _wall_face_uv_with_hole((0, 5), (0, 2.7), (2.03, 2.91), (0.0, 2.087))
+    # coarse rect as detect_openings_on_wall_face would emit at 50mm cells
+    coarse = {"u_min": 2.0, "u_max": 2.95, "v_min": 0.0, "v_max": 2.10,
+              "width_m": 0.95, "height_m": 2.10, "sill_m": 0.0, "type": "door"}
+    refined = refine_opening_edges(coarse, uv)
+    assert abs(refined["u_min"] - 2.03) < 0.01
+    assert abs(refined["u_max"] - 2.91) < 0.01
+    assert abs(refined["v_max"] - 2.087) < 0.01
+    assert refined["v_min"] == 0.0  # floor-level sill is never refined (no data below the floor)
+    assert refined["edge_method"] == "density_half_max"
+    assert abs(refined["width_m"] - (refined["u_max"] - refined["u_min"])) < 1e-9
+
+
+def test_refine_opening_edges_recovers_subcell_window_edges_including_sill():
+    # true window edges: u in [3.55, 4.75], v in [0.87, 2.13] -- elevated sill, all 4 edges refinable
+    uv = _wall_face_uv_with_hole((0, 5), (0, 2.7), (3.55, 4.75), (0.87, 2.13))
+    coarse = {"u_min": 3.5, "u_max": 4.8, "v_min": 0.85, "v_max": 2.15,
+              "width_m": 1.3, "height_m": 1.3, "sill_m": 0.85, "type": "window"}
+    refined = refine_opening_edges(coarse, uv)
+    assert abs(refined["u_min"] - 3.55) < 0.01
+    assert abs(refined["u_max"] - 4.75) < 0.01
+    assert abs(refined["v_min"] - 0.87) < 0.01
+    assert abs(refined["v_max"] - 2.13) < 0.01
+    assert refined["edge_method"] == "density_half_max"
+
+
+def test_refine_opening_edges_falls_back_to_coarse_when_too_few_points():
+    coarse = {"u_min": 1.0, "u_max": 2.0, "v_min": 0.0, "v_max": 2.0,
+              "width_m": 1.0, "height_m": 2.0, "sill_m": 0.0, "type": "door"}
+    uv = np.empty((0, 2))  # no points at all near any edge
+    refined = refine_opening_edges(coarse, uv)
+    assert refined["u_min"] == 1.0
+    assert refined["u_max"] == 2.0
+    assert refined["edge_method"] == "grid_coarse"
+
+
 # ---------- Phase 8: floor plan image rendering ----------
 
 import os
@@ -431,5 +522,12 @@ def test_render_floorplan_image_writes_nonempty_png(tmp_path):
     ]
     out = tmp_path / "floorplan.png"
     render_floorplan_image(walls, {}, str(out), px_per_meter=50)
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_render_floorplan_image_handles_zero_walls_without_crashing(tmp_path):
+    out = tmp_path / "floorplan_empty.png"
+    render_floorplan_image([], {}, str(out))
     assert out.exists()
     assert out.stat().st_size > 0
