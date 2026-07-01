@@ -158,3 +158,28 @@ def test_apply_modal_thickness_fallback_fills_assumed_walls():
     ]
     walls = apply_modal_thickness_fallback(walls)
     assert walls[1]["thickness_m"] == 0.2
+
+
+# ---------- Phase 4: endpoint snapping + short-stub filter ----------
+
+from scripts.floorplan_geometry import snap_wall_endpoints, drop_short_walls
+
+
+def test_snap_wall_endpoints_merges_nearby_corners():
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([3.0, 0.02])},
+        {"p0": np.array([3.01, 0.0]), "p1": np.array([3.0, 3.0])},
+    ]
+    walls, clusters = snap_wall_endpoints(walls, tolerance_m=0.05)
+    assert np.allclose(walls[0]["p1"], walls[1]["p0"], atol=1e-9)
+    assert "length_m" in walls[0]
+
+
+def test_drop_short_walls_removes_corner_stubs_keeps_real_walls():
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([5.0, 0.0]), "length_m": 5.0},
+        {"p0": np.array([5.0, 0.0]), "p1": np.array([5.1, 0.05]), "length_m": 0.11},
+    ]
+    kept = drop_short_walls(walls, min_length_m=0.3)
+    assert len(kept) == 1
+    assert kept[0]["length_m"] == 5.0

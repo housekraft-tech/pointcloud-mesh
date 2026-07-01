@@ -275,3 +275,47 @@ def apply_modal_thickness_fallback(walls, default_thickness_m=0.1):
         if w["thickness_source"] == "assumed":
             w["thickness_m"] = modal
     return walls
+
+
+# ---------- endpoint snapping ----------
+
+def snap_wall_endpoints(walls, tolerance_m=0.05):
+    """Cluster nearby wall centerline endpoints (across all walls) within
+    tolerance so corners meet cleanly; replaces each endpoint with its
+    cluster centroid."""
+    endpoints = []
+    for wi, w in enumerate(walls):
+        endpoints.append((wi, "p0", w["p0"]))
+        endpoints.append((wi, "p1", w["p1"]))
+
+    clusters = []
+    for (wi, key, pt) in endpoints:
+        found = None
+        for ci, members in enumerate(clusters):
+            rep_pt = members[0][2]
+            if np.linalg.norm(pt - rep_pt) <= tolerance_m:
+                found = ci
+                break
+        if found is None:
+            clusters.append([(wi, key, pt)])
+        else:
+            clusters[found].append((wi, key, pt))
+
+    for members in clusters:
+        centroid = np.mean([m[2] for m in members], axis=0)
+        for (wi, key, _pt) in members:
+            walls[wi][key] = centroid
+
+    for w in walls:
+        w["length_m"] = float(np.linalg.norm(w["p1"] - w["p0"]))
+
+    return walls, clusters
+
+
+def drop_short_walls(walls, min_length_m=0.3):
+    """Drop T-junction/corner pixel-noise stubs: confirmed via design
+    validation that mutual-NN pairing can match two short (<150mm) segments
+    near a T-junction into a plausible-looking but spurious 'wall'. If a real
+    building has a legitimate short partition stub, lower this threshold and
+    add a corresponding case to validate_measurements.py's ground truth."""
+    return [w for w in walls if w["length_m"] >= min_length_m]
