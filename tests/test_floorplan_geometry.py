@@ -384,3 +384,20 @@ def test_cross_check_opening_both_faces_rejects_one_sided_occlusion():
     uu, vv = np.meshgrid(u, v)
     other_face = np.repeat(np.column_stack([uu.ravel(), vv.ravel()]), 5, axis=0)
     assert cross_check_opening_both_faces(opening, other_face) is False
+
+
+# ---------- Phase 8: floor plan image rendering ----------
+
+import os
+from scripts.floorplan_geometry import render_floorplan_image
+
+
+def test_render_floorplan_image_writes_nonempty_png(tmp_path):
+    walls = [
+        {"p0": np.array([0.0, 0.0]), "p1": np.array([6.0, 0.0]), "thickness_m": 0.2, "length_m": 6.0},
+        {"p0": np.array([6.0, 0.0]), "p1": np.array([6.0, 5.0]), "thickness_m": 0.2, "length_m": 5.0},
+    ]
+    out = tmp_path / "floorplan.png"
+    render_floorplan_image(walls, {}, str(out), px_per_meter=50)
+    assert out.exists()
+    assert out.stat().st_size > 0

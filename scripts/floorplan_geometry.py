@@ -614,3 +614,38 @@ def cross_check_opening_both_faces(opening, other_face_uv_points, cell_m=0.05, m
     total_cells = max(1, int((opening["u_max"] - opening["u_min"]) / cell_m) *
                       int((opening["v_max"] - opening["v_min"]) / cell_m))
     return (occupied_cells / total_cells) < 0.3
+
+
+# ---------- floor plan image rendering ----------
+
+def render_floorplan_image(walls, openings_by_wall_id, output_path, px_per_meter=100):
+    """Top-down floor plan render: walls as thick lines with length/thickness
+    labels, openings marked with their type."""
+    all_pts = np.vstack([np.vstack([w["p0"], w["p1"]]) for w in walls])
+    margin_m = 0.5
+    min_xy = all_pts.min(axis=0) - margin_m
+    max_xy = all_pts.max(axis=0) + margin_m
+    width_px = int((max_xy[0] - min_xy[0]) * px_per_meter) + 1
+    height_px = int((max_xy[1] - min_xy[1]) * px_per_meter) + 1
+    img = np.full((height_px, width_px, 3), 255, dtype=np.uint8)
+
+    def to_px(pt):
+        x = int((pt[0] - min_xy[0]) * px_per_meter)
+        y = int((max_xy[1] - pt[1]) * px_per_meter)  # flip Y for image coords
+        return (x, y)
+
+    for wi, w in enumerate(walls):
+        p0_px, p1_px = to_px(w["p0"]), to_px(w["p1"])
+        thickness_px = max(1, int(w["thickness_m"] * px_per_meter))
+        cv2.line(img, p0_px, p1_px, (40, 40, 40), thickness=thickness_px)
+        mid_px = ((p0_px[0] + p1_px[0]) // 2, (p0_px[1] + p1_px[1]) // 2)
+        label = f"{w['length_m']:.2f}m/{w['thickness_m']*1000:.0f}mm"
+        cv2.putText(img, label, mid_px, cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 0, 0), 1, cv2.LINE_AA)
+        for op in openings_by_wall_id.get(wi, []):
+            d = (w["p1"] - w["p0"]) / w["length_m"]
+            op_p0 = w["p0"] + d * op["u_min_m"]
+            op_p1 = w["p0"] + d * op["u_max_m"]
+            cv2.line(img, to_px(op_p0), to_px(op_p1), (0, 150, 0), thickness=max(2, thickness_px))
+            cv2.putText(img, op["type"], to_px(op_p0), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 100, 0), 1, cv2.LINE_AA)
+
+    cv2.imwrite(output_path, img)
