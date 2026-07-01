@@ -36,9 +36,21 @@ Layout is assumed "Atlanta-world": walls are vertical, but not forced onto a sin
 
 ## Staging
 
+### Phase 0 — bounding-box auto-crop (preprocessing)
+
+Analysis of both real scans (`koushikexport.las`, `mujammelexport.las`) shows ~99% of points sit in a clean ~3.3m-tall room volume with a footprint of roughly 11×12m, but each file's raw bounding box balloons to 30-40m × 74-85m × 22-23m due to a sparse tail of stray/drift points (SLAM ghosting from open doors/windows, reflections off glass/mirrors, or drift on long unclosed paths). Poisson reconstruction builds its octree over the full bounding box, so this tail — a tiny fraction of total points — was forcing octree resolution across a volume ~50× larger than the real room, which is the dominant cause of the ~30 minute runtime at 5mm voxel/depth-10, not the voxel size itself.
+
+Before any other processing:
+
+1. Compute a robust bounding box from the recentered cloud using per-axis percentiles (e.g. 1st–99th) plus a fixed margin (e.g. 0.5m), rather than raw min/max.
+2. Crop the cloud to that box, dropping the sparse stray tail entirely.
+3. Log how many points/what fraction were dropped, and the before/after bounding box size, so a crop that's unexpectedly aggressive (e.g. clipping a real second story) is visible immediately rather than silently discarding real structure.
+
+This is a general-purpose fix applied to both this new pipeline and (if kept in use) the existing `reconstruct_mesh.py`, since it addresses a data-quality issue independent of the reconstruction algorithm.
+
 ### Phase 1 — walls, floor plan, openings
 
-1. Height-slice the recentered, downsampled cloud near ceiling height (configurable fraction of story height) → 2D density image → binary threshold → contour extraction → Douglas-Peucker simplification → candidate wall line segments.
+1. Height-slice the recentered, downsampled, cropped cloud near ceiling height (configurable fraction of story height) → 2D density image → binary threshold → contour extraction → Douglas-Peucker simplification → candidate wall line segments.
 2. Pair parallel segments within a max distance/overlap to get each wall's centerline + thickness.
 3. Snap wall endpoints/intersections within a tolerance so corners meet cleanly.
 4. Per wall, project the full-height point band into that wall's local (u,v) plane; 1D histogram along u for gap detection → opening rectangles; classify door/window/balcony door by sill height + width/height (reusing existing classification thresholds).
@@ -65,6 +77,7 @@ mm-level accuracy is the primary success criterion (cutlist errors cost real mon
 
 ## Testing
 
+- Validate the Phase 0 auto-crop first on both real LAS files, confirming the dropped fraction is small and the resulting bounding box matches the real room footprint (~11×12×3.3m), before relying on it for anything downstream.
 - Reuse the existing test-patch pattern (small spatial crop, point cap) to validate Phase 1 on a subset of the real scan locally before running the full scan on the Jarvis Labs VM.
 - A script renders the floor plan and prints wall/opening dimensions for a quick sanity check against the real building.
 - `validate_measurements.py` (above) is run against real tape measurements before trusting output for a production cutlist.
