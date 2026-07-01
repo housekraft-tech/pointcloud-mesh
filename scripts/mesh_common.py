@@ -240,6 +240,25 @@ def recenter_pcd(pcd):
     return center
 
 
+def crop_pcd_to_percentile_bounds(pcd, low_pct=1.0, high_pct=99.0, margin_m=0.5):
+    """Phase 0: drop the sparse SLAM-drift/ghost-point tail that inflates a
+    raw bounding box (confirmed on real scans: 99% of points sit in a tight
+    room volume while raw bbox balloons 6-7x from stray points), which was
+    the dominant cause of ~30 minute Poisson reconstruction times."""
+    from floorplan_geometry import crop_to_percentile_bounds  # local import: keeps the pure module import-order independent of mesh_common
+    xyz = np.asarray(pcd.points)
+    _lo, _hi, keep_mask, stats = crop_to_percentile_bounds(xyz, low_pct, high_pct, margin_m)
+    keep_idx = np.nonzero(keep_mask)[0]
+    cropped = pcd.select_by_index(keep_idx)
+    log(
+        f"Phase 0 crop: kept {stats['kept_points']:,}/{stats['input_points']:,} points "
+        f"({stats['dropped_fraction']*100:.2f}% dropped); "
+        f"bounds {stats['raw_bounds_min']} -> {stats['raw_bounds_max']} "
+        f"became {stats['cropped_bounds_min']} -> {stats['cropped_bounds_max']}"
+    )
+    return cropped, stats
+
+
 def _finite_normal_fraction(pcd):
     if not pcd.has_normals():
         return 0.0
