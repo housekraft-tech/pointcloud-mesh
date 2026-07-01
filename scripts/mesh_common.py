@@ -245,7 +245,14 @@ def crop_pcd_to_percentile_bounds(pcd, low_pct=1.0, high_pct=99.0, margin_m=0.5)
     raw bounding box (confirmed on real scans: 99% of points sit in a tight
     room volume while raw bbox balloons 6-7x from stray points), which was
     the dominant cause of ~30 minute Poisson reconstruction times."""
-    from floorplan_geometry import crop_to_percentile_bounds  # local import: keeps the pure module import-order independent of mesh_common
+    # local import: keeps the pure module import-order independent of mesh_common.
+    # Dual-mode: bare import resolves when scripts/ is executed directly (scripts/
+    # is on sys.path[0]); qualified fallback resolves when imported as
+    # scripts.mesh_common (e.g. from tests), where only the repo root is on sys.path.
+    try:
+        from floorplan_geometry import crop_to_percentile_bounds
+    except ImportError:
+        from scripts.floorplan_geometry import crop_to_percentile_bounds
     xyz = np.asarray(pcd.points)
     _lo, _hi, keep_mask, stats = crop_to_percentile_bounds(xyz, low_pct, high_pct, margin_m)
     keep_idx = np.nonzero(keep_mask)[0]
