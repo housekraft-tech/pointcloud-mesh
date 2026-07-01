@@ -1,7 +1,7 @@
-"""Fast test run on a small spatial patch with finer settings.
+"""Smoke test — small point count, coarse mesh, fast end-to-end check.
 
-Crops 3m radius around scan center. 8mm voxels, Poisson depth 11.
-Run this first to preview quality (~5-15 min on a 32-core VM).
+Does NOT produce a high-quality mesh. Use this to verify the pipeline works,
+then run reconstruct_mesh_detail.py for real output.
 
 Usage:
     python scripts/reconstruct_mesh_test.py [input.laz] [output.obj]
@@ -15,13 +15,15 @@ from mesh_common import ROOT, MeshConfig, run_pipeline
 DEFAULT_INPUT = ROOT / "data" / "koushikexport.laz"
 DEFAULT_OUTPUT = ROOT / "output" / "mesh_test.obj"
 
+# ~1-3 min on a 32-core VM: tiny crop, 100k point cap, coarse voxel, low Poisson depth.
 TEST_CONFIG = MeshConfig(
-    name="TEST PATCH (3m radius, 8mm voxel, depth 11)",
-    voxel_size=0.008,
-    poisson_depth=11,
+    name="SMOKE TEST (flow check only — not for quality)",
+    voxel_size=0.05,
+    poisson_depth=8,
     density_trim_percentile=5,
-    outlier_std_ratio=2.5,
-    crop_radius_m=3.0,
+    crop_radius_m=1.5,
+    max_points=100_000,
+    skip_outlier_removal=True,
 )
 
 if __name__ == "__main__":

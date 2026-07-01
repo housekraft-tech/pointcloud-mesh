@@ -23,6 +23,8 @@ class MeshConfig:
     density_trim_percentile: int = 5
     outlier_std_ratio: float = 2.0
     crop_radius_m: float | None = None
+    max_points: int | None = None
+    skip_outlier_removal: bool = False
 
 
 def log(msg):
@@ -84,34 +86,123 @@ def _cloud_center(las):
     return (mins + maxs) / 2.0
 
 
-def load_las_as_o3d(path, crop_radius_m=None):
+def _header_center(header):
+    mins = np.array(header.mins)
+    maxs = np.array(header.maxs)
+    return (mins + maxs) / 2.0
+
+
+def _chunk_colors_from_las(chunk):
+    dims = chunk.point_format.dimension_names
+    if "intensity" not in dims:
+        return None
+    gray = (np.asarray(chunk.intensity, dtype=np.float64) / 255.0).clip(0, 1)
+    return np.column_stack([gray, gray, gray])
+
+
+def _stream_las_points(path, header, crop_radius_m, max_points):
+    center = _header_center(header)
+    radius_sq = crop_radius_m**2 if crop_radius_m is not None else None
+    if crop_radius_m is not None:
+        log(
+            f"Spatial crop (streaming): {crop_radius_m:.1f}m radius around "
+            f"({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f})"
+        )
+    if max_points is not None:
+        log(f"Point cap: stop after {max_points:,} points kept")
+
+    chunk_size = 500_000
+    if max_points is not None:
+        chunk_size = min(chunk_size, max(max_points, 1))
+
+    xyz_parts = []
+    color_parts = []
+    has_colors = False
+    total_kept = 0
+    total_scanned = 0
+
+    with laspy.open(path) as reader:
+        for chunk in reader.chunk_iterator(chunk_size):
+            xyz = np.column_stack(
+                [np.asarray(chunk.x), np.asarray(chunk.y), np.asarray(chunk.z)]
+            )
+            total_scanned += len(xyz)
+            colors = _chunk_colors_from_las(chunk)
+
+            if radius_sq is not None:
+                dist_sq = np.sum((xyz - center) ** 2, axis=1)
+                mask = dist_sq <= radius_sq
+                xyz = xyz[mask]
+                if colors is not None:
+                    colors = colors[mask]
+
+            if len(xyz) == 0:
+                continue
+
+            if max_points is not None:
+                remaining = max_points - total_kept
+                if remaining <= 0:
+                    break
+                if len(xyz) > remaining:
+                    xyz = xyz[:remaining]
+                    if colors is not None:
+                        colors = colors[:remaining]
+
+            xyz_parts.append(xyz)
+            if colors is not None:
+                color_parts.append(colors)
+                has_colors = True
+            total_kept += len(xyz)
+
+            if max_points is not None and total_kept >= max_points:
+                log(f"Reached point cap ({max_points:,}); stopping stream")
+                break
+
+    if crop_radius_m is not None or max_points is not None:
+        log(
+            f"Streamed {total_scanned:,} points from file, kept {total_kept:,} "
+            f"for meshing"
+        )
+
+    if not xyz_parts:
+        xyz = np.empty((0, 3), dtype=np.float64)
+        colors = None
+    else:
+        xyz = np.vstack(xyz_parts)
+        colors = np.vstack(color_parts) if has_colors and color_parts else None
+
+    return xyz, colors
+
+
+def load_las_as_o3d(path, crop_radius_m=None, max_points=None):
     path = Path(path)
     header = validate_las_file(path)
     size = path.stat().st_size
+    use_streaming = crop_radius_m is not None or max_points is not None
+
     with log_stage(
         f"Loading point cloud ({size / 1e6:.1f} MB, {header.point_count:,} points in file)"
     ):
-        las = laspy.read(path)
-        xyz = np.column_stack([las.x, las.y, las.z])
-        colors = None
-        dims = las.point_format.dimension_names
-        if "intensity" in dims:
-            gray = (np.asarray(las.intensity, dtype=np.float64) / 255.0).clip(0, 1)
-            colors = np.column_stack([gray, gray, gray])
+        if use_streaming:
+            xyz, colors = _stream_las_points(path, header, crop_radius_m, max_points)
+        else:
+            las = laspy.read(path)
+            xyz = np.column_stack([las.x, las.y, las.z])
+            colors = _chunk_colors_from_las(las)
 
-        if crop_radius_m is not None:
-            center = _cloud_center(las)
-            dist = np.linalg.norm(xyz - center, axis=1)
-            mask = dist <= crop_radius_m
-            kept = int(mask.sum())
-            log(
-                f"Spatial crop: {crop_radius_m:.1f}m radius around "
-                f"({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) "
-                f"-> {kept:,} / {len(xyz):,} points"
-            )
-            xyz = xyz[mask]
-            if colors is not None:
-                colors = colors[mask]
+            if crop_radius_m is not None:
+                center = _cloud_center(las)
+                dist = np.linalg.norm(xyz - center, axis=1)
+                mask = dist <= crop_radius_m
+                kept = int(mask.sum())
+                log(
+                    f"Spatial crop: {crop_radius_m:.1f}m radius around "
+                    f"({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) "
+                    f"-> {kept:,} / {len(xyz):,} points"
+                )
+                xyz = xyz[mask]
+                if colors is not None:
+                    colors = colors[mask]
 
     log(f"Using {xyz.shape[0]:,} points for meshing")
 
@@ -120,7 +211,6 @@ def load_las_as_o3d(path, crop_radius_m=None):
     if colors is not None:
         pcd.colors = o3d.utility.Vector3dVector(colors)
     return pcd
-
 
 
 def recenter_pcd(pcd):
@@ -150,10 +240,10 @@ def _normals_acceptable(pcd, min_fraction=0.9):
     return pcd.has_normals() and _finite_normal_fraction(pcd) >= min_fraction
 
 
-def _try_estimate_normals(pcd, search_param, label):
+def _try_estimate_normals(pcd, search_param, label, fast_normal_computation=False):
     pcd.estimate_normals(
         search_param=search_param,
-        fast_normal_computation=False,
+        fast_normal_computation=fast_normal_computation,
     )
     frac = _finite_normal_fraction(pcd)
     ok = _normals_acceptable(pcd)
@@ -176,7 +266,7 @@ def _orient_normals(pcd):
         pcd.orient_normals_towards_camera_location(camera_location=np.array([0.0, 0.0, 0.0]))
 
 
-def estimate_and_orient_normals(pcd, voxel_size):
+def estimate_and_orient_normals(pcd, voxel_size, fast_normals=False):
     n_points = len(pcd.points)
     if n_points < 100:
         raise ValueError(
@@ -207,7 +297,9 @@ def estimate_and_orient_normals(pcd, voxel_size):
     last_label = None
     for _name, param, label in strategies:
         last_label = label
-        if _try_estimate_normals(pcd, param, label):
+        if _try_estimate_normals(
+            pcd, param, label, fast_normal_computation=fast_normals
+        ):
             break
     else:
         raise RuntimeError(
@@ -230,22 +322,36 @@ def run_pipeline(input_path, output_path, config: MeshConfig):
     )
     if config.crop_radius_m:
         log(f"Test patch crop: {config.crop_radius_m:.1f}m radius")
+    if config.max_points is not None:
+        log(f"Load cap: {config.max_points:,} points max")
 
-    pcd = load_las_as_o3d(input_path, crop_radius_m=config.crop_radius_m)
+    pcd = load_las_as_o3d(
+        input_path,
+        crop_radius_m=config.crop_radius_m,
+        max_points=config.max_points,
+    )
     recenter_pcd(pcd)
 
     with log_stage(f"Voxel downsampling at {config.voxel_size * 1000:.1f}mm"):
         pcd = pcd.voxel_down_sample(voxel_size=config.voxel_size)
     log(f"Points after downsample: {len(pcd.points):,}")
 
-    with log_stage("Statistical outlier removal"):
-        pcd, _ = pcd.remove_statistical_outlier(
-            nb_neighbors=20, std_ratio=config.outlier_std_ratio
-        )
-    log(f"Points after outlier removal: {len(pcd.points):,}")
+    if config.skip_outlier_removal:
+        log("Skipping statistical outlier removal")
+    else:
+        with log_stage("Statistical outlier removal"):
+            pcd, _ = pcd.remove_statistical_outlier(
+                nb_neighbors=20, std_ratio=config.outlier_std_ratio
+            )
+        log(f"Points after outlier removal: {len(pcd.points):,}")
 
-    with log_stage(f"Normal estimation + orientation ({len(pcd.points):,} points)"):
-        estimate_and_orient_normals(pcd, config.voxel_size)
+    n_after = len(pcd.points)
+    fast_normals = n_after < 500_000
+    if fast_normals:
+        log("Using fast normal computation (small point count)")
+
+    with log_stage(f"Normal estimation + orientation ({n_after:,} points)"):
+        estimate_and_orient_normals(pcd, config.voxel_size, fast_normals=fast_normals)
 
     with log_stage(
         f"Poisson reconstruction (depth={config.poisson_depth}, n_threads={n_threads})"
