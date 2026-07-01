@@ -11,7 +11,7 @@ import numpy as np
 
 try:
     from floorplan_geometry import (
-        crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
+        crop_to_percentile_bounds, find_dense_z_band, points_to_density_image, threshold_density_image,
         extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
         snap_wall_endpoints, drop_short_walls, merge_duplicate_walls,
         select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
@@ -29,7 +29,7 @@ except ImportError:
     # Task 12's review (a bare-only import raised ModuleNotFoundError under that
     # exact import path).
     from scripts.floorplan_geometry import (
-        crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
+        crop_to_percentile_bounds, find_dense_z_band, points_to_density_image, threshold_density_image,
         extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
         snap_wall_endpoints, drop_short_walls, merge_duplicate_walls,
         select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
@@ -47,6 +47,8 @@ DEFAULT_CONFIG = {
     "crop_low_pct": 1.0,
     "crop_high_pct": 99.0,
     "crop_margin_m": 0.5,
+    "z_band_bin_m": 0.1,  # histogram bin size for find_dense_z_band
+    "z_band_density_ratio": 0.1,  # min density (fraction of peak bin) to keep expanding the z-band
     "ceiling_band_m": 0.1,  # slice thickness for the top-down wall detection
     "ceiling_offset_m": 0.15,  # how far below the detected ceiling to slice
     "cell_size_m": 0.02,
@@ -71,17 +73,24 @@ DEFAULT_CONFIG = {
 
 
 def _detect_wall_segments(xyz, config):
-    # Use a robust high/low percentile rather than raw min/max: Phase 0's
+    # Use a density-based Z-band rather than a fixed percentile: Phase 0's
     # crop_to_percentile_bounds filters per-axis independently (kept if x, y, AND z
     # each individually fall within their own percentile+margin bound), so a rare
     # point can coincidentally satisfy all three axis bounds and survive the crop
     # even though it isn't part of the real room -- confirmed with
     # tests/fixtures.py's two_room_house: exactly 1 of its 500 synthetic
     # stray/SLAM-drift points survives at z=3.15m, well above the true ~2.7m
-    # ceiling. Using raw xyz[:, 2].max() there skews the ceiling-band slice
-    # entirely above every real wall point, yielding 0 wall segments.
-    z_max = float(np.percentile(xyz[:, 2], 99.9))
-    z_min = float(np.percentile(xyz[:, 2], 0.1))
+    # ceiling. A fixed 99.9th/0.1st percentile handled that sparse-outlier case,
+    # but running against the real koushikexport.las scan revealed a second
+    # failure mode a fixed percentile can't handle: real scan data can contain
+    # a second dense Z-band (another floor, a stairwell, a tall atrium) with
+    # substantial point mass, not just sparse noise, which skewed the ceiling-band
+    # slice and yielded 0 wall segments. find_dense_z_band instead expands
+    # outward from the peak-density histogram bin and stops at a real density
+    # cliff, correctly isolating the primary room's wall-height band in both cases.
+    z_min, z_max = find_dense_z_band(
+        xyz[:, 2], bin_m=config["z_band_bin_m"], density_ratio_threshold=config["z_band_density_ratio"],
+    )
     band_hi = z_max - config["ceiling_offset_m"]
     band_lo = band_hi - config["ceiling_band_m"]
     ceiling_slice = xyz[(xyz[:, 2] >= band_lo) & (xyz[:, 2] <= band_hi)]
