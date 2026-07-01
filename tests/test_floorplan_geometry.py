@@ -262,3 +262,58 @@ def test_merge_duplicate_walls_full_pipeline_recovers_five_walls():
     assert len(walls) == 20  # confirmed count before dedup -- documents the gap
     merged = merge_duplicate_walls(walls)
     assert len(merged) == 5  # 4 exterior + 1 partition
+
+
+# ---------- Phase 6: corner-aware point selection + two-pass plane refit ----------
+
+from scripts.floorplan_geometry import (
+    select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
+)
+
+
+def test_refine_wall_plane_two_pass_recovers_known_plane():
+    rng = np.random.default_rng(1)
+    n = 5000
+    pts = np.column_stack([
+        rng.uniform(0, 6, n),
+        np.full(n, 0.1) + rng.normal(0, 0.002, n),
+        rng.uniform(0, 2.7, n),
+    ])
+    coarse = [0.0, 1.0, 0.0, -0.08]  # off by 20mm
+    refined = refine_wall_plane_two_pass(pts, coarse)
+    assert abs(refined[3] - (-0.1)) < 0.001
+    resid = np.abs(signed_plane_distance(pts, refined))
+    assert resid.mean() < 0.005
+
+
+def test_select_wall_band_points_and_refit_corrects_t_junction_contamination():
+    """Full-scale regression for the corner-contamination bug found during
+    design validation: without corner exclusion this measured ~96.8mm
+    (residual mean ~23mm); with select_wall_band_points's corner margin it
+    should land within 1mm of the true 100mm partition thickness."""
+    pts, _gt = two_room_house()
+    lo = np.percentile(pts, 1, axis=0) - 0.5
+    hi = np.percentile(pts, 99, axis=0) + 0.5
+    cropped = pts[np.all((pts >= lo) & (pts <= hi), axis=1)]
+
+    partition_wall = {
+        "p0": np.array([3.0, 0.0]), "p1": np.array([3.0, 5.0]), "length_m": 5.0,
+    }
+    full_height = cropped[(cropped[:, 0] > 1) & (cropped[:, 0] < 5) &
+                           (cropped[:, 1] >= 0) & (cropped[:, 1] <= 5)]
+    band_pts = select_wall_band_points(full_height, partition_wall, corner_margin_m=0.5, band_m=0.06)
+    assert len(band_pts) > 1000
+
+    d = partition_wall["p1"] - partition_wall["p0"]
+    d = d / np.linalg.norm(d)
+    normal2d = np.array([-d[1], d[0]])
+    mid = band_pts[:, 0] * normal2d[0] + band_pts[:, 1] * normal2d[1]
+    med = np.median(mid)
+    side_a, side_b = band_pts[mid < med], band_pts[mid >= med]
+
+    coarse_a = [normal2d[0], normal2d[1], 0.0, -np.dot(normal2d, side_a[:, :2].mean(axis=0))]
+    coarse_b = [normal2d[0], normal2d[1], 0.0, -np.dot(normal2d, side_b[:, :2].mean(axis=0))]
+    refined_a = refine_wall_plane_two_pass(side_a, coarse_a)
+    refined_b = refine_wall_plane_two_pass(side_b, coarse_b)
+    thickness = abs(refined_a[3] - refined_b[3])
+    assert abs(thickness - 0.1) < 0.005  # within 5mm of the true 100mm
