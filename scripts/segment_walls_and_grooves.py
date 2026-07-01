@@ -1,20 +1,20 @@
-"""Walls + rectilinear grooves for Blender.
+"""Walls + rectilinear grooves + opening frames for Blender.
 
 Grooves are rectangular, square, or L-shaped (no curves).
-  - Walls: RANSAC planes -> flat Delaunay mesh per wall (flat band only)
-  - Grooves: points off each wall plane -> wall-local axis-aligned box cells,
-    merged along U/V into rects / L-shapes
-  - Residual non-wall points -> world-axis voxel boxes (misc grooves)
+  - Walls: RANSAC vertical planes -> flat Delaunay mesh per wall (flat band only)
+  - Openings: voids in full wall inlier UV grid (doors / windows / balcony)
+  - Grooves: points off each wall plane -> wall-local axis-aligned box cells
+  - Primary output: reconstructed.obj (walls + grooves + opening frames)
 
 Usage:
-    python segment_walls_and_grooves.py [input.laz] [output_dir]
+    python segment_walls_and_grooves.py [input.laz] [output_dir] [--parts]
 
-Blender: walls/wall_*.obj, grooves/wall_*_grooves.obj, grooves/misc_grooves.obj,
-         grooves/grooves_all.obj
+With --parts: also writes walls/wall_*.obj and grooves/*.
+Always writes output_dir/reconstructed.obj and manifest.json.
 """
 
+import argparse
 import json
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -40,12 +40,19 @@ WALL_FLAT_BAND = 0.006
 GROOVE_DEVIATION_MAX = 0.015
 GROOVE_CELL_UV = 0.012
 GROOVE_CELL_DEPTH = 0.008
+OPENING_CELL = 0.08
+OPENING_FRAME_DEPTH = 0.075
+OPENING_FRAME_WIDTH = 0.05
 MIN_PLANE_POINTS = 8_000
 MAX_PLANES = 40
 RANSAC_ITERATIONS = 2_000
 MIN_GROOVE_POINTS = 80
 MIN_GROOVE_CELL_POINTS = 4
+MIN_OPENING_CELLS = 2
 MAX_POINTS = None
+
+FLOOR_NZ_MIN = 0.85
+WALL_NZ_MAX = 0.35
 
 
 def plane_basis(normal):
@@ -54,6 +61,20 @@ def plane_basis(normal):
     u = np.cross(normal, ref)
     u /= np.linalg.norm(u)
     v = np.cross(normal, u)
+    return u, v
+
+
+def wall_uv_basis(normal):
+    """U along wall, V aligned with world up projected onto the wall plane."""
+    normal = normal / np.linalg.norm(normal)
+    world_up = np.array([0.0, 0.0, 1.0])
+    v = world_up - normal * np.dot(world_up, normal)
+    if np.linalg.norm(v) < 1e-6:
+        u, v = plane_basis(normal)
+        return u, v
+    v = v / np.linalg.norm(v)
+    u = np.cross(v, normal)
+    u /= np.linalg.norm(u)
     return u, v
 
 
@@ -138,6 +159,7 @@ def extract_planes(pcd):
     planes = []
     groove_by_wall = []
     residual_parts = []
+    floor_candidates = []
     remaining = pcd
     total = len(pcd.points)
     wall_id = 0
@@ -159,9 +181,31 @@ def extract_planes(pcd):
             break
 
         plane_pcd = remaining.select_by_index(inliers)
-        wall_pcd, groove_pcd, far_pcd = split_plane_inliers(plane_pcd, plane_model)
+        n = plane_normal(plane_model)
+        nz_abs = abs(float(n[2]))
+        pts_arr = np.asarray(plane_pcd.points)
+        mean_z = float(pts_arr[:, 2].mean()) if len(pts_arr) else 0.0
 
         remaining = remaining.select_by_index(inliers, invert=True)
+
+        if nz_abs > FLOOR_NZ_MIN:
+            floor_candidates.append((mean_z, plane_model, len(pts_arr)))
+            log(
+                f"Plane {idx + 1}: floor candidate mean_z={mean_z:.3f} "
+                f"({len(inliers):,} inliers, {fraction * 100:.1f}% of cloud)"
+            )
+            continue
+
+        if nz_abs >= WALL_NZ_MAX:
+            log(
+                f"Plane {idx + 1}: skipped non-vertical (|nz|={nz_abs:.2f}); "
+                f"{len(inliers):,} inliers -> residual"
+            )
+            residual_parts.append(plane_pcd)
+            continue
+
+        wall_pcd, groove_pcd, far_pcd = split_plane_inliers(plane_pcd, plane_model)
+
         if len(far_pcd.points) > 0:
             residual_parts.append(far_pcd)
 
@@ -175,7 +219,7 @@ def extract_planes(pcd):
             continue
 
         wall_id += 1
-        planes.append((plane_model, wall_pcd))
+        planes.append((wall_id, plane_model, wall_pcd, plane_pcd))
         if len(groove_pcd.points) >= MIN_GROOVE_POINTS:
             groove_by_wall.append((wall_id, plane_model, groove_pcd))
         elif len(groove_pcd.points) > 0:
@@ -186,12 +230,17 @@ def extract_planes(pcd):
             f"{len(groove_pcd.points):,} groove ({fraction * 100:.1f}% of cloud in RANSAC)"
         )
 
+    floor_z = None
+    if floor_candidates:
+        floor_z = min(floor_candidates, key=lambda x: x[0])[0]
+        log(f"Floor Z (lowest horizontal plane mean): {floor_z:.3f} m")
+
     residual = _concat_point_clouds([remaining] + residual_parts)
     log(
         f"Extracted {len(planes)} walls, {len(groove_by_wall)} groove sets; "
         f"{len(residual.points):,} residual points"
     )
-    return planes, groove_by_wall, residual
+    return planes, groove_by_wall, residual, floor_z
 
 
 
@@ -228,6 +277,41 @@ def _merge_uv_cells(occupied_uv):
                 start = prev = iv
         rects.append((iu0, iu1, start, prev))
     return rects
+
+
+def _opening_void_cells(occupied, iu0, iu1, iv0, iv1):
+    voids = set()
+    for iu in range(iu0, iu1 + 1):
+        for iv in range(iv0, iv1 + 1):
+            if (iu, iv) in occupied:
+                continue
+            surrounded = True
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ni, nj = iu + di, iv + dj
+                if not (iu0 <= ni <= iu1 and iv0 <= nj <= iv1):
+                    surrounded = False
+                    break
+                if (ni, nj) not in occupied:
+                    surrounded = False
+                    break
+            if surrounded:
+                voids.add((iu, iv))
+    return voids
+
+
+def _classify_opening(width, height, sill):
+    if sill < 0.15 and height >= 2.0 and width >= 1.2:
+        return "balcony_door"
+    if sill < 0.15 and 1.8 <= height <= 2.4 and 0.7 <= width <= 1.3:
+        return "door"
+    if sill >= 0.5 and width >= 0.3 and height >= 0.4:
+        return "window"
+    return "unknown_opening"
+
+
+def _world_z_at_uv(origin, u, v, uu, vv):
+    p = origin + u * uu + v * vv
+    return float(p[2])
 
 
 def _append_oriented_box(mesh, p000, p100, p010, p110, p001, p101, p011, p111):
@@ -269,6 +353,94 @@ def _box_from_uv_rect(origin, u_vec, v_vec, inward, u_min, u_max, v_min, v_max, 
     mesh = o3d.geometry.TriangleMesh()
     _append_oriented_box(mesh, p000, p100, p010, p110, p001, p101, p011, p111)
     return mesh
+
+
+def _opening_frame_mesh(origin, u, v, inward, u_min, u_max, v_min, v_max):
+    """Rectilinear frame (four jambs + lintel) extruded into the wall."""
+    fw = OPENING_FRAME_WIDTH
+    depth = OPENING_FRAME_DEPTH
+    combined = o3d.geometry.TriangleMesh()
+    combined += _box_from_uv_rect(origin, u, v, inward, u_min, u_max, v_min, v_min + fw, depth)
+    combined += _box_from_uv_rect(origin, u, v, inward, u_min, u_min + fw, v_min, v_max, depth)
+    combined += _box_from_uv_rect(origin, u, v, inward, u_max - fw, u_max, v_min, v_max, depth)
+    combined += _box_from_uv_rect(origin, u, v, inward, u_min, u_max, v_max - fw, v_max, depth)
+    if len(combined.triangles) == 0:
+        return None
+    combined.remove_duplicated_vertices()
+    combined.remove_degenerate_triangles()
+    combined.compute_vertex_normals()
+    return combined
+
+
+def detect_openings_on_wall(wall_id, full_inlier_pcd, plane_model, floor_z):
+    if full_inlier_pcd is None or len(full_inlier_pcd.points) < MIN_PLANE_POINTS // 4:
+        return [], []
+
+    pts = np.asarray(full_inlier_pcd.points, dtype=np.float64)
+    n = plane_normal(plane_model)
+    u, v = wall_uv_basis(n)
+    inward = n.copy()
+
+    projected = project_to_plane(pts, plane_model)
+    origin = projected.min(axis=0)
+    rel = projected - origin
+    uv = np.column_stack([rel @ u, rel @ v])
+
+    iu = np.floor(uv[:, 0] / OPENING_CELL).astype(np.int64)
+    iv = np.floor(uv[:, 1] / OPENING_CELL).astype(np.int64)
+
+    occupied = set()
+    for k in range(len(pts)):
+        occupied.add((int(iu[k]), int(iv[k])))
+
+    if not occupied:
+        return [], []
+
+    iu0 = min(c[0] for c in occupied)
+    iu1 = max(c[0] for c in occupied)
+    iv0 = min(c[1] for c in occupied)
+    iv1 = max(c[1] for c in occupied)
+
+    void_cells = _opening_void_cells(occupied, iu0, iu1, iv0, iv1)
+    if not void_cells:
+        return [], []
+
+    rects = _merge_uv_cells(void_cells)
+    openings = []
+    frame_meshes = []
+
+    if floor_z is None:
+        floor_z = float(pts[:, 2].min())
+
+    for iu_a, iu_b, iv_a, iv_b in rects:
+        n_iu = iu_b - iu_a + 1
+        n_iv = iv_b - iv_a + 1
+        if n_iu < MIN_OPENING_CELLS or n_iv < MIN_OPENING_CELLS:
+            continue
+
+        u_min = iu_a * OPENING_CELL
+        u_max = (iu_b + 1) * OPENING_CELL
+        v_min = iv_a * OPENING_CELL
+        v_max = (iv_b + 1) * OPENING_CELL
+        width = u_max - u_min
+        height = v_max - v_min
+        sill = _world_z_at_uv(origin, u, v, (u_min + u_max) * 0.5, v_min) - floor_z
+
+        otype = _classify_opening(width, height, sill)
+        frame = _opening_frame_mesh(origin, u, v, inward, u_min, u_max, v_min, v_max)
+        if frame is not None:
+            frame_meshes.append(frame)
+
+        openings.append({
+            "wall_id": wall_id,
+            "type": otype,
+            "width_m": round(width, 3),
+            "height_m": round(height, 3),
+            "sill_m": round(sill, 3),
+            "uv_rect": [u_min, u_max, v_min, v_max],
+        })
+
+    return openings, frame_meshes
 
 
 def _max_depth_in_rect(cell_depth_max, iu0, iu1, iv0, iv1):
@@ -407,18 +579,20 @@ def combine_meshes(meshes):
 
 
 
-def main(input_path, output_dir):
+def main(input_path, output_dir, write_parts=False):
     t0 = time.time()
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     walls_dir = output_dir / "walls"
     grooves_dir = output_dir / "grooves"
-    walls_dir.mkdir(parents=True, exist_ok=True)
-    grooves_dir.mkdir(parents=True, exist_ok=True)
+    if write_parts:
+        walls_dir.mkdir(parents=True, exist_ok=True)
+        grooves_dir.mkdir(parents=True, exist_ok=True)
 
-    log("=== WALLS + RECTILINEAR GROOVES PIPELINE ===")
+    log("=== WALLS + RECTILINEAR GROOVES + OPENINGS PIPELINE ===")
     log(
         f"Voxel: {VOXEL_SIZE * 1000:.0f}mm | RANSAC: {RANSAC_DISTANCE * 1000:.0f}mm | "
-        f"groove cell: {GROOVE_CELL_UV * 1000:.0f}mm UV, {GROOVE_CELL_DEPTH * 1000:.0f}mm depth"
+        f"groove cell: {GROOVE_CELL_UV * 1000:.0f}mm UV | opening cell: {OPENING_CELL * 1000:.0f}mm"
     )
 
     pcd = load_las_as_o3d(input_path, max_points=MAX_POINTS)
@@ -429,10 +603,17 @@ def main(input_path, output_dir):
     log(f"Points for segmentation: {len(pcd.points):,}")
 
     with log_stage("RANSAC plane extraction"):
-        planes, groove_by_wall, residual_pcd = extract_planes(pcd)
+        planes, groove_by_wall, residual_pcd, floor_z = extract_planes(pcd)
+
+    if floor_z is None:
+        floor_z = float(np.asarray(pcd.points)[:, 2].min())
+        log(f"No horizontal floor plane; using cloud min Z as floor: {floor_z:.3f} m")
 
     manifest = {
+        "reconstructed": "reconstructed.obj",
+        "floor_z_m": round(floor_z, 4),
         "walls": [],
+        "openings": [],
         "grooves_by_wall": [],
         "misc_grooves": None,
         "grooves_all": None,
@@ -442,29 +623,55 @@ def main(input_path, output_dir):
             "groove_deviation_mm": GROOVE_DEVIATION_MAX * 1000,
             "groove_cell_uv_mm": GROOVE_CELL_UV * 1000,
             "groove_cell_depth_mm": GROOVE_CELL_DEPTH * 1000,
+            "opening_cell_mm": OPENING_CELL * 1000,
         },
     }
 
     all_groove_meshes = []
+    all_reconstructed_parts = []
 
-    with log_stage(f"Building {len(planes)} wall meshes"):
-        for i, (plane_model, plane_pcd) in enumerate(planes, start=1):
-            mesh = plane_cloud_to_mesh(plane_pcd, plane_model)
+    with log_stage(f"Building {len(planes)} wall meshes + opening detection"):
+        for wall_id, plane_model, wall_pcd, full_inlier_pcd in planes:
+            mesh = plane_cloud_to_mesh(wall_pcd, plane_model)
             if mesh is None or len(mesh.triangles) == 0:
-                log(f"  wall_{i:03d}: skipped (mesh build failed)")
-                continue
-            out = walls_dir / f"wall_{i:03d}.obj"
-            o3d.io.write_triangle_mesh(str(out), mesh)
-            manifest["walls"].append({
-                "file": str(out.relative_to(output_dir)),
-                "points": len(plane_pcd.points),
-                "triangles": len(mesh.triangles),
-                "plane": [float(x) for x in plane_model],
-            })
-            log(
-                f"  wall_{i:03d}.obj: {len(plane_pcd.points):,} pts, "
-                f"{len(mesh.triangles):,} tris"
+                log(f"  wall_{wall_id:03d}: skipped (mesh build failed)")
+            else:
+                all_reconstructed_parts.append(mesh)
+                wall_entry = {
+                    "wall_id": wall_id,
+                    "points": len(wall_pcd.points),
+                    "triangles": len(mesh.triangles),
+                    "plane": [float(x) for x in plane_model],
+                }
+                if write_parts:
+                    out = walls_dir / f"wall_{wall_id:03d}.obj"
+                    o3d.io.write_triangle_mesh(str(out), mesh)
+                    wall_entry["file"] = str(out.relative_to(output_dir))
+                manifest["walls"].append(wall_entry)
+                log(
+                    f"  wall_{wall_id:03d}: {len(wall_pcd.points):,} pts, "
+                    f"{len(mesh.triangles):,} tris"
+                )
+
+            wall_openings, opening_frames = detect_openings_on_wall(
+                wall_id, full_inlier_pcd, plane_model, floor_z
             )
+            for op in wall_openings:
+                manifest["openings"].append({
+                    "wall_id": op["wall_id"],
+                    "type": op["type"],
+                    "width_m": op["width_m"],
+                    "height_m": op["height_m"],
+                    "sill_m": op["sill_m"],
+                })
+            all_reconstructed_parts.extend(opening_frames)
+            if wall_openings:
+                log(
+                    f"  wall_{wall_id:03d} openings: "
+                    + ", ".join(
+                        f"{o['type']}({o['width_m']}x{o['height_m']}m)" for o in wall_openings
+                    )
+                )
 
     with log_stage(f"Rectilinear grooves on {len(groove_by_wall)} walls"):
         for wall_id, plane_model, groove_pcd in groove_by_wall:
@@ -472,15 +679,18 @@ def main(input_path, output_dir):
             rel_name = f"wall_{wall_id:03d}_grooves.obj"
             entry = {
                 "wall_id": wall_id,
-                "file": str((grooves_dir / rel_name).relative_to(output_dir)),
                 "points": len(groove_pcd.points),
                 "triangles": 0,
             }
+            if write_parts:
+                entry["file"] = str((grooves_dir / rel_name).relative_to(output_dir))
             if groove_mesh is not None:
-                out = grooves_dir / rel_name
-                o3d.io.write_triangle_mesh(str(out), groove_mesh)
+                if write_parts:
+                    out = grooves_dir / rel_name
+                    o3d.io.write_triangle_mesh(str(out), groove_mesh)
                 entry["triangles"] = len(groove_mesh.triangles)
                 all_groove_meshes.append(groove_mesh)
+                all_reconstructed_parts.append(groove_mesh)
                 log(
                     f"  {rel_name}: {len(groove_pcd.points):,} pts, "
                     f"{len(groove_mesh.triangles):,} tris"
@@ -493,30 +703,48 @@ def main(input_path, output_dir):
     with log_stage(f"World-voxel misc grooves ({residual_count:,} pts)"):
         misc_mesh = world_voxel_groove_mesh(residual_pcd) if residual_count else None
         if misc_mesh is not None:
-            misc_path = grooves_dir / "misc_grooves.obj"
-            o3d.io.write_triangle_mesh(str(misc_path), misc_mesh)
             all_groove_meshes.append(misc_mesh)
-            manifest["misc_grooves"] = {
-                "file": str(misc_path.relative_to(output_dir)),
-                "points": residual_count,
-                "triangles": len(misc_mesh.triangles),
-            }
+            all_reconstructed_parts.append(misc_mesh)
+            if write_parts:
+                misc_path = grooves_dir / "misc_grooves.obj"
+                o3d.io.write_triangle_mesh(str(misc_path), misc_mesh)
+                manifest["misc_grooves"] = {
+                    "file": str(misc_path.relative_to(output_dir)),
+                    "points": residual_count,
+                    "triangles": len(misc_mesh.triangles),
+                }
+            else:
+                manifest["misc_grooves"] = {
+                    "points": residual_count,
+                    "triangles": len(misc_mesh.triangles),
+                }
             log(
-                f"misc_grooves.obj: {residual_count:,} pts, "
+                f"misc_grooves: {residual_count:,} pts, "
                 f"{len(misc_mesh.triangles):,} tris"
             )
         else:
             log("No misc_grooves mesh (too few residual points or no dense cells)")
 
-    grooves_all = combine_meshes(all_groove_meshes)
-    if grooves_all is not None:
-        all_path = grooves_dir / "grooves_all.obj"
-        o3d.io.write_triangle_mesh(str(all_path), grooves_all)
-        manifest["grooves_all"] = {
-            "file": str(all_path.relative_to(output_dir)),
-            "triangles": len(grooves_all.triangles),
-        }
-        log(f"grooves_all.obj: {len(grooves_all.triangles):,} tris")
+    if write_parts:
+        grooves_all = combine_meshes(all_groove_meshes)
+        if grooves_all is not None:
+            all_path = grooves_dir / "grooves_all.obj"
+            o3d.io.write_triangle_mesh(str(all_path), grooves_all)
+            manifest["grooves_all"] = {
+                "file": str(all_path.relative_to(output_dir)),
+                "triangles": len(grooves_all.triangles),
+            }
+            log(f"grooves_all.obj: {len(grooves_all.triangles):,} tris")
+
+    reconstructed = combine_meshes(all_reconstructed_parts)
+    recon_path = output_dir / "reconstructed.obj"
+    if reconstructed is not None:
+        o3d.io.write_triangle_mesh(str(recon_path), reconstructed)
+        manifest["reconstructed_triangles"] = len(reconstructed.triangles)
+        log(f"reconstructed.obj: {len(reconstructed.triangles):,} triangles")
+    else:
+        manifest["reconstructed_triangles"] = 0
+        log("reconstructed.obj: empty (no meshes produced)")
 
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -524,13 +752,33 @@ def main(input_path, output_dir):
     elapsed = int(time.time() - t0)
     log(f"Done in {elapsed // 60}m {elapsed % 60}s")
     log(f"Output: {output_dir}")
-    log(
-        "Blender: walls/wall_*.obj + grooves/wall_*_grooves.obj + "
-        "grooves/misc_grooves.obj + grooves/grooves_all.obj"
+    if write_parts:
+        log("Also wrote walls/ and grooves/ (--parts)")
+    log("Primary: reconstructed.obj + manifest.json")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Segment walls, grooves, and openings.")
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default=str(DEFAULT_INPUT),
+        help="Input LAZ/LAS point cloud",
     )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Output directory",
+    )
+    parser.add_argument(
+        "--parts",
+        action="store_true",
+        help="Also write walls/wall_*.obj and grooves/* part files",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    inp = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_INPUT
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_OUTPUT_DIR
-    main(inp, out)
+    args = parse_args()
+    main(Path(args.input), Path(args.output_dir), write_parts=args.parts)
