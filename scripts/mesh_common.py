@@ -1,0 +1,186 @@
+"""Shared mesh reconstruction pipeline."""
+
+import os
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+import laspy
+import numpy as np
+import open3d as o3d
+
+ROOT = Path(__file__).resolve().parent.parent
+HEARTBEAT_SEC = 15
+
+
+@dataclass
+class MeshConfig:
+    name: str
+    voxel_size: float
+    poisson_depth: int
+    density_trim_percentile: int = 5
+    outlier_std_ratio: float = 2.0
+    crop_radius_m: float | None = None
+
+
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def fmt_elapsed(seconds):
+    seconds = int(seconds)
+    mins, secs = divmod(seconds, 60)
+    hours, mins = divmod(mins, 60)
+    if hours:
+        return f"{hours}h {mins}m {secs}s"
+    if mins:
+        return f"{mins}m {secs}s"
+    return f"{secs}s"
+
+
+@contextmanager
+def log_stage(name, heartbeat=True):
+    log(f"{name} — started")
+    t0 = time.time()
+    stop = threading.Event()
+
+    def ping():
+        while not stop.wait(HEARTBEAT_SEC):
+            log(f"{name} — still running ({fmt_elapsed(time.time() - t0)} elapsed)")
+
+    thread = None
+    if heartbeat:
+        thread = threading.Thread(target=ping, daemon=True)
+        thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if thread is not None:
+            thread.join(timeout=1)
+        log(f"{name} — done ({fmt_elapsed(time.time() - t0)})")
+
+
+def validate_las_file(path):
+    path = Path(path)
+    size = path.stat().st_size
+    with laspy.open(path) as reader:
+        header = reader.header
+        point_size = header.point_format.size
+        expected = header.offset_to_point_data + header.point_count * point_size
+    if path.suffix.lower() == ".las" and size < expected:
+        raise ValueError(
+            f"LAS file looks truncated: {size:,} bytes on disk, "
+            f"header expects at least {expected:,} bytes. Re-upload the full file."
+        )
+    return header
+
+
+def _cloud_center(las):
+    mins = np.array(las.header.mins)
+    maxs = np.array(las.header.maxs)
+    return (mins + maxs) / 2.0
+
+
+def load_las_as_o3d(path, crop_radius_m=None):
+    path = Path(path)
+    header = validate_las_file(path)
+    size = path.stat().st_size
+    with log_stage(
+        f"Loading point cloud ({size / 1e6:.1f} MB, {header.point_count:,} points in file)"
+    ):
+        las = laspy.read(path)
+        xyz = np.column_stack([las.x, las.y, las.z])
+        colors = None
+        dims = las.point_format.dimension_names
+        if "intensity" in dims:
+            gray = (np.asarray(las.intensity, dtype=np.float64) / 255.0).clip(0, 1)
+            colors = np.column_stack([gray, gray, gray])
+
+        if crop_radius_m is not None:
+            center = _cloud_center(las)
+            dist = np.linalg.norm(xyz - center, axis=1)
+            mask = dist <= crop_radius_m
+            kept = int(mask.sum())
+            log(
+                f"Spatial crop: {crop_radius_m:.1f}m radius around "
+                f"({center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}) "
+                f"-> {kept:,} / {len(xyz):,} points"
+            )
+            xyz = xyz[mask]
+            if colors is not None:
+                colors = colors[mask]
+
+    log(f"Using {xyz.shape[0]:,} points for meshing")
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    if colors is not None:
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
+
+
+def run_pipeline(input_path, output_path, config: MeshConfig):
+    pipeline_t0 = time.time()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n_threads = os.cpu_count() or 1
+    log(f"=== {config.name} ===")
+    log(
+        f"CPU threads: {n_threads} | voxel: {config.voxel_size * 1000:.1f}mm | "
+        f"poisson depth: {config.poisson_depth}"
+    )
+    if config.crop_radius_m:
+        log(f"Test patch crop: {config.crop_radius_m:.1f}m radius")
+
+    pcd = load_las_as_o3d(input_path, crop_radius_m=config.crop_radius_m)
+
+    with log_stage(f"Voxel downsampling at {config.voxel_size * 1000:.1f}mm"):
+        pcd = pcd.voxel_down_sample(voxel_size=config.voxel_size)
+    log(f"Points after downsample: {len(pcd.points):,}")
+
+    with log_stage("Statistical outlier removal"):
+        pcd, _ = pcd.remove_statistical_outlier(
+            nb_neighbors=20, std_ratio=config.outlier_std_ratio
+        )
+    log(f"Points after outlier removal: {len(pcd.points):,}")
+
+    normal_radius = config.voxel_size * 4
+    with log_stage(
+        f"Normal estimation (radius={normal_radius * 1000:.1f}mm, "
+        f"{len(pcd.points):,} points)"
+    ):
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=normal_radius, max_nn=30
+            )
+        )
+
+    with log_stage(f"Normal orientation (k=15, {len(pcd.points):,} points)"):
+        pcd.orient_normals_consistent_tangent_plane(k=15)
+
+    with log_stage(
+        f"Poisson reconstruction (depth={config.poisson_depth}, n_threads={n_threads})"
+    ):
+        with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug):
+            mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                pcd, depth=config.poisson_depth, n_threads=n_threads
+            )
+    log(f"Raw mesh: {len(mesh.vertices):,} vertices, {len(mesh.triangles):,} triangles")
+
+    with log_stage(f"Trimming lowest {config.density_trim_percentile}% confidence vertices"):
+        densities = np.asarray(densities)
+        threshold = np.percentile(densities, config.density_trim_percentile)
+        mesh.remove_vertices_by_mask(densities < threshold)
+    log(f"Trimmed mesh: {len(mesh.vertices):,} vertices, {len(mesh.triangles):,} triangles")
+
+    with log_stage("Computing vertex normals"):
+        mesh.compute_vertex_normals()
+
+    with log_stage(f"Writing {output_path}"):
+        o3d.io.write_triangle_mesh(str(output_path), mesh, write_vertex_colors=True)
+
+    log(f"Done — total wall time {fmt_elapsed(time.time() - pipeline_t0)}")
