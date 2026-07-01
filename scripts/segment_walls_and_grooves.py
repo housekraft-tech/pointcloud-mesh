@@ -35,17 +35,23 @@ DEFAULT_INPUT = ROOT / "data" / "koushikexport.laz"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "walls_and_grooves"
 
 VOXEL_SIZE = 0.015
-RANSAC_DISTANCE = 0.018
+RANSAC_DISTANCE = 0.015
 WALL_FLAT_BAND = 0.006
 GROOVE_DEVIATION_MAX = 0.015
-GROOVE_CELL_UV = 0.012
+GROOVE_CELL_UV = 0.010
 GROOVE_CELL_DEPTH = 0.008
-OPENING_CELL = 0.08
+OPENING_CELL = 0.05
+OPENING_MIN_POINTS_PER_CELL = 3
+OPENING_MIN_W = 0.45
+OPENING_MIN_H = 0.45
+OPENING_MAX_W = 4.0
+OPENING_MAX_H = 3.5
+OPENING_MAX_AREA_FRAC = 0.30
 OPENING_FRAME_DEPTH = 0.075
 OPENING_FRAME_WIDTH = 0.05
 MIN_PLANE_POINTS = 8_000
 MAX_PLANES = 40
-RANSAC_ITERATIONS = 2_000
+RANSAC_ITERATIONS = 5_000
 MIN_GROOVE_POINTS = 80
 MIN_GROOVE_CELL_POINTS = 4
 MIN_OPENING_CELLS = 2
@@ -99,6 +105,34 @@ def project_to_plane(points, plane_model):
     return pts - signed[:, None] * n
 
 
+def refine_plane_model(points, plane_model):
+    """Refine RANSAC plane with SVD least-squares fit on inliers."""
+    pts = np.asarray(points, dtype=np.float64)
+    if len(pts) < 3:
+        return list(plane_model)
+    centroid = pts.mean(axis=0)
+    centered = pts - centroid
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    normal = vh[-1].astype(np.float64)
+    n0 = plane_normal(plane_model)
+    if float(np.dot(normal, n0)) < 0.0:
+        normal = -normal
+    normal /= np.linalg.norm(normal)
+    d = -float(np.dot(normal, centroid))
+    return [float(normal[0]), float(normal[1]), float(normal[2]), d]
+
+
+def wall_local_frame(projected_points, plane_model):
+    """Origin, u, v, and per-point UV from wall_uv_basis on projected points."""
+    n = plane_normal(plane_model)
+    u, v = wall_uv_basis(n)
+    projected = np.asarray(projected_points, dtype=np.float64)
+    origin = projected.min(axis=0)
+    rel = projected - origin
+    uv = np.column_stack([rel @ u, rel @ v])
+    return origin, u, v, uv
+
+
 def split_plane_inliers(plane_pcd, plane_model):
     """Wall: |distance| <= WALL_FLAT_BAND; groove: (WALL_FLAT_BAND, GROOVE_DEVIATION_MAX]."""
     signed = signed_plane_distance(np.asarray(plane_pcd.points), plane_model)
@@ -114,16 +148,31 @@ def split_plane_inliers(plane_pcd, plane_model):
     return wall_pcd, groove_pcd, far_pcd
 
 
-def plane_cloud_to_mesh(plane_pcd, plane_model):
+def _centroid_inside_opening_rects(cu, cv, opening_uv_rects):
+    for u_min, u_max, v_min, v_max in opening_uv_rects:
+        if u_min <= cu <= u_max and v_min <= cv <= v_max:
+            return True
+    return False
+
+
+def plane_cloud_to_mesh(
+    plane_pcd,
+    plane_model,
+    origin=None,
+    u=None,
+    v=None,
+    opening_uv_rects=None,
+):
     pts = np.asarray(plane_pcd.points)
     if len(pts) < 3:
         return None
 
-    n = plane_normal(plane_model)
     projected = project_to_plane(pts, plane_model)
+    if origin is None or u is None or v is None:
+        n = plane_normal(plane_model)
+        u, v = wall_uv_basis(n)
+        origin = projected.min(axis=0)
 
-    u, v = plane_basis(n)
-    origin = projected.mean(axis=0)
     rel = projected - origin
     uv = np.column_stack([rel @ u, rel @ v])
 
@@ -132,9 +181,21 @@ def plane_cloud_to_mesh(plane_pcd, plane_model):
     except Exception:
         return None
 
+    simplices = tri.simplices
+    if opening_uv_rects:
+        keep = []
+        for simplex in simplices:
+            cu = float(uv[simplex, 0].mean())
+            cv = float(uv[simplex, 1].mean())
+            if not _centroid_inside_opening_rects(cu, cv, opening_uv_rects):
+                keep.append(simplex)
+        if not keep:
+            return None
+        simplices = np.asarray(keep, dtype=np.int32)
+
     mesh = o3d.geometry.TriangleMesh()
     mesh.vertices = o3d.utility.Vector3dVector(projected)
-    mesh.triangles = o3d.utility.Vector3iVector(tri.simplices)
+    mesh.triangles = o3d.utility.Vector3iVector(simplices)
     mesh.remove_duplicated_vertices()
     mesh.remove_degenerate_triangles()
     mesh.remove_duplicated_triangles()
@@ -181,9 +242,11 @@ def extract_planes(pcd):
             break
 
         plane_pcd = remaining.select_by_index(inliers)
+        inlier_pts = np.asarray(plane_pcd.points)
+        plane_model = refine_plane_model(inlier_pts, plane_model)
         n = plane_normal(plane_model)
         nz_abs = abs(float(n[2]))
-        pts_arr = np.asarray(plane_pcd.points)
+        pts_arr = inlier_pts
         mean_z = float(pts_arr[:, 2].mean()) if len(pts_arr) else 0.0
 
         remaining = remaining.select_by_index(inliers, invert=True)
@@ -231,8 +294,10 @@ def extract_planes(pcd):
         )
 
     floor_z = None
+    floor_plane_model = None
     if floor_candidates:
-        floor_z = min(floor_candidates, key=lambda x: x[0])[0]
+        _mean_z, floor_plane_model, _npts = min(floor_candidates, key=lambda x: x[0])
+        floor_z = _mean_z
         log(f"Floor Z (lowest horizontal plane mean): {floor_z:.3f} m")
 
     residual = _concat_point_clouds([remaining] + residual_parts)
@@ -240,7 +305,7 @@ def extract_planes(pcd):
         f"Extracted {len(planes)} walls, {len(groove_by_wall)} groove sets; "
         f"{len(residual.points):,} residual points"
     )
-    return planes, groove_by_wall, residual, floor_z
+    return planes, groove_by_wall, residual, floor_z, floor_plane_model
 
 
 
@@ -279,32 +344,51 @@ def _merge_uv_cells(occupied_uv):
     return rects
 
 
-def _opening_void_cells(occupied, iu0, iu1, iv0, iv1):
+def _opening_interior_void_cells(occupied, iu0, iu1, iv0, iv1):
+    """Empty cells not reachable from the grid border (door/window holes)."""
+    from collections import deque
+
+    exterior = set()
+    queue = deque()
+
+    def seed(iu, iv):
+        if (iu, iv) in occupied or (iu, iv) in exterior:
+            return
+        exterior.add((iu, iv))
+        queue.append((iu, iv))
+
+    for iu in range(iu0, iu1 + 1):
+        seed(iu, iv0)
+        seed(iu, iv1)
+    for iv in range(iv0, iv1 + 1):
+        seed(iu0, iv)
+        seed(iu1, iv)
+
+    while queue:
+        iu, iv = queue.popleft()
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = iu + di, iv + dj
+            if not (iu0 <= ni <= iu1 and iv0 <= nj <= iv1):
+                continue
+            if (ni, nj) in occupied or (ni, nj) in exterior:
+                continue
+            exterior.add((ni, nj))
+            queue.append((ni, nj))
+
     voids = set()
     for iu in range(iu0, iu1 + 1):
         for iv in range(iv0, iv1 + 1):
-            if (iu, iv) in occupied:
-                continue
-            surrounded = True
-            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                ni, nj = iu + di, iv + dj
-                if not (iu0 <= ni <= iu1 and iv0 <= nj <= iv1):
-                    surrounded = False
-                    break
-                if (ni, nj) not in occupied:
-                    surrounded = False
-                    break
-            if surrounded:
+            if (iu, iv) not in occupied and (iu, iv) not in exterior:
                 voids.add((iu, iv))
     return voids
 
 
 def _classify_opening(width, height, sill):
-    if sill < 0.15 and height >= 2.0 and width >= 1.2:
+    if width >= 1.0 and height >= 2.0 and sill < 0.25:
         return "balcony_door"
-    if sill < 0.15 and 1.8 <= height <= 2.4 and 0.7 <= width <= 1.3:
+    if 0.65 <= width <= 1.4 and 1.75 <= height <= 2.5 and sill < 0.25:
         return "door"
-    if sill >= 0.5 and width >= 0.3 and height >= 0.4:
+    if sill >= 0.4 and width >= OPENING_MIN_W and height >= OPENING_MIN_H:
         return "window"
     return "unknown_opening"
 
@@ -312,6 +396,29 @@ def _classify_opening(width, height, sill):
 def _world_z_at_uv(origin, u, v, uu, vv):
     p = origin + u * uu + v * vv
     return float(p[2])
+
+
+def _floor_z_at_xy(floor_plane_model, x, y):
+    a, b, c, d = floor_plane_model
+    if abs(c) < 1e-9:
+        return None
+    return float(-(a * x + b * y + d) / c)
+
+
+def _opening_sill_m(origin, u, v, u_min, u_max, v_min, floor_plane_model, floor_z_fallback):
+    bottom_corners = (
+        origin + u * u_min + v * v_min,
+        origin + u * u_max + v * v_min,
+    )
+    if floor_plane_model is not None:
+        sills = []
+        for p in bottom_corners:
+            fz = _floor_z_at_xy(floor_plane_model, float(p[0]), float(p[1]))
+            if fz is not None:
+                sills.append(float(p[2]) - fz)
+        if sills:
+            return min(sills)
+    return min(float(p[2]) for p in bottom_corners) - floor_z_fallback
 
 
 def _append_oriented_box(mesh, p000, p100, p010, p110, p001, p101, p011, p111):
@@ -372,42 +479,60 @@ def _opening_frame_mesh(origin, u, v, inward, u_min, u_max, v_min, v_max):
     return combined
 
 
-def detect_openings_on_wall(wall_id, full_inlier_pcd, plane_model, floor_z):
+def detect_openings_on_wall(
+    wall_id,
+    full_inlier_pcd,
+    plane_model,
+    floor_z,
+    floor_plane_model=None,
+):
     if full_inlier_pcd is None or len(full_inlier_pcd.points) < MIN_PLANE_POINTS // 4:
-        return [], []
+        return [], [], []
 
     pts = np.asarray(full_inlier_pcd.points, dtype=np.float64)
     n = plane_normal(plane_model)
-    u, v = wall_uv_basis(n)
     inward = n.copy()
 
-    projected = project_to_plane(pts, plane_model)
-    origin = projected.min(axis=0)
-    rel = projected - origin
+    signed = signed_plane_distance(pts, plane_model)
+    flat_mask = np.abs(signed) <= WALL_FLAT_BAND * 2.0
+    flat_pts = pts[flat_mask]
+    if len(flat_pts) < 100:
+        flat_pts = pts
+
+    projected_full = project_to_plane(pts, plane_model)
+    origin, u, v, _uv_full = wall_local_frame(projected_full, plane_model)
+
+    projected_flat = project_to_plane(flat_pts, plane_model)
+    rel = projected_flat - origin
     uv = np.column_stack([rel @ u, rel @ v])
 
+    cell_counts = defaultdict(int)
     iu = np.floor(uv[:, 0] / OPENING_CELL).astype(np.int64)
     iv = np.floor(uv[:, 1] / OPENING_CELL).astype(np.int64)
+    for k in range(len(flat_pts)):
+        cell_counts[(int(iu[k]), int(iv[k]))] += 1
 
-    occupied = set()
-    for k in range(len(pts)):
-        occupied.add((int(iu[k]), int(iv[k])))
-
+    occupied = {
+        key for key, cnt in cell_counts.items() if cnt >= OPENING_MIN_POINTS_PER_CELL
+    }
     if not occupied:
-        return [], []
+        return [], [], []
 
     iu0 = min(c[0] for c in occupied)
     iu1 = max(c[0] for c in occupied)
     iv0 = min(c[1] for c in occupied)
     iv1 = max(c[1] for c in occupied)
 
-    void_cells = _opening_void_cells(occupied, iu0, iu1, iv0, iv1)
+    wall_bbox_area = (iu1 - iu0 + 1) * OPENING_CELL * (iv1 - iv0 + 1) * OPENING_CELL
+
+    void_cells = _opening_interior_void_cells(occupied, iu0, iu1, iv0, iv1)
     if not void_cells:
-        return [], []
+        return [], [], []
 
     rects = _merge_uv_cells(void_cells)
     openings = []
     frame_meshes = []
+    opening_uv_rects = []
 
     if floor_z is None:
         floor_z = float(pts[:, 2].min())
@@ -424,9 +549,22 @@ def detect_openings_on_wall(wall_id, full_inlier_pcd, plane_model, floor_z):
         v_max = (iv_b + 1) * OPENING_CELL
         width = u_max - u_min
         height = v_max - v_min
-        sill = _world_z_at_uv(origin, u, v, (u_min + u_max) * 0.5, v_min) - floor_z
+
+        if width < OPENING_MIN_W or height < OPENING_MIN_H:
+            continue
+        if width > OPENING_MAX_W or height > OPENING_MAX_H:
+            continue
+        if width * height > OPENING_MAX_AREA_FRAC * wall_bbox_area:
+            continue
+
+        sill = _opening_sill_m(
+            origin, u, v, u_min, u_max, v_min, floor_plane_model, floor_z
+        )
 
         otype = _classify_opening(width, height, sill)
+        uv_rect = [u_min, u_max, v_min, v_max]
+        opening_uv_rects.append(uv_rect)
+
         frame = _opening_frame_mesh(origin, u, v, inward, u_min, u_max, v_min, v_max)
         if frame is not None:
             frame_meshes.append(frame)
@@ -437,10 +575,10 @@ def detect_openings_on_wall(wall_id, full_inlier_pcd, plane_model, floor_z):
             "width_m": round(width, 3),
             "height_m": round(height, 3),
             "sill_m": round(sill, 3),
-            "uv_rect": [u_min, u_max, v_min, v_max],
+            "uv_rect": uv_rect,
         })
 
-    return openings, frame_meshes
+    return openings, frame_meshes, opening_uv_rects
 
 
 def _max_depth_in_rect(cell_depth_max, iu0, iu1, iv0, iv1):
@@ -454,13 +592,13 @@ def _max_depth_in_rect(cell_depth_max, iu0, iu1, iv0, iv1):
 
 
 
-def rectilinear_groove_mesh_on_wall(groove_pcd, plane_model):
+def rectilinear_groove_mesh_on_wall(groove_pcd, plane_model, frame_origin=None, frame_u=None, frame_v=None):
     if groove_pcd is None or len(groove_pcd.points) < MIN_GROOVE_POINTS:
         return None
 
     pts = np.asarray(groove_pcd.points, dtype=np.float64)
     n = plane_normal(plane_model)
-    u, v = plane_basis(n)
+    u, v = wall_uv_basis(n)
     signed = signed_plane_distance(pts, plane_model)
     recess_sign = float(np.sign(np.median(signed)))
     if recess_sign == 0.0:
@@ -468,7 +606,13 @@ def rectilinear_groove_mesh_on_wall(groove_pcd, plane_model):
     inward = -n * recess_sign
 
     projected = project_to_plane(pts, plane_model)
-    origin = projected.min(axis=0)
+    if frame_origin is not None and frame_u is not None and frame_v is not None:
+        origin = np.asarray(frame_origin, dtype=np.float64)
+        u = np.asarray(frame_u, dtype=np.float64)
+        v = np.asarray(frame_v, dtype=np.float64)
+    else:
+        origin, u, v, _ = wall_local_frame(projected, plane_model)
+
     rel = projected - origin
     uv = np.column_stack([rel @ u, rel @ v])
     depth = np.abs(signed)
@@ -603,7 +747,7 @@ def main(input_path, output_dir, write_parts=False):
     log(f"Points for segmentation: {len(pcd.points):,}")
 
     with log_stage("RANSAC plane extraction"):
-        planes, groove_by_wall, residual_pcd, floor_z = extract_planes(pcd)
+        planes, groove_by_wall, residual_pcd, floor_z, floor_plane_model = extract_planes(pcd)
 
     if floor_z is None:
         floor_z = float(np.asarray(pcd.points)[:, 2].min())
@@ -612,6 +756,11 @@ def main(input_path, output_dir, write_parts=False):
     manifest = {
         "reconstructed": "reconstructed.obj",
         "floor_z_m": round(floor_z, 4),
+        "floor_plane": (
+            [float(x) for x in floor_plane_model]
+            if floor_plane_model is not None
+            else None
+        ),
         "walls": [],
         "openings": [],
         "grooves_by_wall": [],
@@ -630,9 +779,33 @@ def main(input_path, output_dir, write_parts=False):
     all_groove_meshes = []
     all_reconstructed_parts = []
 
+    wall_frames = {}
+
     with log_stage(f"Building {len(planes)} wall meshes + opening detection"):
         for wall_id, plane_model, wall_pcd, full_inlier_pcd in planes:
-            mesh = plane_cloud_to_mesh(wall_pcd, plane_model)
+            full_pts = np.asarray(full_inlier_pcd.points, dtype=np.float64)
+            plane_model = refine_plane_model(full_pts, plane_model)
+
+            projected_full = project_to_plane(full_pts, plane_model)
+            origin, u, v, _ = wall_local_frame(projected_full, plane_model)
+            wall_frames[wall_id] = (origin, u, v)
+
+            wall_openings, opening_frames, opening_uv_rects = detect_openings_on_wall(
+                wall_id,
+                full_inlier_pcd,
+                plane_model,
+                floor_z,
+                floor_plane_model=floor_plane_model,
+            )
+
+            mesh = plane_cloud_to_mesh(
+                wall_pcd,
+                plane_model,
+                origin=origin,
+                u=u,
+                v=v,
+                opening_uv_rects=opening_uv_rects or None,
+            )
             if mesh is None or len(mesh.triangles) == 0:
                 log(f"  wall_{wall_id:03d}: skipped (mesh build failed)")
             else:
@@ -653,9 +826,6 @@ def main(input_path, output_dir, write_parts=False):
                     f"{len(mesh.triangles):,} tris"
                 )
 
-            wall_openings, opening_frames = detect_openings_on_wall(
-                wall_id, full_inlier_pcd, plane_model, floor_z
-            )
             for op in wall_openings:
                 manifest["openings"].append({
                     "wall_id": op["wall_id"],
@@ -675,7 +845,14 @@ def main(input_path, output_dir, write_parts=False):
 
     with log_stage(f"Rectilinear grooves on {len(groove_by_wall)} walls"):
         for wall_id, plane_model, groove_pcd in groove_by_wall:
-            groove_mesh = rectilinear_groove_mesh_on_wall(groove_pcd, plane_model)
+            frame = wall_frames.get(wall_id)
+            if frame is not None:
+                origin, u, v = frame
+                groove_mesh = rectilinear_groove_mesh_on_wall(
+                    groove_pcd, plane_model, frame_origin=origin, frame_u=u, frame_v=v
+                )
+            else:
+                groove_mesh = rectilinear_groove_mesh_on_wall(groove_pcd, plane_model)
             rel_name = f"wall_{wall_id:03d}_grooves.obj"
             entry = {
                 "wall_id": wall_id,
