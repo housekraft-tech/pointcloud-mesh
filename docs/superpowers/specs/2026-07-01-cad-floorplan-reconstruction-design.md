@@ -7,6 +7,8 @@ The current pipeline has two prior stages:
 1. `reconstruct_mesh.py` (Poisson) — geometrically complete but organic/smooth, not usable as a CAD base.
 2. `segment_walls_and_grooves.py` (RANSAC planes + UV-grid cells) — attempts crisp walls/openings/grooves directly from 3D point binning, but the output is messy and not usable. This module is being replaced, not extended.
 
+Scope: the scan covers an entire house (multiple rooms, interior partition walls, corridors), not a single room. Wall/opening detection is per-wall and building-scale, so this doesn't change the core approach, but floor plan output is a flat set of wall segments + openings across the whole house — it does not attempt to segment/label individual rooms in this pass (see Non-goals).
+
 Goal: from a LiDAR/SLAM scan (LAS/LAZ), produce:
 
 - A 2D floor plan (rendered image to start; CAD vector export can follow later) with wall centerlines, thickness, and dimensions.
@@ -18,6 +20,7 @@ A related but separate future goal (explicitly out of scope for this spec) is us
 
 ## Non-goals
 
+- Room polygon segmentation/labeling (flood-filling enclosed space into named rooms with area) — deferred; this pass produces wall segments + openings across the whole house, not per-room boundaries.
 - Full parametric BIM/IFC export.
 - Curved wall reconstruction (out-of-plane construction deviations are captured as grooves, not as true curved wall surfaces).
 - The correction-layer integration with `hk-backend`/`hk-customer-webapp` (future work).
