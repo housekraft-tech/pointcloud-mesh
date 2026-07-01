@@ -333,7 +333,7 @@ def drop_short_walls(walls, min_length_m=0.3):
 
 # ---------- wall dedup/merge ----------
 
-def _walls_are_duplicates(a, b, angle_tol_deg=3.0, offset_tol_m=0.05, u_gap_tol_m=0.1):
+def _walls_are_duplicates(a, b, angle_tol_deg=3.0, offset_tol_m=0.35, u_gap_tol_m=0.1):
     d_a = _segment_dir(a)
     d_b = _segment_dir(b)
     cos_angle = abs(float(np.dot(d_a, d_b)))
@@ -356,13 +356,18 @@ def _walls_are_duplicates(a, b, angle_tol_deg=3.0, offset_tol_m=0.05, u_gap_tol_
     return gap <= u_gap_tol_m
 
 
-def merge_duplicate_walls(walls, angle_tol_deg=3.0, offset_tol_m=0.05, u_gap_tol_m=0.1):
+def merge_duplicate_walls(walls, angle_tol_deg=3.0, offset_tol_m=0.35, u_gap_tol_m=0.1):
     """Collapse near-collinear, overlapping-or-adjacent wall entries that
     describe the same physical wall run. Confirmed necessary during design
     validation: a connected wall network traced through multiple findContours
     loops (exterior boundary + one void per room) produces several duplicate
     entries per physical wall, since mutual-NN pairing is one-to-one and
-    doesn't itself deduplicate across contours."""
+    doesn't itself deduplicate across contours.
+
+    offset_tol_m defaults to pair_wall_surfaces's max_thickness_m (0.35m):
+    an "assumed" single-sided wall's centerline sits at its detected face
+    (uncentered), so vs. a "measured" duplicate of the same wall it can be
+    off by up to a full wall thickness."""
     n = len(walls)
     parent = list(range(n))
 

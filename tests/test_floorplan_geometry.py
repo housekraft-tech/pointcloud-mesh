@@ -233,33 +233,6 @@ def test_merge_duplicate_walls_collapses_collinear_overlapping_entries():
     assert kept["thickness_source"] == "measured"  # prefers the measured duplicate
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ESCALATED, not silently patched (see task-8-report.md): with the "
-        "brief's exact default tolerances (offset_tol_m=0.05), this converges "
-        "to 15 groups, not 5. Root cause diagnosed: pair_wall_surfaces's "
-        "_build_wall_from_single (Task 6, already committed) keeps a "
-        "single-sided/'assumed' wall's raw detected face position as its "
-        "'centerline' -- it is never shifted inward by half the (later, "
-        "modal-fallback) assumed thickness. So two 'assumed' duplicate "
-        "entries for the same physical wall, detected from opposite faces "
-        "across different findContours loops, can be a full wall-thickness "
-        "apart (~0.2m measured on this fixture, e.g. walls[19] vs walls[10] "
-        "perp_offset=0.205) -- 4x the default offset_tol_m=0.05. Forcing "
-        "offset_tol_m up to ~0.25 (5x default) does converge to 5 groups, but "
-        "that's a large, risky change to a shared default with no principled "
-        "safe value (real buildings can have genuinely distinct parallel "
-        "walls only ~0.2-0.3m apart, e.g. double partitions), and it still "
-        "doesn't fix the deeper issue that the surviving group representative "
-        "can be a short partial-length 'measured' sub-segment rather than the "
-        "true full wall run. Needs an architect decision: widen the default "
-        "tolerance, re-center single-face walls upstream in Task 6's "
-        "_build_wall_from_single/apply_modal_thickness_fallback (requires "
-        "knowing which side is building-interior, not currently tracked), or "
-        "another approach."
-    ),
-)
 def test_merge_duplicate_walls_full_pipeline_recovers_five_walls():
     """End-to-end regression: confirmed this fixture produces 20 raw entries
     without dedup; after merge_duplicate_walls only the 5 real walls (4
