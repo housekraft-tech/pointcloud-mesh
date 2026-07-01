@@ -15,6 +15,7 @@
 - `manifest.json` field names defined in Task 8 are the fixed contract for `validate_measurements.py` (Task 15) and any future Phase 2 plan — do not rename fields once Task 8 lands.
 - All new code targets Python 3.9+ syntax compatible with the existing codebase (`scripts/mesh_common.py` already uses `float | None` union syntax, so 3.10+ typing is fine in orchestration code, but keep `floorplan_geometry.py` free of type annotations that require imports beyond `typing`/`dataclasses` to keep it dependency-light).
 - Add `opencv-python-headless` and `pytest` to `requirements.txt` alongside the existing pins (Task 1); do not change existing pins.
+- Any sibling import between new `scripts/*.py` modules (e.g. `floorplan_reconstruct.py` importing from `floorplan_geometry.py`/`floorplan_schema.py`/`mesh_common.py`) must use the dual-mode `try: from X import Y / except ImportError: from scripts.X import Y` pattern, not a bare import alone. A bare-only sibling import resolves under direct execution (`python scripts/foo.py`, which puts `scripts/` on `sys.path`) but raises `ModuleNotFoundError` under the package-qualified import every test file in this repo uses (`from scripts.foo import ...`, which puts only the repo root on `sys.path`). Confirmed as a real, reproducible bug during Task 12's review — do not treat this as defensive over-engineering.
 
 ---
 
@@ -1698,7 +1699,10 @@ def crop_pcd_to_percentile_bounds(pcd, low_pct=1.0, high_pct=99.0, margin_m=0.5)
     raw bounding box (confirmed on real scans: 99% of points sit in a tight
     room volume while raw bbox balloons 6-7x from stray points), which was
     the dominant cause of ~30 minute Poisson reconstruction times."""
-    from floorplan_geometry import crop_to_percentile_bounds  # local import: keeps the pure module import-order independent of mesh_common
+    try:
+        from floorplan_geometry import crop_to_percentile_bounds
+    except ImportError:
+        from scripts.floorplan_geometry import crop_to_percentile_bounds
     xyz = np.asarray(pcd.points)
     _lo, _hi, keep_mask, stats = crop_to_percentile_bounds(xyz, low_pct, high_pct, margin_m)
     keep_idx = np.nonzero(keep_mask)[0]
@@ -1712,7 +1716,7 @@ def crop_pcd_to_percentile_bounds(pcd, low_pct=1.0, high_pct=99.0, margin_m=0.5)
     return cropped, stats
 ```
 
-Note: `scripts/floorplan_geometry.py` and `scripts/mesh_common.py` are siblings in the same `scripts/` directory, so `from floorplan_geometry import ...` resolves the same way the existing `segment_walls_and_grooves.py` imports `from mesh_common import ...` does.
+Note on the try/except import: a bare `from floorplan_geometry import ...` only resolves when `scripts/` itself is on `sys.path`, which is true for direct script execution (`python scripts/foo.py`, which is how `segment_walls_and_grooves.py`'s bare `from mesh_common import ...` gets away with it) but NOT for the package-qualified import this task's own test uses (`from scripts.mesh_common import ...`), which only puts the repo root on `sys.path`. The try/except handles both invocation contexts; a bare-only import would raise `ModuleNotFoundError` under the test's import path.
 
 - [ ] **Step 4: Run the test again**
 
@@ -1791,16 +1795,35 @@ from pathlib import Path
 
 import numpy as np
 
-from floorplan_geometry import (
-    crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
-    extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
-    snap_wall_endpoints, drop_short_walls, merge_duplicate_walls,
-    select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
-    plane_normal, wall_uv_basis, points_to_wall_uv,
-    detect_openings_on_wall_face, cross_check_opening_both_faces,
-    render_floorplan_image,
-)
-from floorplan_schema import Wall, Opening, new_wall_id, wall_to_dict
+try:
+    from floorplan_geometry import (
+        crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
+        extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
+        snap_wall_endpoints, drop_short_walls, merge_duplicate_walls,
+        select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
+        plane_normal, wall_uv_basis, points_to_wall_uv,
+        detect_openings_on_wall_face, cross_check_opening_both_faces,
+        render_floorplan_image,
+    )
+    from floorplan_schema import Wall, Opening, new_wall_id, wall_to_dict
+except ImportError:
+    # bare sibling import only resolves when scripts/ itself is on sys.path
+    # (direct execution: `python scripts/floorplan_reconstruct.py`). When this
+    # module is imported package-qualified instead (`from scripts.floorplan_reconstruct
+    # import ...`, the path every test in this repo uses), only the repo root is on
+    # sys.path, so fall back to the qualified form -- confirmed necessary during
+    # Task 12's review (a bare-only import raised ModuleNotFoundError under that
+    # exact import path).
+    from scripts.floorplan_geometry import (
+        crop_to_percentile_bounds, points_to_density_image, threshold_density_image,
+        extract_wall_segments, pair_wall_surfaces, apply_modal_thickness_fallback,
+        snap_wall_endpoints, drop_short_walls, merge_duplicate_walls,
+        select_wall_band_points, refine_wall_plane_two_pass, signed_plane_distance,
+        plane_normal, wall_uv_basis, points_to_wall_uv,
+        detect_openings_on_wall_face, cross_check_opening_both_faces,
+        render_floorplan_image,
+    )
+    from scripts.floorplan_schema import Wall, Opening, new_wall_id, wall_to_dict
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = ROOT / "data" / "koushikexport.las"
@@ -2094,7 +2117,10 @@ def _walls_to_obj_mesh(walls):
 
 
 def main(input_path, output_dir, config=None):
-    from mesh_common import load_las_as_o3d, recenter_pcd, log
+    try:
+        from mesh_common import load_las_as_o3d, recenter_pcd, log
+    except ImportError:
+        from scripts.mesh_common import load_las_as_o3d, recenter_pcd, log
     import open3d as o3d
 
     output_dir = Path(output_dir)
@@ -2355,8 +2381,12 @@ Usage:
 import sys
 from pathlib import Path
 
-from mesh_common import load_las_as_o3d, recenter_pcd, log
-from floorplan_reconstruct import build_floorplan_outputs, DEFAULT_CONFIG, render_floorplan_image
+try:
+    from mesh_common import load_las_as_o3d, recenter_pcd, log
+    from floorplan_reconstruct import build_floorplan_outputs, DEFAULT_CONFIG, render_floorplan_image
+except ImportError:
+    from scripts.mesh_common import load_las_as_o3d, recenter_pcd, log
+    from scripts.floorplan_reconstruct import build_floorplan_outputs, DEFAULT_CONFIG, render_floorplan_image
 import numpy as np
 import json
 
