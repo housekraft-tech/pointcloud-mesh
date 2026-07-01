@@ -4,7 +4,7 @@ import cv2
 from scripts.floorplan_geometry import (
     plane_normal, signed_plane_distance, refine_plane_model,
     wall_uv_basis, project_to_plane, points_to_wall_uv,
-    crop_to_percentile_bounds,
+    crop_to_percentile_bounds, find_dense_z_band,
     points_to_density_image, threshold_density_image,
     extract_wall_segments,
 )
@@ -79,6 +79,38 @@ def test_crop_to_percentile_bounds_drops_stray_tail_not_real_room():
 def test_crop_to_percentile_bounds_raises_on_empty_input():
     with pytest.raises(ValueError):
         crop_to_percentile_bounds(np.empty((0, 3)))
+
+
+def test_find_dense_z_band_isolates_primary_cluster_from_sparse_secondary_structure():
+    rng = np.random.default_rng(7)
+    # Primary room band: dense, 500,000 points over 2.9m.
+    primary = rng.uniform(-1.8, 1.1, 500_000)
+    # Secondary structure (e.g. another floor/stairwell/atrium): real point
+    # mass, but ~1% the density per unit height of the primary band -- mimics
+    # the >100x density cliff found on the real koushikexport.las scan.
+    secondary = rng.uniform(1.5, 8.0, 5_000)
+    z_values = np.concatenate([primary, secondary])
+    rng.shuffle(z_values)
+
+    z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, density_ratio_threshold=0.1)
+
+    assert z_min == pytest.approx(-1.8, abs=0.2)
+    assert z_max == pytest.approx(1.1, abs=0.2)
+    # Must not extend up into the secondary structure.
+    assert z_max < 1.5
+
+
+def test_find_dense_z_band_handles_single_uniform_cluster():
+    pts, _gt = two_room_house()
+    z_values = pts[:, 2]
+    # Restrict to the real wall points (drop the synthetic stray tail) so this
+    # is a clean single dense cluster with no confounding secondary structure.
+    real_z = z_values[(z_values >= -0.5) & (z_values <= 3.0)]
+
+    z_min, z_max = find_dense_z_band(real_z, bin_m=0.1, density_ratio_threshold=0.1)
+
+    assert z_min == pytest.approx(0.0, abs=0.3)
+    assert z_max == pytest.approx(2.7, abs=0.3)
 
 
 # ---------- Phase 1: density image ----------
