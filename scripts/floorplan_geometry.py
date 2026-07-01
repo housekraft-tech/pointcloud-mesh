@@ -77,3 +77,32 @@ def points_to_wall_uv(points, plane_model, origin_xyz, u_axis, v_axis=None):
     u = rel @ np.asarray(u_axis, dtype=np.float64)
     v = rel @ np.asarray(v_axis, dtype=np.float64)
     return np.column_stack([u, v])
+
+
+# ---------- Phase 0: bounding-box auto-crop ----------
+
+def crop_to_percentile_bounds(xyz, low_pct=1.0, high_pct=99.0, margin_m=0.5):
+    """Robust bounding box from per-axis percentiles + margin, dropping the
+    sparse SLAM-drift/ghost-point tail that inflates a raw min/max bbox.
+
+    Confirmed on the real koushikexport.las/mujammelexport.las scans: 99% of
+    points sit in a ~11x12x3.3m room while raw bbox balloons to 30-85m due to
+    a sparse stray tail; this recovers the tight room bounds.
+    """
+    xyz = np.asarray(xyz, dtype=np.float64)
+    if xyz.shape[0] == 0:
+        raise ValueError("crop_to_percentile_bounds: empty point array")
+    lo = np.percentile(xyz, low_pct, axis=0) - margin_m
+    hi = np.percentile(xyz, high_pct, axis=0) + margin_m
+    keep_mask = np.all((xyz >= lo) & (xyz <= hi), axis=1)
+    stats = {
+        "input_points": int(xyz.shape[0]),
+        "kept_points": int(keep_mask.sum()),
+        "dropped_points": int((~keep_mask).sum()),
+        "dropped_fraction": float((~keep_mask).sum() / xyz.shape[0]),
+        "raw_bounds_min": xyz.min(axis=0).tolist(),
+        "raw_bounds_max": xyz.max(axis=0).tolist(),
+        "cropped_bounds_min": lo.tolist(),
+        "cropped_bounds_max": hi.tolist(),
+    }
+    return lo, hi, keep_mask, stats

@@ -1,8 +1,11 @@
 import numpy as np
+import pytest
 from scripts.floorplan_geometry import (
     plane_normal, signed_plane_distance, refine_plane_model,
     wall_uv_basis, project_to_plane, points_to_wall_uv,
+    crop_to_percentile_bounds,
 )
+from tests.fixtures import two_room_house
 
 
 def test_plane_normal_normalizes():
@@ -57,3 +60,19 @@ def test_points_to_wall_uv_shape_and_v_is_height():
     assert uv.shape == (2, 2)
     assert np.allclose(uv[:, 0], [1.0, 2.0])  # u = along wall (y here)
     assert np.allclose(uv[:, 1], [2.0, 2.5])  # v = world-up height
+
+
+# ---------- Phase 0: bounding-box auto-crop ----------
+
+def test_crop_to_percentile_bounds_drops_stray_tail_not_real_room():
+    pts, _gt = two_room_house()
+    lo, hi, keep_mask, stats = crop_to_percentile_bounds(pts, low_pct=1.0, high_pct=99.0, margin_m=0.5)
+    assert stats["dropped_fraction"] < 0.01
+    assert lo[0] < 0.0 and hi[0] > 6.0  # room x-extent [0,6] preserved with margin
+    assert lo[1] < 0.0 and hi[1] > 5.0  # room y-extent [0,5] preserved with margin
+    assert lo[2] < 0.0 and hi[2] > 2.7  # room z-extent [0,2.7] preserved with margin
+
+
+def test_crop_to_percentile_bounds_raises_on_empty_input():
+    with pytest.raises(ValueError):
+        crop_to_percentile_bounds(np.empty((0, 3)))
