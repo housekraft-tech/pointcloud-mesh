@@ -1,3 +1,4 @@
+lazrs>=0.5.0
 laspy==2.7.0
 numpy>=2.2.0,<2.3; python_version < "3.11"
 numpy>=2.4.0; python_version >= "3.11"

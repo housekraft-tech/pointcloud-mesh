@@ -36,7 +36,8 @@ def validate_las_file(path):
         header = reader.header
         point_size = header.point_format.size
         expected = header.offset_to_point_data + header.point_count * point_size
-    if size < expected:
+    # LAZ is compressed on disk; only check raw byte size for uncompressed LAS.
+    if path.suffix.lower() == ".las" and size < expected:
         raise ValueError(
             f"LAS file looks truncated: {size:,} bytes on disk, "
             f"header expects at least {expected:,} bytes "
