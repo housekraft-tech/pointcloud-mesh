@@ -106,3 +106,24 @@ def crop_to_percentile_bounds(xyz, low_pct=1.0, high_pct=99.0, margin_m=0.5):
         "cropped_bounds_max": hi.tolist(),
     }
     return lo, hi, keep_mask, stats
+
+
+# ---------- Phase 1: density image ----------
+
+def points_to_density_image(xy, cell_size_m, bounds_min, bounds_max):
+    xy = np.asarray(xy, dtype=np.float64)
+    width = int(np.ceil((bounds_max[0] - bounds_min[0]) / cell_size_m)) + 1
+    height = int(np.ceil((bounds_max[1] - bounds_min[1]) / cell_size_m)) + 1
+    ix = np.floor((xy[:, 0] - bounds_min[0]) / cell_size_m).astype(np.int64)
+    iy = np.floor((xy[:, 1] - bounds_min[1]) / cell_size_m).astype(np.int64)
+    valid = (ix >= 0) & (ix < width) & (iy >= 0) & (iy < height)
+    image = np.zeros((height, width), dtype=np.uint16)
+    np.add.at(image, (iy[valid], ix[valid]), 1)
+    origin = np.array([bounds_min[0], bounds_min[1]], dtype=np.float64)
+    return image, origin
+
+
+def threshold_density_image(image, min_count=2, morph_kernel=3):
+    binary = (image >= min_count).astype(np.uint8) * 255
+    kernel = np.ones((morph_kernel, morph_kernel), np.uint8)
+    return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)

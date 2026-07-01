@@ -4,6 +4,7 @@ from scripts.floorplan_geometry import (
     plane_normal, signed_plane_distance, refine_plane_model,
     wall_uv_basis, project_to_plane, points_to_wall_uv,
     crop_to_percentile_bounds,
+    points_to_density_image, threshold_density_image,
 )
 from tests.fixtures import two_room_house
 
@@ -76,3 +77,21 @@ def test_crop_to_percentile_bounds_drops_stray_tail_not_real_room():
 def test_crop_to_percentile_bounds_raises_on_empty_input():
     with pytest.raises(ValueError):
         crop_to_percentile_bounds(np.empty((0, 3)))
+
+
+# ---------- Phase 1: density image ----------
+
+def test_points_to_density_image_counts_correctly():
+    xy = np.array([[0.0, 0.0], [0.01, 0.01], [0.5, 0.5]])
+    image, origin = points_to_density_image(xy, cell_size_m=0.02, bounds_min=[0, 0], bounds_max=[1, 1])
+    assert image[0, 0] == 2  # first two points land in the same cell
+    assert np.allclose(origin, [0.0, 0.0])
+
+
+def test_threshold_density_image_drops_sparse_cells():
+    image = np.zeros((5, 5), dtype=np.uint16)
+    image[2, 2] = 5  # dense
+    image[0, 0] = 1  # sparse, below threshold
+    binary = threshold_density_image(image, min_count=2, morph_kernel=1)
+    assert binary[2, 2] == 255
+    assert binary[0, 0] == 0
