@@ -1,7 +1,7 @@
-"""Full-scan high-detail mesh — finer than the original 15mm pipeline.
+"""Full-scan production mesh at native point spacing (~15mm).
 
-8mm voxels, Poisson depth 11 on the entire cloud (~30-90 min on 32-core VM).
-Run reconstruct_mesh_test.py first to validate quality on a small patch.
+15mm voxels, Poisson depth 10 — matched to ~4.4M points after downsample.
+Run reconstruct_mesh_test.py first to verify the pipeline (~20-30 min on 32-core VM).
 
 Usage:
     python scripts/reconstruct_mesh_detail.py [input.laz] [output.obj]
@@ -16,11 +16,11 @@ DEFAULT_INPUT = ROOT / "data" / "koushikexport.laz"
 DEFAULT_OUTPUT = ROOT / "output" / "mesh_detail.obj"
 
 DETAIL_CONFIG = MeshConfig(
-    name="FULL DETAIL (8mm voxel, depth 11)",
-    voxel_size=0.008,
-    poisson_depth=11,
+    name="FULL DETAIL (15mm voxel, depth 10)",
+    voxel_size=0.015,
+    poisson_depth=10,
     density_trim_percentile=5,
-    outlier_std_ratio=2.5,
+    outlier_std_ratio=2.0,
     crop_radius_m=None,
 )
 
