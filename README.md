@@ -7,6 +7,9 @@ LAS point cloud → cleaned mesh (OBJ) via Open3D.
 1. `analyze_las.py` — inspect LAS header, attributes, point spacing
 2. `reconstruct_mesh.py` — voxel downsample → outlier removal → normals → Poisson → OBJ
 3. `obj_to_fbx.py` — optional Blender headless OBJ → FBX conversion
+4. `floorplan_geometry.py` + `floorplan_reconstruct.py` — Phase 0 (bounding-box auto-crop) + Phase 1 (density-image wall/opening detection) → `manifest.json`, `floorplan.png`, `reconstructed.obj`. Replaces `segment_walls_and_grooves.py`.
+5. `floorplan_reconstruct_test.py` — fast test-patch smoke test (small crop + point cap), same pattern as `reconstruct_mesh_test.py`
+6. `validate_measurements.py` — diff hand tape-measured ground truth against `manifest.json`, report per-measurement mm error
 
 ## Local setup
 
