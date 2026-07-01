@@ -229,3 +229,80 @@ def build_floorplan_outputs(xyz, config=None):
 
 def _wall_manifest_entry(wall):
     return wall_to_dict(wall)
+
+
+def _walls_to_obj_mesh(walls):
+    import open3d as _o3d  # local import: keeps build_floorplan_outputs/pure functions open3d-free
+    combined = _o3d.geometry.TriangleMesh()
+    for wall in walls:
+        d = np.array(wall.p1) - np.array(wall.p0)
+        length = np.linalg.norm(d)
+        if length < 1e-6:
+            continue
+        d = d / length
+        n = np.array([-d[1], d[0]])
+        half_t = wall.thickness_m / 2.0
+        p0, p1 = np.array(wall.p0), np.array(wall.p1)
+        z0, z1 = wall.floor_z_m, wall.ceiling_z_m
+        corners_2d = [p0 - n * half_t, p1 - n * half_t, p1 + n * half_t, p0 + n * half_t]
+        verts = []
+        for cx, cy in corners_2d:
+            verts.append([cx, cy, z0])
+        for cx, cy in corners_2d:
+            verts.append([cx, cy, z1])
+        mesh = _o3d.geometry.TriangleMesh()
+        mesh.vertices = _o3d.utility.Vector3dVector(verts)
+        # side faces (4 walls of the box) + top/bottom caps, 2 triangles each
+        faces = [
+            [0, 1, 4], [1, 5, 4], [1, 2, 5], [2, 6, 5],
+            [2, 3, 6], [3, 7, 6], [3, 0, 7], [0, 4, 7],
+            [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+        ]
+        mesh.triangles = _o3d.utility.Vector3iVector(faces)
+        combined += mesh
+    if len(combined.triangles) > 0:
+        combined.remove_duplicated_vertices()
+        combined.compute_vertex_normals()
+    return combined
+
+
+def main(input_path, output_dir, config=None):
+    try:
+        from mesh_common import load_las_as_o3d, recenter_pcd, log
+    except ImportError:
+        from scripts.mesh_common import load_las_as_o3d, recenter_pcd, log
+    import open3d as o3d
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config = config or DEFAULT_CONFIG
+
+    pcd = load_las_as_o3d(Path(input_path))
+    recenter_pcd(pcd)
+    xyz = np.asarray(pcd.points)
+
+    manifest, walls = build_floorplan_outputs(xyz, config)
+    log(f"Detected {manifest['wall_count']} walls")
+
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    openings_by_wall_id = {i: [op.__dict__ if hasattr(op, "__dict__") else op for op in w.openings]
+                            for i, w in enumerate(walls)}
+    wall_dicts = [{"p0": np.array(w.p0), "p1": np.array(w.p1),
+                   "thickness_m": w.thickness_m, "length_m": w.length_m} for w in walls]
+    render_floorplan_image(wall_dicts, openings_by_wall_id, str(output_dir / "floorplan.png"))
+
+    obj_mesh = _walls_to_obj_mesh(walls)
+    obj_path = output_dir / "reconstructed.obj"
+    if len(obj_mesh.triangles) > 0:
+        o3d.io.write_triangle_mesh(str(obj_path), obj_mesh)
+    else:
+        obj_path.write_text("")  # empty but present, so downstream tooling doesn't error on a missing file
+    log(f"Wrote {manifest_path}, floorplan.png, {obj_path}")
+
+
+if __name__ == "__main__":
+    inp = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_INPUT
+    outp = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUTPUT_DIR
+    main(inp, outp)
