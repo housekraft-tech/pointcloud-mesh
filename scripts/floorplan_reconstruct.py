@@ -5,6 +5,7 @@ Usage:
 """
 import sys
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -98,15 +99,30 @@ def _detect_wall_segments(xyz, config):
     # DEFAULT_CONFIG for why this matters on real data.
     if config.get("z_band_override") is not None:
         z_min, z_max = config["z_band_override"]
+        z_band_source = "override"
     else:
+        # Auto-detection has been confirmed, across several real-scan validation
+        # rounds, to not reliably generalize (peak-relative and absolute-threshold
+        # versions each failed differently on real data -- see find_dense_z_band's
+        # docstring). Surfaced loudly rather than silently trusted, since this
+        # gates every downstream wall/opening measurement.
+        warnings.warn(
+            "No z_band_override set -- auto-detecting the story Z-band via "
+            "find_dense_z_band, which has NOT proven reliable across different "
+            "real scans/sampling densities. For real data, determine the band "
+            "from this scan's own Z-histogram (see scripts/find_z_band.py) and "
+            "pass it explicitly.",
+            RuntimeWarning, stacklevel=2,
+        )
         z_min, z_max = find_dense_z_band(
             xyz[:, 2], bin_m=config["z_band_bin_m"], min_bin_points=config["z_band_min_bin_points"],
         )
+        z_band_source = "auto_detected"
     band_hi = z_max - config["ceiling_offset_m"]
     band_lo = band_hi - config["ceiling_band_m"]
     ceiling_slice = xyz[(xyz[:, 2] >= band_lo) & (xyz[:, 2] <= band_hi)]
     if len(ceiling_slice) < 100:
-        return [], z_min, z_max
+        return [], z_min, z_max, z_band_source
 
     xy = ceiling_slice[:, :2]
     bmin, bmax = xy.min(axis=0) - 0.1, xy.max(axis=0) + 0.1
@@ -118,7 +134,7 @@ def _detect_wall_segments(xyz, config):
     )
     min_len = config["min_segment_length_cells"] * config["cell_size_m"]
     segments = [s for s in segments if s["length"] >= min_len]
-    return segments, z_min, z_max
+    return segments, z_min, z_max, z_band_source
 
 
 def _build_walls_from_segments(segments, config):
@@ -165,9 +181,30 @@ def _refine_wall(wall_raw, full_height, floor_z, ceiling_z, config, index):
         side_a_pts, coarse_a, config["refit_coarse_band_m"], config["refit_fine_band_m"],
     )
 
+    # Verticality guard, found necessary via real-scan validation: the refit can
+    # converge to a plane whose normal is nearly straight up/down (a horizontal
+    # surface -- floor, furniture top, ledge -- not a wall) if the search band's
+    # points happen to be dominated by such clutter rather than a real vertical
+    # wall face. Confirmed on real data: a single-sided "assumed" wall passed
+    # through with plane_front normal (0.013, 0.020, -0.9997) -- i.e. essentially
+    # horizontal, not a wall at all. The two-sided thickness-plausibility guard
+    # doesn't catch this since it only compares two candidate planes; a
+    # single-sided wall has no second plane to compare against. A real vertical
+    # wall's normal should be near-horizontal (|nz| close to 0); reject anything
+    # more than ~30 degrees off-plumb (|nz| > 0.5) as not a wall at all.
+    if abs(plane_a[2]) > 0.5:
+        return None
+
+    # Final thickness_source is one of three states, not the raw pairing dict's
+    # two-state "measured"/"assumed" -- confirmed via review that collapsing a
+    # guard-rejected 3D refit back into the pairing stage's own "measured" was
+    # ambiguous: it left thickness_source=="measured" co-occurring with
+    # plane_back is None, contradicting the documented schema contract and
+    # giving a manifest consumer no way to tell "two-plane-verified" apart from
+    # "coarser 2D pairing only, 3D refit unavailable/rejected."
     plane_b = None
     thickness_m = wall_raw["thickness_m"]
-    thickness_source = wall_raw["thickness_source"]
+    thickness_source = "measured_2d" if wall_raw["thickness_source"] == "measured" else "assumed"
     if len(side_b_pts) >= 20:
         coarse_b = [normal2d[0], normal2d[1], 0.0, -float(np.dot(normal2d, side_b_pts[:, :2].mean(axis=0)))]
         plane_b_candidate = refine_wall_plane_two_pass(
@@ -195,7 +232,7 @@ def _refine_wall(wall_raw, full_height, floor_z, ceiling_z, config, index):
         if normals_parallel and thickness_plausible:
             plane_b = plane_b_candidate
             thickness_m = candidate_thickness
-            thickness_source = "measured"
+            thickness_source = "measured_3d"
 
     origin_xyz = np.array([wall_raw["p0"][0], wall_raw["p0"][1], floor_z])
     u_axis = np.array([d[0], d[1], 0.0])
@@ -257,9 +294,12 @@ def build_floorplan_outputs(xyz, config=None):
     )
     cropped = xyz[keep_mask]
 
-    segments, floor_z, ceiling_z = _detect_wall_segments(cropped, config)
+    segments, floor_z, ceiling_z, z_band_source = _detect_wall_segments(cropped, config)
     if not segments:
-        return {"wall_count": 0, "walls": [], "floor_z_m": floor_z, "ceiling_z_m": ceiling_z}, []
+        return {
+            "wall_count": 0, "walls": [], "floor_z_m": floor_z, "ceiling_z_m": ceiling_z,
+            "z_band_source": z_band_source,
+        }, []
 
     walls_raw = _build_walls_from_segments(segments, config)
 
@@ -287,6 +327,7 @@ def build_floorplan_outputs(xyz, config=None):
         "wall_count": len(walls),
         "floor_z_m": floor_z,
         "ceiling_z_m": ceiling_z,
+        "z_band_source": z_band_source,
         "walls": [_wall_manifest_entry(w) for w in walls],
     }
     return manifest, walls
@@ -331,23 +372,37 @@ def _walls_to_obj_mesh(walls):
     return combined
 
 
-def main(input_path, output_dir, config=None):
+def main(input_path, output_dir, config=None, z_band=None):
     try:
-        from mesh_common import load_las_as_o3d, recenter_pcd, log
+        from mesh_common import load_las_as_o3d, recenter_pcd, log, log_stage
     except ImportError:
-        from scripts.mesh_common import load_las_as_o3d, recenter_pcd, log
+        from scripts.mesh_common import load_las_as_o3d, recenter_pcd, log, log_stage
     import open3d as o3d
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    config = config or DEFAULT_CONFIG
+    config = dict(config) if config else dict(DEFAULT_CONFIG)
+    if z_band is not None:
+        config["z_band_override"] = tuple(z_band)
 
-    pcd = load_las_as_o3d(Path(input_path))
-    recenter_pcd(pcd)
-    xyz = np.asarray(pcd.points)
+    if config.get("z_band_override") is not None:
+        log(f"Using manually-specified z-band override: {config['z_band_override']}")
+    else:
+        log(
+            "WARNING: no --z-band given; auto-detecting the story Z-band. "
+            "Auto-detection has NOT proven reliable across different real scans -- "
+            "run scripts/find_z_band.py first and pass --z-band z_min,z_max if this "
+            "produces 0 walls or an implausible result."
+        )
 
-    manifest, walls = build_floorplan_outputs(xyz, config)
-    log(f"Detected {manifest['wall_count']} walls")
+    with log_stage(f"Loading {input_path}"):
+        pcd = load_las_as_o3d(Path(input_path))
+        recenter_pcd(pcd)
+        xyz = np.asarray(pcd.points)
+
+    with log_stage(f"Reconstructing floor plan ({len(xyz):,} points)"):
+        manifest, walls = build_floorplan_outputs(xyz, config)
+    log(f"Detected {manifest['wall_count']} walls (z_band_source={manifest['z_band_source']})")
 
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -358,16 +413,34 @@ def main(input_path, output_dir, config=None):
                    "thickness_m": w.thickness_m, "length_m": w.length_m} for w in walls]
     render_floorplan_image(wall_dicts, openings_by_wall_id, str(output_dir / "floorplan.png"))
 
-    obj_mesh = _walls_to_obj_mesh(walls)
-    obj_path = output_dir / "reconstructed.obj"
-    if len(obj_mesh.triangles) > 0:
-        o3d.io.write_triangle_mesh(str(obj_path), obj_mesh)
-    else:
-        obj_path.write_text("")  # empty but present, so downstream tooling doesn't error on a missing file
+    with log_stage("Building OBJ mesh"):
+        obj_mesh = _walls_to_obj_mesh(walls)
+        obj_path = output_dir / "reconstructed.obj"
+        if len(obj_mesh.triangles) > 0:
+            o3d.io.write_triangle_mesh(str(obj_path), obj_mesh)
+        else:
+            obj_path.write_text("")  # empty but present, so downstream tooling doesn't error on a missing file
     log(f"Wrote {manifest_path}, floorplan.png, {obj_path}")
 
 
+def _parse_z_band(value):
+    if value is None:
+        return None
+    parts = value.split(",")
+    if len(parts) != 2:
+        raise ValueError(f"--z-band expects 'z_min,z_max', got: {value!r}")
+    return float(parts[0]), float(parts[1])
+
+
 if __name__ == "__main__":
-    inp = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_INPUT
-    outp = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUTPUT_DIR
-    main(inp, outp)
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", nargs="?", default=str(DEFAULT_INPUT))
+    parser.add_argument("output_dir", nargs="?", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--z-band", type=_parse_z_band, default=None, metavar="Z_MIN,Z_MAX",
+        help="Manually-determined story Z-band (recentered frame), bypassing auto-detection. "
+             "Strongly recommended for real scans -- see scripts/find_z_band.py.",
+    )
+    args = parser.parse_args()
+    main(args.input, args.output_dir, z_band=args.z_band)

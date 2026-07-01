@@ -185,6 +185,19 @@ def test_find_dense_z_band_excludes_genuinely_sparse_noise_not_real_structure():
     assert z_max == pytest.approx(1.1, abs=0.02)
 
 
+def test_find_dense_z_band_warns_on_silent_collapse_to_raw_extrema():
+    """Regression test found during design review: when no bin clears
+    min_bin_points at all (e.g. a globally very sparse point cloud), falling
+    back to raw min/max silently reintroduces the exact unbounded-stray-outlier
+    problem this function exists to solve. This must be surfaced as a
+    RuntimeWarning, not silently swallowed."""
+    z_values = np.array([0.0, 0.05, 2.65, 2.7, -30.0, 50.0])  # far too sparse for any bin to reach 5 points
+    with pytest.warns(RuntimeWarning, match="z_band_override"):
+        z_min, z_max = find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5)
+    assert z_min == -30.0
+    assert z_max == 50.0
+
+
 # ---------- Phase 1: density image ----------
 
 def test_points_to_density_image_counts_correctly():

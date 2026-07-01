@@ -7,6 +7,7 @@ the open3d-facing wrapper lives in mesh_common.py.
 """
 import numpy as np
 import cv2
+import warnings
 from collections import defaultdict, deque
 
 
@@ -162,6 +163,17 @@ def find_dense_z_band(z_values, bin_m=0.1, min_bin_points=5):
     if start is not None:
         runs.append((start, len(occupied) - 1))
     if not runs:
+        # No bin cleared min_bin_points at all -- e.g. a globally very sparse
+        # point cloud. Falling back to raw min/max silently reintroduces the
+        # exact unbounded-stray-outlier problem this function exists to solve
+        # (confirmed as a real, reachable path during design review), so this
+        # is surfaced loudly rather than silently trusted.
+        warnings.warn(
+            "find_dense_z_band: no bin met min_bin_points threshold; falling back to "
+            "raw point extrema, which may include unbounded stray outliers. Consider "
+            "z_band_override for this scan.",
+            RuntimeWarning, stacklevel=2,
+        )
         return float(z_values.min()), float(z_values.max())
 
     run_totals = [(int(counts[a:b + 1].sum()), a, b) for a, b in runs]

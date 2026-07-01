@@ -8,8 +8,17 @@ LAS point cloud → cleaned mesh (OBJ) via Open3D.
 2. `reconstruct_mesh.py` — voxel downsample → outlier removal → normals → Poisson → OBJ
 3. `obj_to_fbx.py` — optional Blender headless OBJ → FBX conversion
 4. `floorplan_geometry.py` + `floorplan_reconstruct.py` — Phase 0 (bounding-box auto-crop) + Phase 1 (density-image wall/opening detection) → `manifest.json`, `floorplan.png`, `reconstructed.obj`. Replaces `segment_walls_and_grooves.py`.
-5. `floorplan_reconstruct_test.py` — fast test-patch smoke test (small crop + point cap), same pattern as `reconstruct_mesh_test.py`
-6. `validate_measurements.py` — diff hand tape-measured ground truth against `manifest.json`, report per-measurement mm error
+5. `find_z_band.py` — inspect a scan's Z-density histogram to pick its primary story's Z-band by eye. **Run this before `floorplan_reconstruct.py` on any real scan** — automatic Z-band detection has not proven reliable across different real scans/sampling densities (see `floorplan_geometry.find_dense_z_band`'s docstring); `floorplan_reconstruct.py` warns loudly if run without `--z-band`.
+6. `floorplan_reconstruct_test.py` — fast test-patch smoke test (small crop + point cap), same pattern as `reconstruct_mesh_test.py`
+7. `validate_measurements.py` — diff hand tape-measured ground truth against `manifest.json`, report per-measurement mm error
+
+### Real-scan usage
+
+```bash
+python scripts/find_z_band.py data/koushikexport.las
+# inspect the printed histogram, pick z_min/z_max bracketing one story's floor/ceiling spikes
+python scripts/floorplan_reconstruct.py data/koushikexport.las output/koushik --z-band -1.63,1.09
+```
 
 ## Local setup
 

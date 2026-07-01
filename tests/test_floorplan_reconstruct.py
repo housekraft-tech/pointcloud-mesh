@@ -18,6 +18,14 @@ def test_build_floorplan_outputs_recovers_five_walls_and_two_openings():
     assert abs(thicknesses_mm[0] - 100) < 5
     assert all(abs(t - 200) < 5 for t in thicknesses_mm[1:])
 
+    # Clean, well-separated synthetic walls should all reach the highest-confidence
+    # two-plane-verified state, each with a real plane_back -- the schema invariant
+    # a real-scan bug found violated (thickness_source=="measured" co-occurring
+    # with plane_back is None).
+    for w in walls:
+        assert w.thickness_source == "measured_3d"
+        assert w.plane_back is not None
+
 
 def test_build_floorplan_outputs_handles_zero_walls_gracefully():
     empty_room_pts = np.random.default_rng(0).normal(0, 0.01, size=(50, 3))  # too few/sparse to form any wall
@@ -87,6 +95,34 @@ def test_refine_wall_rejects_implausible_thickness_from_non_parallel_refit():
 
     # Must NOT accept the implausible non-parallel-plane "thickness"; must fall
     # back to the wall's original coarse thickness/source instead.
-    assert wall.thickness_source != "measured"
+    assert wall.thickness_source != "measured_3d"
     assert wall.thickness_m == wall_raw["thickness_m"]
     assert wall.plane_back is None
+
+
+def test_refine_wall_rejects_horizontal_surface_masquerading_as_wall():
+    """Regression test for a real-scan bug found via adversarial cross-check:
+    a single-sided ('assumed') wall's search band can be dominated by
+    horizontal clutter (a floor, furniture top, or ledge) rather than a real
+    vertical wall face -- select_wall_band_points only filters by 2D
+    perpendicular distance, not by whether the points actually form a
+    vertical surface. Confirmed on real data: a wall passed through with
+    plane_front normal (0.013, 0.020, -0.9997) -- i.e. essentially
+    horizontal, not a wall at all. This must be rejected outright (the wall
+    dropped), not reported as a wall with a bogus orientation."""
+    rng = np.random.default_rng(9)
+    wall_raw = {
+        "p0": np.array([0.0, 0.0]), "p1": np.array([5.0, 0.0]), "length_m": 5.0,
+        "thickness_m": 0.1, "thickness_source": "assumed",
+    }
+    # A horizontal surface: points spread across X (along the "wall") and a
+    # narrow Y band (within the search band), but with Z nearly constant --
+    # a floor/furniture-top plane, normal ~[0,0,1], not a vertical wall.
+    x = rng.uniform(1.0, 4.0, 3000)
+    y = rng.uniform(-0.05, 0.05, 3000)
+    z = np.full(3000, 1.2) + rng.normal(0, 0.002, 3000)
+    full_height = np.column_stack([x, y, z])
+    config = dict(DEFAULT_CONFIG)
+
+    result = _refine_wall(wall_raw, full_height, floor_z=0.0, ceiling_z=2.7, config=config, index=0)
+    assert result is None

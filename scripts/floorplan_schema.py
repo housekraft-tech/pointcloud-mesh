@@ -23,9 +23,15 @@ class Wall:
     p1: tuple
     length_m: float
     thickness_m: float
-    thickness_source: str  # "measured" | "assumed"
+    thickness_source: str  # "measured_3d" (two independently-fit, near-parallel planes -- highest
+                            # confidence) | "measured_2d" (top-down density-image pairing only; a 3D
+                            # two-plane refit was attempted and rejected as implausible, or never
+                            # attempted) | "assumed" (single-sided wall, modal-thickness fallback).
+                            # A cutlist consumer should treat only "measured_3d" as high-confidence;
+                            # "measured_2d" is real data but coarser than this pipeline's normal
+                            # accuracy bar.
     plane_front: list  # [a, b, c, d] of the front face
-    plane_back: list  # [a, b, c, d] of the back face, or None if thickness_source == "assumed"
+    plane_back: list  # [a, b, c, d] of the back face, or None whenever thickness_source != "measured_3d"
     origin_xyz: tuple  # wall-local frame origin used for u/v projection
     u_axis: tuple
     v_axis: tuple
