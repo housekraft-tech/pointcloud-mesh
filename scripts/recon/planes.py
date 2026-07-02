@@ -35,6 +35,7 @@ def detect_planes(
     z_ceiling: float = None,
     horizontal_min: float = 0.85,
     ransac_iters: int = 1000,
+    seed: int | None = 0,
 ) -> list:
     """Detect planar patches by peeling RANSAC planes, splitting each into
     spatially-disjoint faces with DBSCAN. Returns a list[Plane] with normalized
@@ -43,6 +44,9 @@ def detect_planes(
     normals is accepted for API symmetry but unused (segment_plane needs none).
     """
     import open3d as o3d
+
+    if seed is not None:
+        o3d.utility.random.seed(seed)
 
     xyz = np.asarray(xyz, dtype=float)
     if z_floor is None:

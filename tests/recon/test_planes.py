@@ -39,3 +39,12 @@ def test_detect_planes_on_modular_house():
     assert "floor" in labels
     assert "ceiling" in labels
     assert labels.count("vertical") >= 4  # at least the 4 exterior walls
+
+
+def test_detect_planes_accepts_seed_param():
+    import inspect
+    from scripts.recon.planes import detect_planes
+
+    sig = inspect.signature(detect_planes)
+    assert "seed" in sig.parameters
+    assert sig.parameters["seed"].default == 0
