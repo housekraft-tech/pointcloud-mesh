@@ -461,6 +461,62 @@ def test_modular_house_openings_end_to_end():
 
 ---
 
+## Architecture Revision R1 (2026-07-02, after room-wise preview v5 review)
+
+User-approved restructuring — Tasks 8 and 9 implement this shape; it supersedes
+their original element-dict framing where the two conflict:
+
+1. **Walls own their features; rooms own wall segments.** A wall is not meshed
+   per room edge (that produced duplicate/fragmented panels). Instead:
+
+```python
+@dataclass
+class Feature:            # one detected plane / relief element on a wall
+    kind: str             # "face" | "groove" | "l_extrusion" | "beam_soffit"
+                          #   | "column_attach" | "opening"
+    u_min_m: float        # wall's own 1D u coordinate (NOT XY-clipped)
+    u_max_m: float
+    z_min_m: float
+    z_max_m: float
+    offset_m: float       # signed depth from the wall's reference face
+    meta: dict = field(default_factory=dict)  # e.g. opening type, walked=True
+
+@dataclass
+class WallSegment:        # the unit that becomes exactly ONE GLB mesh
+    wall_id: str
+    room_id: str | None   # None -> "Walls_unassigned" collection
+    u_min_m: float
+    u_max_m: float
+    features: list        # wall features clipped to [u_min_m, u_max_m]
+```
+
+2. **Ownership pass:** collect every room-edge overlap per wall FIRST, then
+   split each wall once into `WallSegment`s at the union of room-boundary
+   u-coordinates. Segments inherit the wall's features clipped in u. Wall
+   stretches no room claims become segments with `room_id=None` — never
+   silently dropped (v4 lesson).
+3. **Feature extraction** replaces naive per-plane panels: classify each
+   `members_z` record by (offset relative to reference face, z-range) into
+   `Feature.kind` — elevated + ceiling-reaching → `beam_soffit`; proud of the
+   face → `l_extrusion`/`column_attach`; recessed → `groove`; gps_time
+   walkthrough / gated void → `opening`. Relief is thereby named and preserved
+   (top-priority user requirement), not an anonymous box.
+4. **Meshing stays CSG (manifold3d) behind one interface**
+   `segment_to_mesh(segment: WallSegment) -> trimesh.Trimesh`: base slab for
+   the segment ∪ additive features − subtractive features (grooves, openings),
+   watertight asserted. Profile-sweeping was evaluated and deliberately
+   deferred: features vary in u AND z simultaneously (door under beam soffit),
+   so sweep meshing needs a constant-profile cell decomposition with hand-made
+   watertightness — not worth it at apartment scale while manifold3d is
+   proven. If ever needed it swaps in behind `segment_to_mesh` untouched.
+5. **GLB layout:** collection per room → one named mesh per WallSegment
+   (`Room_01/wall_north`), plus `Walls_unassigned`, `Columns`, floor panel per
+   room. Reference implementation of the pre-revision behavior:
+   `scripts/experiments` previews v4/v5 (see their module docstrings for the
+   failure modes this revision fixes).
+
+---
+
 ## Task 8: Dimensions, confidence, manifest
 
 **Files:**

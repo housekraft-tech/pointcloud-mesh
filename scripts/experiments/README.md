@@ -53,5 +53,28 @@ venv311\Scripts\python.exe scripts\experiments\diag_floorplan2d_v3.py
   "points not explained by any structural plane" once planes are final.
 - Corner precision closes rooms at polygonize epsilon 0.30 but not yet 0.05.
 
+## 3D preview iterations (same day, user-reviewed in Blender)
+
+- `sharp_preview.py` → v1: stepped boolean wall solids + columns/beams/slabs;
+  proved sharp L-cuts and watertightness (19/19), but no openings.
+- `sharp_preview_v2.py`: **gps_time walkthrough door cuts validated** (53
+  crossings → 12 doors), beam boxes removed, phantom-coverage filter.
+- `sharp_preview_v3.py`: per-stretch z-evidence for beam soffits (found the
+  stretch-merge flaw: fused wall+header evidence → no hollow gaps).
+- `sharp_preview_v4_rooms.py` / `sharp_preview_v5_rooms.py`: room-wise
+  interior panels, one per detected plane at its own offset (RELIEF preserved
+  -- user's top priority), doors cut; v5 unions per wall + renders unassigned
+  walls + dedupes shared walls.
+- `strip_furniture.py` (plane-membership -- TORE WALLS, kept as a negative
+  result) vs `strip_furniture_v2.py` (geometric rule: wall corridors
+  untouchable, constant floor band, interiors cleared -- correct).
+- `clean_mesh.py`: removes only DISCONNECTED mesh islands; attached wall
+  relief cannot be affected.
+
+Architecture conclusion from these iterations (user-approved): walls own a
+feature graph (grooves, L-extrusions, beam soffits, openings) and split ONCE
+into room-owned WallSegments; one mesh per segment via manifold3d CSG. See
+"Architecture Revision R1" in the plan.
+
 Productionizing all of this into `scripts/recon/` is specified in
 `docs/superpowers/plans/2026-07-02-isolidarflow-sharp-3d.md`.
