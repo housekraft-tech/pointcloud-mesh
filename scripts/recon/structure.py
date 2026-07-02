@@ -146,6 +146,8 @@ def group_wall_runs(
     min_run_length_m: float = 1.0,
     angle_tol_deg: float = 10.0,
     full_height_frac: float = 0.5,
+    *,
+    return_used_indices: bool = False,
 ):
     """Group vertical Planes into wall "runs" (one per physical wall line).
 
@@ -215,6 +217,18 @@ def group_wall_runs(
       offset_m: the main step's ABSOLUTE perpendicular offset (its world position)
       steps: list[WallStep] (including the main one, offset_m == 0.0),
              sorted by offset_m, relative to the main step as described above
+
+    return_used_indices (keyword-only, default False): when True, return
+    (runs, used_indices) instead of just runs, where used_indices is a
+    set[int] of indices into the INPUT vertical_planes list that ended up
+    consumed by some accepted run's steps. This exists so a caller can union
+    it with extract_columns_beams's own used_indices and pass the result to
+    extract_unclassified, which surfaces every vertical plane that neither
+    function claimed -- so nothing detected by planes.detect_planes is ever
+    silently dropped without at least being reported. Default False keeps
+    the return type exactly a list[dict], unchanged from before this
+    parameter existed, so every pre-existing caller/test keeps working
+    without modification.
     """
     xyz = np.asarray(xyz, dtype=float)
     axes = np.asarray(axes, dtype=float)
@@ -223,19 +237,23 @@ def group_wall_runs(
 
     cos_tol = np.cos(np.deg2rad(angle_tol_deg))
     stats = []
-    for p in vertical_planes:
+    for i, p in enumerate(vertical_planes):
         s = _plane_axis_stats(p, xyz, ex, ey)
         if s["align"] < cos_tol:
             continue  # normal isn't close enough to either dominant axis
+        s["src_index"] = i  # index into the ORIGINAL vertical_planes list --
+        # tracked here (not reverse-engineered from output geometry later)
+        # so it survives every filter/cluster step below intact.
         stats.append(s)
     if not stats:
-        return []
+        return ([], set()) if return_used_indices else []
 
     max_z_span = max(s["z_max"] - s["z_min"] for s in stats)
     height_thresh = full_height_frac * max_z_span
     stats = [s for s in stats if (s["z_max"] - s["z_min"]) >= height_thresh]
 
     runs = []
+    used_indices = set()
     for axis_name in ("x", "y"):
         group = [s for s in stats if s["axis"] == axis_name]
         for cluster in _greedy_chain(group, key=lambda s: s["offset"], max_gap=max_relief_m):
@@ -278,6 +296,14 @@ def group_wall_runs(
                 p1=(float(p1[0]), float(p1[1])),
                 steps=rebased_steps,
             ))
+            # The whole cluster (every step_group / step) is consumed by
+            # this accepted run -- a plane that was chained here but whose
+            # candidate run got dropped by the min_run_length_m check above
+            # (the `continue` a few lines up) never reaches this point, so
+            # it correctly stays out of used_indices.
+            used_indices.update(s["src_index"] for s in cluster)
+    if return_used_indices:
+        return runs, used_indices
     return runs
 
 
@@ -330,6 +356,7 @@ def _extract_columns(stats, floor_z, ceiling_z, min_size_m, max_size_m, height_t
         candidates.append(s)
 
     columns = []
+    used_indices = set()
     for i, group in enumerate(_cluster_by_centroid(candidates, cluster_gap_m)):
         pts_xy = np.vstack([g["pts_xy"] for g in group])
         x_min, y_min = pts_xy.min(axis=0)
@@ -348,7 +375,8 @@ def _extract_columns(stats, floor_z, ceiling_z, min_size_m, max_size_m, height_t
             z_min_m=float(z_min),
             z_max_m=float(z_max),
         ))
-    return columns
+        used_indices.update(g["src_index"] for g in group)
+    return columns, used_indices
 
 
 def _extract_beams(stats, floor_z, ceiling_z, elevation_m, ceiling_tol_m, gap_m, max_size_m):
@@ -365,6 +393,7 @@ def _extract_beams(stats, floor_z, ceiling_z, elevation_m, ceiling_tol_m, gap_m,
         and (s["u_max"] - s["u_min"]) > max_size_m
     ]
     beams = []
+    used_indices = set()
     idx = 0
     for axis_name in ("x", "y"):
         group = [s for s in candidates if s["axis"] == axis_name]
@@ -389,8 +418,9 @@ def _extract_beams(stats, floor_z, ceiling_z, elevation_m, ceiling_tol_m, gap_m,
                 z_min_m=float(z_min),
                 z_max_m=float(z_max),
             ))
+            used_indices.update(s["src_index"] for s in cluster)
             idx += 1
-    return beams
+    return beams, used_indices
 
 
 def extract_columns_beams(
@@ -406,6 +436,8 @@ def extract_columns_beams(
     beam_ceiling_tol_m: float = 0.5,
     beam_offset_gap_m: float = 1.0,
     cluster_gap_m: float = None,
+    *,
+    return_used_indices: bool = False,
 ):
     """Split vertical_planes into Columns (compact floor-to-ceiling piers)
     and Beams (long faces hung near the ceiling that do not reach the floor).
@@ -457,6 +489,19 @@ def extract_columns_beams(
     is required for the same reason as in group_wall_runs -- Plane alone has
     no coordinates to derive a footprint / span from.
 
+    return_used_indices (keyword-only, default False): when True, return
+    (columns, beams, used_indices) instead of just (columns, beams), where
+    used_indices is a set[int] of indices into the INPUT vertical_planes
+    list consumed by some accepted Column or Beam (their union -- a plane
+    can in principle satisfy neither, either, or in edge cases both, since
+    column and beam candidacy are checked independently). Paired with
+    group_wall_runs's own return_used_indices, this lets a caller build the
+    full set of "claimed" plane indices and pass whatever's left to
+    extract_unclassified so nothing is silently dropped without at least
+    being surfaced for review. Default False keeps the return type exactly
+    (list[Column], list[Beam]), unchanged from before this parameter
+    existed, so every pre-existing caller/test keeps working unmodified.
+
     Returns (list[Column], list[Beam]).
     """
     xyz = np.asarray(xyz, dtype=float)
@@ -465,13 +510,125 @@ def extract_columns_beams(
     axes = np.eye(3)
     ex, ey = axes[:, 0], axes[:, 1]
 
-    stats = [_plane_axis_stats(p, xyz, ex, ey) for p in vertical_planes]
+    stats = []
+    for i, p in enumerate(vertical_planes):
+        s = _plane_axis_stats(p, xyz, ex, ey)
+        s["src_index"] = i  # index into the ORIGINAL vertical_planes list
+        stats.append(s)
 
-    columns = _extract_columns(
+    columns, col_used = _extract_columns(
         stats, floor_z, ceiling_z, min_size_m, max_size_m, height_tol_m, cluster_gap_m
     )
-    beams = _extract_beams(
+    beams, beam_used = _extract_beams(
         stats, floor_z, ceiling_z, beam_elevation_m, beam_ceiling_tol_m, beam_offset_gap_m,
         max_size_m
     )
+    if return_used_indices:
+        return columns, beams, col_used | beam_used
     return columns, beams
+
+
+def extract_unclassified(vertical_planes, used_indices, xyz, axes=None, direction_tol_deg: float = 20.0):
+    """Every vertical Plane whose index is NOT in `used_indices`, surfaced as
+    a reviewable dict instead of being silently discarded.
+
+    Motivation: on a real scan, planes.detect_planes can find far more
+    vertical planes than group_wall_runs + extract_columns_beams together
+    account for (a real house scan: 218 detected vertical planes vs. 25
+    WallSteps / 11 runs / 8 beams / 0 columns -- ~88% unaccounted for). Some
+    of that gap is genuine furniture/clutter noise, but some is plausibly a
+    real short wall jog, a partial-height recess, or an occluded wall
+    section that the deliberately conservative filters in group_wall_runs
+    (min_run_length_m, full_height_frac) and extract_columns_beams
+    (size/height/elevation/compactness thresholds) are excluding -- and a
+    dropped real surface here is a real, costly downstream error (e.g. a
+    wardrobe cutlist that doesn't notch around a real protruding pillar).
+    Rather than loosen those already-tested, already-approved filters
+    without more validation, this function makes the exclusion visible: it
+    is the complement of used_indices within vertical_planes, so a human (or
+    a later, more careful classification pass) can inspect exactly what got
+    left out and decide if any of it is real.
+
+    used_indices: a set[int] (or any container supporting `in`) of indices
+    into THIS SAME vertical_planes list, as returned by
+    group_wall_runs(..., return_used_indices=True) and/or
+    extract_columns_beams(..., return_used_indices=True) -- typically their
+    union, since a single plane may legitimately be claimed by either (or,
+    same as a pillar face that is both a WallStep AND a Column, both).
+
+    Deviation from the brief's literal `(vertical_planes, used_indices) ->
+    list[dict]` signature: `xyz` is added as a 3rd positional argument, for
+    the same reason group_wall_runs and extract_columns_beams both already
+    require it -- Plane only stores (normal, d, label, inlier_idx), with no
+    coordinates of its own, so the source cloud is needed to measure a
+    plane's extent via this module's own _plane_axis_stats (reused here
+    unchanged, so unclassified planes are measured with the exact same
+    u_min/u_max/z_min/z_max/offset convention as every classified one,
+    rather than a second, subtly-different convention). `axes` mirrors
+    group_wall_runs's own optional 3x3 rotation (first two columns = the
+    two dominant horizontal directions); defaults to np.eye(3), correct for
+    callers on the already axis-aligned frame (see frame.axis_align), same
+    as group_wall_runs's own docstring note that callers "normally pass
+    np.eye(3) here".
+
+    direction_tol_deg (default 20, deliberately more generous than
+    group_wall_runs's own angle_tol_deg=10): a plane ends up unclassified
+    for many reasons OTHER than poor axis alignment (too short, wrong
+    elevation, wrong compactness, not full height, ...), so best-guess
+    "direction" here uses a looser cutoff than the strict one group_wall_runs
+    applies before it will actually build a run -- a wider net that still
+    calls out a genuinely oblique/diagonal plane (e.g. furniture, a
+    non-Manhattan real feature) by reporting direction=None rather than
+    forcing a misleading guess onto it.
+
+    Returns a list[dict], one per unclassified plane, ordered by
+    plane_index ascending, each with keys:
+      plane_index: int, this plane's index in the ORIGINAL vertical_planes
+                   list (stable identifier for cross-referencing back to it)
+      normal: (float, float, float), the plane's own stored unit normal
+      direction: "x" | "y" | None -- best-guess dominant-axis alignment
+                 within direction_tol_deg, or None if it isn't confidently
+                 aligned to either (see above)
+      n_points: int, len(plane.inlier_idx) -- how much real support this
+                excluded surface has, the first thing a human reviewer
+                needs to triage "probably real" vs. "probably noise"
+      u_min_m, u_max_m, u_span_m: along-face extent (same "u" convention as
+                 WallStep -- along whichever of x/y is NOT `direction`)
+      z_min_m, z_max_m, z_span_m: vertical extent
+      offset_m: perpendicular offset (world frame, absolute -- NOT rebased
+                 to any reference face, since an unclassified plane by
+                 definition doesn't belong to a run) along whichever of
+                 ex/ey the plane's normal is closer to -- populated even
+                 when direction is None, since _plane_axis_stats always
+                 picks a closer axis to measure along; direction=None only
+                 means that pick wasn't confident enough to report as a
+                 real Manhattan-direction guess
+    """
+    xyz = np.asarray(xyz, dtype=float)
+    if axes is None:
+        axes = np.eye(3)
+    axes = np.asarray(axes, dtype=float)
+    ex = _unit(axes[:, 0])
+    ey = _unit(axes[:, 1])
+    cos_tol = np.cos(np.deg2rad(direction_tol_deg))
+
+    out = []
+    for i, p in enumerate(vertical_planes):
+        if i in used_indices:
+            continue
+        s = _plane_axis_stats(p, xyz, ex, ey)
+        direction = s["axis"] if s["align"] >= cos_tol else None
+        out.append(dict(
+            plane_index=i,
+            normal=tuple(float(x) for x in np.asarray(p.normal, dtype=float)),
+            direction=direction,
+            n_points=int(np.asarray(p.inlier_idx).size),
+            u_min_m=s["u_min"],
+            u_max_m=s["u_max"],
+            u_span_m=s["u_max"] - s["u_min"],
+            z_min_m=s["z_min"],
+            z_max_m=s["z_max"],
+            z_span_m=s["z_max"] - s["z_min"],
+            offset_m=s["offset"],
+        ))
+    return out
