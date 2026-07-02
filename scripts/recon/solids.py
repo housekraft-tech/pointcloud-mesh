@@ -11,17 +11,32 @@ own docstring):
   - `wall.p0`/`wall.p1` is the wall's horizontal CENTERLINE, not a face line.
   - `u` (used by both `WallStep.u_min_m/u_max_m` and `Opening.u_min_m/u_max_m`)
     is metric distance from `p0` along the unit direction `u_hat = (p1-p0)/|p1-p0|`.
-  - `n_hat = (-u_hat.y, u_hat.x)` is the horizontal perpendicular ("wall
-    normal") direction, rotated 90 degrees counter-clockwise from `u_hat`.
-    `WallStep.offset_m` is a signed distance along `n_hat`, centered on the
-    wall centerline (offset_m == 0.0 reproduces the plain rectangular wall
-    box `_walls_to_obj_mesh` already builds with Open3D). This is a
-    documented interpretation choice: the schema docstring only says
-    offset is "relative to the wall's reference (main) face", but there is
-    no separate "reference face" concept carried on floorplan_schema.Wall,
-    so centering on the centerline reuses the one geometric reference this
-    repo's Wall already has and keeps offset_m==0 backward compatible with
-    the existing non-stepped wall mesh builder.
+  - `WallStep.offset_m` is a signed distance perpendicular to the wall,
+    centered on the wall centerline (offset_m == 0.0 reproduces the plain
+    rectangular wall box `_walls_to_obj_mesh` already builds with Open3D).
+    The perpendicular axis is NOT a locally-rotated `n_hat = (-u_hat.y,
+    u_hat.x)` derived from this wall's own, arbitrary p0->p1 ordering --
+    it is whichever of the two WORLD axes (X or Y) is nearest-perpendicular
+    to the wall's own direction, always taken with its POSITIVE sign, e.g.
+    +X (never -X) for a wall that runs along Y. This is the exact same
+    convention `recon.structure.group_wall_runs` uses to compute
+    WallStep.offset_m in the first place (see `_plane_axis_stats`, which
+    always measures a plane's offset along the positive `ex`/`ey` it is
+    closer to, never a per-wall-local sign) -- `_wall_world_axes` below
+    reproduces it here from `wall.p0`/`wall.p1` alone so a WallStep
+    produced by group_wall_runs and consumed by `wall_to_solid` means the
+    same physical offset in both places. Using the wall's own locally
+    rotated `n_hat` instead (the previous behavior of this module) is a
+    convention MISMATCH: for a wall whose own p0->p1 happens to run in the
+    world-negative direction along its snapped axis, `n_hat` and the
+    world-positive axis point opposite ways, so a relief step (e.g. a
+    pillar 0.3 m proud of its wall) would be built on the wrong side of the
+    wall entirely. This is a documented interpretation choice: the schema
+    docstring only says offset is "relative to the wall's reference (main)
+    face", but there is no separate "reference face" concept carried on
+    floorplan_schema.Wall, so centering on the centerline reuses the one
+    geometric reference this repo's Wall already has and keeps offset_m==0
+    backward compatible with the existing non-stepped wall mesh builder.
   - `Opening.sill_m`/`height_m` are relative to `wall.floor_z_m` (confirmed
     by `segment_walls_and_grooves.py::_opening_sill_m`, which computes
     sill = corner_z - floor_z). `WallStep.z_min_m`/`z_max_m` are absolute
@@ -58,7 +73,17 @@ OPENING_OVERSHOOT_M = 0.1
 
 def _horizontal_axes(wall) -> tuple:
     """Return (u_hat, n_hat): unit along-wall and unit perpendicular-in-plane
-    horizontal directions, derived from wall.p0/p1 (see module docstring).
+    horizontal directions, derived from wall.p0/p1.
+
+    n_hat here is a LOCAL perpendicular (rotated 90 degrees CCW from
+    u_hat) -- it is NOT the world-axis-snapped perpendicular WallStep.offset_m
+    is measured along (see `_wall_world_axes` and the module docstring for
+    why those differ). Still safe to use for `beam_to_solid` and
+    `_opening_cutter_box`/`cut_openings`: both only ever build a box that is
+    SYMMETRIC about n_hat == 0 (a beam's width, an opening cutter's
+    thickness-plus-overshoot), so n_hat's sign is irrelevant there -- unlike
+    `_step_box`, which places a step at a specific SIGNED offset and so
+    needs the world-axis-consistent convention instead.
     """
     p0 = np.asarray(wall.p0, dtype=float)
     p1 = np.asarray(wall.p1, dtype=float)
@@ -114,24 +139,108 @@ def _ensure_watertight(mesh: trimesh.Trimesh, context: str) -> trimesh.Trimesh:
     return mesh
 
 
-def _step_box(wall, step, thickness_m: float) -> trimesh.Trimesh:
-    """Box for one WallStep: u_min_m..u_max_m along the wall, z_min_m..z_max_m
-    vertically, thickness_m wide and CENTERED on offset_m perpendicular to the
-    wall centerline (see module docstring for the offset convention).
+def _wall_world_axes(wall) -> tuple:
+    """Return (u_is_x, u_sign): which WORLD axis the wall's own p0->p1
+    direction is closest to, and that direction's sign along that axis.
+
+    This mirrors `recon.structure.group_wall_runs`'s own dominant-axis snap
+    (`_plane_axis_stats`, which classifies a plane's normal against the
+    nearest of the two dominant horizontal axes ex/ey) applied instead to a
+    wall's along-wall direction: by this pipeline's Manhattan-alignment
+    convention (see frame.axis_align -- the cloud is always axis-aligned
+    before structure.py runs), a wall's own p0->p1 direction is close to
+    either world X or world Y, and its perpendicular ("normal") axis is
+    simply the OTHER one.
+
+    u_is_x is True when the wall runs along world X (so its perpendicular
+    axis is world Y -- a group_wall_runs run with direction="y"); False
+    when it runs along world Y (perpendicular axis world X, direction="x").
+
+    u_sign is +1.0 if wall.p1 sits at a larger coordinate than wall.p0 along
+    the snapped u axis, else -1.0. This only affects how u_min_m/u_max_m
+    (measured from p0 along the wall's OWN direction, per the module
+    docstring) map onto world coordinates -- it must NOT be used to flip
+    the perpendicular axis's sign (see module docstring): WallStep.offset_m
+    is always signed along the snapped axis's POSITIVE direction, exactly
+    like group_wall_runs's own `_plane_axis_stats` always measures a
+    plane's offset along +ex/+ey and never negates it based on which side
+    of the wall the plane happens to be.
     """
-    u_hat, n_hat = _horizontal_axes(wall)
     p0 = np.asarray(wall.p0, dtype=float)
+    p1 = np.asarray(wall.p1, dtype=float)
+    d = p1 - p0
+    if float(np.linalg.norm(d)) < 1e-9:
+        raise ValueError("wall.p0 and wall.p1 must be distinct points")
+    u_is_x = abs(d[0]) >= abs(d[1])
+    u_component = d[0] if u_is_x else d[1]
+    u_sign = 1.0 if u_component >= 0 else -1.0
+    return u_is_x, u_sign
+
+
+def _step_box(wall, step, thickness_m: float) -> trimesh.Trimesh:
+    """Box for one WallStep.
+
+    Along the wall (u): spans u_min_m..u_max_m, measured from wall.p0 along
+    the wall's own p0->p1 direction (unchanged from before).
+
+    Vertically (z): spans z_min_m..z_max_m (unchanged from before).
+
+    Perpendicular to the wall (v, the offset_m axis): spans from
+    `min(0.0, step.offset_m) - thickness_m/2` to `max(0.0, step.offset_m) +
+    thickness_m/2`, measured along the WORLD axis nearest the wall's own
+    direction (see `_wall_world_axes`) -- the same axis/sign
+    `recon.structure.group_wall_runs` uses for WallStep.offset_m itself,
+    not a locally rotated axis derived from this wall's own arbitrary
+    p0/p1 ordering (see module docstring).
+
+    This v-range is deliberately NOT a fixed-width slab centered on
+    offset_m (the previous behavior): for the main step (offset_m == 0.0)
+    it reduces to exactly the old symmetric [-thickness/2, +thickness/2]
+    box (backward compatible with the plain non-stepped wall). For any
+    other step it ALWAYS fully contains that same [-thickness/2,
+    +thickness/2] reference span too -- e.g. a pillar-front step at
+    offset_m=+0.3 spans continuously from the main wall's own back face
+    (-thickness/2) out to the pillar's own front face plus half-thickness
+    (+0.3 + thickness/2), rather than floating as an independent slab only
+    thickness_m wide centered at +0.3. That guarantees every step's box
+    touches/overlaps the main wall's box (they share the whole reference
+    span), so `trimesh.boolean.union` in `wall_to_solid` always comes back
+    as ONE connected solid instead of disconnected floating bodies.
+
+    No rotation matrix is used: since the wall is treated as exactly
+    axis-aligned (u/v snapped to world X/Y per `_wall_world_axes`), the box
+    is a plain world-axis-aligned box positioned by translation only --
+    this also sidesteps any risk of a mirrored (negative-determinant)
+    transform silently inverting face winding/normals when the wall's own
+    p0->p1 direction is the negative of its snapped world axis.
+    """
+    u_is_x, u_sign = _wall_world_axes(wall)
+    p0 = np.asarray(wall.p0, dtype=float)
+
+    v_lo = min(0.0, step.offset_m) - thickness_m / 2.0
+    v_hi = max(0.0, step.offset_m) + thickness_m / 2.0
+    v_mid = (v_lo + v_hi) / 2.0
+    v_extent = v_hi - v_lo
+
     u_mid = (step.u_min_m + step.u_max_m) / 2.0
     z_mid = (step.z_min_m + step.z_max_m) / 2.0
-    center_xy = p0 + u_mid * u_hat + step.offset_m * n_hat
-    center = np.array([center_xy[0], center_xy[1], z_mid])
-    extents = (
-        step.u_max_m - step.u_min_m,
-        thickness_m,
-        step.z_max_m - step.z_min_m,
-    )
-    transform = _axes_transform(u_hat, n_hat, center)
-    return trimesh.creation.box(extents=extents, transform=transform)
+    u_extent = step.u_max_m - step.u_min_m
+    z_extent = step.z_max_m - step.z_min_m
+
+    if u_is_x:
+        # Wall runs along world X; perpendicular (offset) axis is world Y,
+        # always POSITIVE (never flipped by u_sign) to match
+        # group_wall_runs's own convention.
+        center = np.array([p0[0] + u_sign * u_mid, p0[1] + v_mid, z_mid])
+        extents = (u_extent, v_extent, z_extent)
+    else:
+        # Wall runs along world Y; perpendicular axis is world X, positive.
+        center = np.array([p0[0] + v_mid, p0[1] + u_sign * u_mid, z_mid])
+        extents = (v_extent, u_extent, z_extent)
+
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation(center)
+    return box
 
 
 def wall_to_solid(wall, steps: list) -> trimesh.Trimesh:

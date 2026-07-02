@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -230,3 +232,175 @@ def test_cut_openings_sill_is_relative_to_nonzero_floor_z_m():
     assert cut.volume < wall_solid.volume * 0.99
     assert cut.bounds[0][2] == pytest.approx(floor_z_m + opening.height_m, abs=0.02)
     assert cut.bounds[1][2] == pytest.approx(ceiling_z_m, abs=0.02)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the group_wall_runs <-> wall_to_solid offset-sign bug.
+#
+# structure.group_wall_runs measures WallStep.offset_m along a WORLD axis
+# (whichever of ex=(1,0,0)/ey=(0,1,0) is closer to the run's own normal --
+# see structure._plane_axis_stats and group_wall_runs's own docstring: "the
+# main step always comes back with offset_m == 0.0, and every other step's
+# offset_m is its signed distance from the main step" along that same
+# world-positive axis). The old `_step_box` instead measured offset_m along
+# a WALL-LOCAL `n_hat = (-u_hat.y, u_hat.x)` rotated off this particular
+# wall's own, arbitrary p0->p1 ordering. For a wall whose own p0->p1
+# happens to run in the world-negative direction along its snapped axis,
+# those two conventions are exact sign opposites -- so a relief step (e.g.
+# a pillar 0.3 m proud of its wall) got built on the WRONG side of the
+# wall. The old `_step_box` also built every step as an independently
+# thickness_m-wide slab centered on its own offset, so a relief step whose
+# offset exceeded half the wall thickness (e.g. the pillar's 0.3 m, versus
+# a typical ~0.1 m half-thickness) floated as a disconnected body instead
+# of fusing into the main wall.
+#
+# NOTE on the wall run's own "direction" label: structure.py's own
+# docstring for group_wall_runs's return value is explicit -- "direction:
+# 'x'|'y' -- which dominant axis the run's normal is closest to" -- and
+# this is verified empirically below (and against the real modular_house()
+# west wall in test_wall_to_solid_on_real_west_wall_run_from_modular_house):
+# a run with direction="x" has its `normal` along world X = (1,0,0), and
+# (since u_vec is always the OTHER axis) its own p0->p1 travels along
+# world Y. A wall running north-south (along Y) at x~=0 -- like
+# modular_house()'s west wall -- is exactly this "direction='x'" case.
+# ---------------------------------------------------------------------------
+
+def _adapt_run_to_wall(run: dict, thickness_m: float = 0.2, floor_z_m: float = 0.0):
+    """Minimal Wall-shaped adapter around a group_wall_runs run dict.
+
+    wall_to_solid's eventual Task 17 wall type isn't finalized (see
+    solids.py's module docstring: "these functions only touch p0, p1,
+    thickness_m ..., and floor_z_m ... so any future wall object exposing
+    at least those attributes will work unmodified"). group_wall_runs's
+    run dict already carries p0/p1 (see its own docstring) but not
+    thickness_m/floor_z_m (a run has no notion of assumed material
+    thickness), so this fills those in from the caller -- exactly the kind
+    of small adapter Task 17 will need to bridge group_wall_runs's output
+    to wall_to_solid's input.
+    """
+    return SimpleNamespace(p0=run["p0"], p1=run["p1"], thickness_m=thickness_m, floor_z_m=floor_z_m)
+
+
+def test_wall_to_solid_from_group_wall_runs_style_run_is_one_connected_solid_on_correct_side():
+    """Synthetic run dict matching group_wall_runs's REAL output shape (see
+    its docstring's "Returns a list[dict]..." section): direction="x" (so
+    the run's own normal is world X, and its centerline runs along world Y
+    -- see the module-level note above), a main step at offset_m=0.0, and a
+    pillar-like relief step at offset_m=+0.3 (simulating a pillar 0.3 m
+    proud of the wall, spanning a short sub-range of the wall's own u).
+    """
+    run = dict(
+        direction="x",
+        normal=(1.0, 0.0, 0.0),
+        offset_m=0.0,
+        p0=(0.0, 0.0),
+        p1=(0.0, 5.0),
+        steps=[
+            WallStep(offset_m=0.0, u_min_m=0.0, u_max_m=5.0, z_min_m=0.0, z_max_m=2.7),
+            WallStep(offset_m=0.3, u_min_m=2.0, u_max_m=2.3, z_min_m=0.0, z_max_m=2.7),
+        ],
+    )
+    wall = _adapt_run_to_wall(run, thickness_m=0.2)
+
+    solid = wall_to_solid(wall, run["steps"])
+
+    # (a) one connected, watertight body -- not 3 disconnected pieces.
+    assert solid.is_watertight
+    bodies = solid.split(only_watertight=False)
+    assert len(bodies) == 1, f"expected one connected wall+pillar solid, got {len(bodies)} bodies"
+
+    # (b) the relief step is on the CORRECT side. This wall's centerline
+    # runs along world Y (p0=(0,0), p1=(0,5)), so "u" is the Y coordinate
+    # and the offset/perpendicular axis is world X. A +0.3 offset step
+    # must therefore push the solid further in +X specifically over the
+    # pillar's own u-range (y in [2.0, 2.3]), not elsewhere along the wall.
+    verts = solid.vertices
+    u_vals = verts[:, 1]
+    in_pillar_u = (u_vals >= 1.95) & (u_vals <= 2.35)
+    outside_pillar_u = (u_vals <= 1.5) | (u_vals >= 2.8)
+    assert in_pillar_u.any() and outside_pillar_u.any()
+    max_x_in_pillar_u = verts[in_pillar_u, 0].max()
+    max_x_outside = verts[outside_pillar_u, 0].max()
+    assert max_x_in_pillar_u > max_x_outside + 0.2, (
+        f"pillar step did not protrude in +X where expected: "
+        f"max_x_in_pillar_u={max_x_in_pillar_u}, max_x_outside={max_x_outside}"
+    )
+    # And it must not have built the relief on the wrong (-X) side either.
+    assert verts[in_pillar_u, 0].max() > 0.0
+
+
+try:
+    import open3d  # noqa: F401
+    HAVE_O3D = True
+except Exception:
+    HAVE_O3D = False
+
+
+@pytest.mark.skipif(not HAVE_O3D, reason="Open3D not available")
+def test_wall_to_solid_on_real_west_wall_run_from_modular_house():
+    """End-to-end proof on REAL data: feed group_wall_runs's actual output
+    for modular_house()'s west wall (the one with the real pillar, see
+    tests/fixtures.py's modular_house docstring and its "pillar" meta
+    entry: footprint x in [0.1, 0.4] -- i.e. the pillar protrudes in +X,
+    INTO the room, away from the exterior at x~=0) through the fixed
+    wall_to_solid, and confirm the pillar comes out as part of ONE
+    connected watertight solid, protruding on the correct (+X, into the
+    room) side -- not overlapping the exterior face, and not 3 separate
+    bodies.
+    """
+    from scripts.recon.planes import detect_planes
+    from scripts.recon.structure import group_wall_runs
+    from tests.fixtures import modular_house
+
+    pts, _, meta = modular_house()
+    pts = pts[pts[:, 0] < 10.0]  # drop the far neighbour blob
+    planes = detect_planes(
+        pts, z_floor=meta["z_floor_m"], z_ceiling=meta["z_ceiling_m"], min_inliers=800
+    )
+    vertical_planes = [p for p in planes if p.label == "vertical"]
+    axes = np.eye(3)  # cloud is already Manhattan-aligned by construction
+
+    runs = group_wall_runs(vertical_planes, pts, axes)
+    west_runs = [r for r in runs if r["direction"] == "x" and abs(r["offset_m"]) < 1.0]
+    assert len(west_runs) == 1, "expected exactly one x-direction run near x=0 (west wall)"
+    west = west_runs[0]
+    assert len(west["steps"]) >= 3, "west run should carry both wall faces plus the pillar face"
+
+    wall = _adapt_run_to_wall(west, thickness_m=meta["wall_thickness_m"], floor_z_m=meta["z_floor_m"])
+    solid = wall_to_solid(wall, west["steps"])
+
+    # (a) one connected, watertight solid -- the real-data equivalent of
+    # the synthetic test above; this is the actual bug the prior code
+    # review found (group_wall_runs's real west-wall output fed straight
+    # into wall_to_solid produced 3 disconnected bodies).
+    assert solid.is_watertight
+    bodies = solid.split(only_watertight=False)
+    assert len(bodies) == 1, f"expected one connected wall+pillar solid, got {len(bodies)} bodies"
+
+    # (b) the pillar protrudes on the CORRECT side: further in +X over the
+    # pillar's own u-range (y in meta["pillar"]["footprint"]'s y in
+    # [2.0, 2.3]) than anywhere else along the wall. This is the real
+    # end-to-end proof the bug is fixed: the pillar renders into the room
+    # (+X), not through the exterior wall face (-X).
+    pillar_u_min = min(p[1] for p in meta["pillar"]["footprint"])
+    pillar_u_max = max(p[1] for p in meta["pillar"]["footprint"])
+    verts = solid.vertices
+    u_vals = verts[:, 1]
+    in_pillar_u = (u_vals >= pillar_u_min - 0.05) & (u_vals <= pillar_u_max + 0.05)
+    outside_pillar_u = (u_vals <= pillar_u_min - 0.5) | (u_vals >= pillar_u_max + 0.5)
+    assert in_pillar_u.any() and outside_pillar_u.any()
+    max_x_in_pillar_u = verts[in_pillar_u, 0].max()
+    max_x_outside = verts[outside_pillar_u, 0].max()
+    assert max_x_in_pillar_u > max_x_outside + 0.15, (
+        f"pillar did not protrude into the room (+X) as expected: "
+        f"max_x_in_pillar_u={max_x_in_pillar_u}, max_x_outside={max_x_outside}"
+    )
+    # The pillar's real front face is at x=0.4 (meta["pillar"]["footprint"]);
+    # the solid's max-X bound over the pillar's u-range should land in that
+    # neighbourhood (loose tolerance -- _step_box pads a step's own face by
+    # another half wall-thickness beyond its measured offset, a documented
+    # approximation, see solids.py's _step_box docstring), and must not
+    # have grown on the wrong (-X, exterior) side.
+    pillar_front_x = max(p[0] for p in meta["pillar"]["footprint"])
+    assert max_x_in_pillar_u == pytest.approx(pillar_front_x, abs=0.15)
+    assert verts[:, 0].min() > -0.3
