@@ -175,3 +175,58 @@ def test_cut_openings_two_openings_both_removed():
         + (window.u_max_m - window.u_min_m) * window.height_m * wall.thickness_m
     )
     assert removed == pytest.approx(expected_removed, rel=0.1)
+
+
+def test_cut_openings_sill_is_relative_to_nonzero_floor_z_m():
+    """Regression test for the `z_min = wall.floor_z_m + opening.sill_m`
+    conversion in `_opening_cutter_box` (scripts/recon/solids.py). Every
+    other test in this file builds walls via `_make_wall()`'s default
+    floor_z_m=0.0, where `floor_z_m + opening.sill_m == opening.sill_m` --
+    so none of them can distinguish the correct absolute-Z conversion from
+    a buggy version that used `opening.sill_m` directly and silently
+    dropped the `+ floor_z_m` term.
+
+    This test uses floor_z_m=3.0 and an opening spanning the wall's FULL
+    u-range with sill_m=0.0, i.e. its cutter box should start exactly at
+    the wall's own bottom face (z=floor_z_m=3.0) and punch up 1.0 m. If
+    `+ floor_z_m` were dropped, the cutter's z-range would fall at
+    [0.0, 1.0] -- entirely below the wall's real z-range of [3.0, 5.7] --
+    so the boolean difference would remove *nothing* and the wall would
+    come back completely unchanged (same volume, same z_min=3.0). With the
+    correct conversion, the bottom 1.0 m slab across the wall's full width
+    is genuinely sliced off, so the solid's z_min bound moves up to 4.0 and
+    its volume shrinks. Chosen over comparing two walls' bounds directly
+    because a partial-width notch doesn't move the overall bounding box at
+    all (the uncut portions of the wall still span the full height) --
+    spanning the full u-range makes the bug visible in the simple
+    `solid.bounds` check the rest of this file already uses.
+    """
+    floor_z_m = 3.0
+    ceiling_z_m = 5.7
+    wall = _make_wall(floor_z_m=floor_z_m, ceiling_z_m=ceiling_z_m)
+    steps = [
+        WallStep(offset_m=0.0, u_min_m=0.0, u_max_m=4.0, z_min_m=floor_z_m, z_max_m=ceiling_z_m)
+    ]
+    wall_solid = wall_to_solid(wall, steps)
+
+    opening = Opening(
+        opening_id="opening_000",
+        wall_id=wall.wall_id,
+        type="door",
+        u_min_m=0.0,
+        u_max_m=4.0,
+        sill_m=0.0,
+        height_m=1.0,
+        width_m=4.0,
+        edge_method="density_half_max",
+        both_faces_confirmed=True,
+    )
+
+    cut = cut_openings(wall_solid, [opening], wall)
+
+    assert cut.is_watertight
+    # A buggy cutter (missing `+ floor_z_m`) wouldn't overlap the wall's
+    # real z-range [3.0, 5.7] at all, leaving volume/bounds unchanged.
+    assert cut.volume < wall_solid.volume * 0.99
+    assert cut.bounds[0][2] == pytest.approx(floor_z_m + opening.height_m, abs=0.02)
+    assert cut.bounds[1][2] == pytest.approx(ceiling_z_m, abs=0.02)
