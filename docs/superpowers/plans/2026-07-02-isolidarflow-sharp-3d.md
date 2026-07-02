@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Platform:** Windows; venv at `.claude/worktrees/cad-floorplan-reconstruction/venv311` — run everything with `venv311\Scripts\python.exe`. CPU-only.
+- **Platform:** Windows; repo root `C:\Users\PC\Documents\pointcloud-mesh` with branch `isolidarflow` checked out directly (no worktrees); venv at the repo root — run everything with `venv311\Scripts\python.exe`. CPU-only.
 - **Branch:** work on `isolidarflow`.
 - **Units:** metres, world frame = LAS coordinates (axis-aligned after `frame.axis_align`).
 - **Purity discipline:** every module except `io_las`, `planes`, `frame`, `solids`, `assemble` must import without Open3D/trimesh (numpy/scipy/shapely only) so unit tests run anywhere — same rule the existing `recon` package follows.
