@@ -1,7 +1,7 @@
 import numpy as np
 
-from scripts.recon.schema import ScanData
-from scripts.recon.clean import percentile_crop
+from scripts.recon.schema import ScanData, WallStep
+from scripts.recon.clean import percentile_crop, remove_furniture
 
 
 def test_percentile_crop_drops_far_outliers():
@@ -24,3 +24,17 @@ def test_percentile_crop_keeps_aligned_attrs():
     assert out.gps_time is not None
     assert out.n == out.gps_time.shape[0]
     assert 1000.0 not in out.xyz
+
+
+def test_furniture_blob_dropped_structure_kept():
+    rng = np.random.default_rng(0)
+    floor = np.column_stack([rng.uniform(0, 6, 3000), rng.uniform(0, 4, 3000), np.zeros(3000)])
+    wall = np.column_stack([rng.uniform(0, 6, 3000), np.full(3000, 4.0), rng.uniform(0, 2.7, 3000)])
+    sofa = np.column_stack([rng.uniform(2, 3, 2000), rng.uniform(1.5, 2.5, 2000), rng.uniform(0.3, 1.0, 2000)])
+    scan = ScanData(xyz=np.vstack([floor, wall, sofa]), gps_time=None, rgb=None, intensity=None)
+    walls = [dict(direction="y", offset_m=4.0, p0=(0.0, 4.0), p1=(6.0, 4.0),
+                  thickness_m=0.1, steps=[WallStep(0.0, 0.0, 6.0, 0.0, 2.7)])]
+    kept, dropped = remove_furniture(scan, walls, z_floor=0.0, z_ceiling=2.7)
+    assert dropped >= 1900                      # sofa gone
+    assert kept.n >= 5900                       # floor + wall kept
+    assert kept.xyz[:, 1].max() > 3.9           # wall points survived
