@@ -121,6 +121,7 @@ DEFAULT_CONFIG = {
     "recenter_min_thickness_m": 0.04,  # skip recentre below this (no evidence of a side)
     # --- corner resolution (Task 3) ---
     "corner_tol_m": 0.25,            # endpoint-to-endpoint clustering radius
+    "min_wall_length_m": 0.01,       # drop walls collapsed to ~zero length by regularization
     # --- T-junction endpoint-to-line snap (Task 3) ---
     "line_snap_reach_m": 0.7,        # how far a dangling endpoint may extend to a line
     "line_snap_dangling_tol_m": 0.15,  # endpoint within this of a wall = not dangling
@@ -202,9 +203,9 @@ def _write_report(out_dir, in_path, info, error=None):
         lines.append(
             f"z-band (floor, ceiling): ({info['z_floor']:.3f}, {info['z_ceiling']:.3f}) m "
             f"=> height {info['z_ceiling'] - info['z_floor']:.3f} m")
-    for key in ("n_planes", "n_vertical", "n_walls", "n_columns", "n_beams",
-                "n_unclassified", "n_crossings", "n_openings", "n_rooms",
-                "furniture_dropped"):
+    for key in ("n_planes", "n_vertical", "n_walls", "degenerate_walls_dropped",
+                "n_columns", "n_beams", "n_unclassified", "n_crossings",
+                "n_openings", "n_rooms", "furniture_dropped"):
         if key in info:
             lines.append(f"{key}: {info[key]}")
     if "opening_types" in info:
@@ -342,6 +343,16 @@ def run(in_path, out_dir, config=None):
         walls = regularize.resolve_corners(walls, tol_m=cfg["corner_tol_m"])
         walls = regularize.snap_endpoints_to_lines(walls, reach_m=cfg["line_snap_reach_m"],
                                                    dangling_tol_m=cfg["line_snap_dangling_tol_m"])
+        # Drop degenerate walls: resolve_corners / snap_endpoints_to_lines can, in
+        # rare corner cases, collapse a short wall's two endpoints onto the same
+        # point (p0 == p1). Such a zero-length "wall" is a numerical artifact, not
+        # physical geometry -- it carries no relief, no opening, no footprint, and
+        # would crash the per-segment mesher (model._wall_frame rejects p0==p1).
+        # Removed here (count reported, never truly silent) BEFORE openings /
+        # crossings / manifest / model so every downstream wall index stays aligned.
+        n_before = len(walls)
+        walls = [w for w in walls if _wall_length(w) > cfg["min_wall_length_m"]]
+        info["degenerate_walls_dropped"] = n_before - len(walls)
         info["n_walls"] = len(walls)
         # carry the storey Z onto each wall so per-segment meshing places
         # openings/features in the same absolute Z frame as detection.

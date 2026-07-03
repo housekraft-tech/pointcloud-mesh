@@ -5,9 +5,7 @@ sharp 3D model (GLB) + cleaned Poisson reference mesh.
 
 Everything runs locally, CPU-only, from this folder on the `isolidarflow`
 branch. The production implementation plan is
-`docs/superpowers/plans/2026-07-02-isolidarflow-sharp-3d.md`; the runnable
-flow below is the validated experiment chain it productionizes
-(see `scripts/experiments/README.md` for what each script proved).
+`docs/superpowers/plans/2026-07-02-isolidarflow-sharp-3d.md`.
 
 ## Setup (once)
 
@@ -19,7 +17,49 @@ C:\Users\PC\AppData\Local\Programs\Python\Python311\python.exe -m venv venv311
 
 Scans live in this folder (not in git): `koushikexport.las`, `mujammelexport.las`.
 
-## The flow — run in this order
+## One command — `scripts/isolidarflow.py`
+
+The whole pipeline (Tasks 1–9 productionized) now runs end-to-end from a
+single CLI. This is the recommended entry point; the step-by-step experiment
+chain further below is kept for tuning/diagnostics and is what this CLI wires
+together.
+
+```powershell
+.\venv311\Scripts\python.exe scripts\isolidarflow.py <scan.las> <out_dir> `
+    [--keep-furniture] [--seed N] [--debug-png] `
+    [--max-points N] [--plane-max-points N] [--no-outliers] [--trajectory PATH]
+
+# e.g.
+.\venv311\Scripts\python.exe scripts\isolidarflow.py koushikexport.las output\koushik_isolidar --debug-png
+```
+
+Stages (each an existing tested `scripts/recon/` function; the CLI is thin
+orchestration and writes a partial `report.txt` + re-raises on any stage
+failure): load → percentile-crop → outlier-removal → approx-trajectory →
+z-band → isolate-unit → normals/axis-align (trajectory rotated too) →
+detect-planes → wall-runs + columns/beams + unclassified report → snap /
+pair-thickness / recenter / resolve-corners / snap-endpoints-to-lines →
+furniture-removal → wall-crossings → detect-openings → room-polygons →
+manifest → room-owned 3D model → GLB, and DXF/SVG floor plans.
+
+**Outputs** (in `<out_dir>`):
+
+| file | contents |
+|------|----------|
+| `model.glb` | room-owned sharp 3D model. Collections `Room_NN_<area>m2` (wall-segment meshes + floor panel per room), `Walls_unassigned`, `Columns`, `Beams`. Every mesh watertight; relief (pillars, grooves, beam soffits) and boolean-cut openings preserved. No ceiling collection (design decision). |
+| `floorplan.dxf` / `.svg` | 2D CAD plan — walls (measured thickness), openings, rooms on separate layers/groups. |
+| `manifest.json` | walls, openings (typed + prior sanity flags), columns, beams, rooms, storey Z, and the full config echo. |
+| `report.txt` | per-stage point counts, z-band, element counts, opening types, room areas. |
+| `floorplan_debug.png` | (with `--debug-png`) solid-wall plan; openings tinted by type; columns; for RGB scans also prints/plots mean RGB per wall band. |
+
+**Config:** all thresholds live in `DEFAULT_CONFIG` in `scripts/isolidarflow.py`
+(one commented line each). Pass a `dict` to `run(in_path, out_dir, config)` to
+override, or use the CLI flags. `--no-outliers` skips the slow Open3D
+statistical filter (isolation connectivity already drops drift/neighbour
+geometry); `--plane-max-points` caps the working cloud for the heavy
+plane/structure/opening stages (default 1.5 M).
+
+## The flow — run in this order (manual / diagnostic chain)
 
 All commands from the repo root. `<name>` is `koushik` or `mujammel`.
 
