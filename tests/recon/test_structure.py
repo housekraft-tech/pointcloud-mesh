@@ -513,3 +513,51 @@ def test_extract_unclassified_accounts_for_every_plane_on_modular_house():
     assert unclassified_indices | used_indices == set(range(len(vertical_planes))), (
         "no plane index may be missing from used_indices + unclassified"
     )
+
+
+# ---------------------------------------------------------------------------
+# u-gap run splitting + members (Task 2)
+# ---------------------------------------------------------------------------
+
+def _wall_plane_points(u0, u1, offset, axis="y", z0=0.0, z1=2.7, n=4000, rng_seed=0):
+    """Points of one vertical wall face: normal along `axis`, extent along the
+    other axis from u0..u1, at perpendicular position `offset`."""
+    rng = np.random.default_rng(rng_seed)
+    u = rng.uniform(u0, u1, n)
+    z = rng.uniform(z0, z1, n)
+    perp = np.full(n, offset) + rng.normal(0, 0.003, n)
+    if axis == "y":
+        return np.column_stack([u, perp, z])
+    return np.column_stack([perp, u, z])
+
+
+def _mk_plane(xyz_all, idx, axis="y"):
+    normal = (0.0, 1.0, 0.0) if axis == "y" else (1.0, 0.0, 0.0)
+    return Plane(normal=normal, d=0.0, label="vertical", inlier_idx=np.asarray(idx))
+
+
+def test_u_gap_splits_collinear_distinct_walls():
+    # two same-offset walls 4 m apart along u -> MUST be two separate runs
+    a = _wall_plane_points(0.0, 3.0, offset=5.0)
+    b = _wall_plane_points(7.0, 10.0, offset=5.0)
+    xyz = np.vstack([a, b])
+    planes = [_mk_plane(xyz, np.arange(len(a))),
+              _mk_plane(xyz, np.arange(len(a), len(a) + len(b)))]
+    runs = group_wall_runs(planes, xyz, np.eye(3))
+    assert len(runs) == 2
+    lengths = sorted(round(np.linalg.norm(np.subtract(r["p1"], r["p0"])), 1) for r in runs)
+    assert lengths == [3.0, 3.0]
+
+
+def test_doorway_gap_stays_one_run_with_members():
+    # one wall broken by a 1.0 m doorway -> ONE run, hole visible in members
+    a = _wall_plane_points(0.0, 2.0, offset=5.0)
+    b = _wall_plane_points(3.0, 6.0, offset=5.0)
+    xyz = np.vstack([a, b])
+    planes = [_mk_plane(xyz, np.arange(len(a))),
+              _mk_plane(xyz, np.arange(len(a), len(a) + len(b)))]
+    runs = group_wall_runs(planes, xyz, np.eye(3))
+    assert len(runs) == 1
+    assert "members" in runs[0] and len(runs[0]["members"]) == 2
+    (a0, a1), (b0, b1) = sorted(runs[0]["members"])
+    assert abs(a1 - 2.0) < 0.1 and abs(b0 - 3.0) < 0.1  # the hole is recoverable

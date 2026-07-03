@@ -137,15 +137,44 @@ def _greedy_chain(items, key, max_gap):
     return clusters
 
 
+def _chain_by_u_interval(members, u_gap_m):
+    """Split plane-stat dicts into groups of near/overlapping u-intervals:
+    sorted by u_min, a new group starts when the next member's u_min is more
+    than u_gap_m past the running max u_max.
+
+    This is what actually tells "two distinct collinear walls" from "one
+    wall broken by a doorway/window": both look identical to the outer
+    offset/direction clustering (same direction, same offset), and only
+    differ in how far apart their u-intervals are. u_gap_m=2.8 (real-scan
+    validated, see scripts/experiments/README.md) sits comfortably above a
+    real door/window/balcony opening's width but well below the distance
+    between two genuinely separate wall segments in this pipeline's target
+    (room-scale Manhattan) floorplans.
+    """
+    members = sorted(members, key=lambda s: s["u_min"])
+    groups, cur, cur_max = [], [], None
+    for s in members:
+        if cur and s["u_min"] - cur_max > u_gap_m:
+            groups.append(cur)
+            cur, cur_max = [], None
+        cur.append(s)
+        cur_max = s["u_max"] if cur_max is None else max(cur_max, s["u_max"])
+    if cur:
+        groups.append(cur)
+    return groups
+
+
 def group_wall_runs(
     vertical_planes,
     xyz,
     axes,
     merge_offset_m: float = 0.15,
-    max_relief_m: float = 1.0,
-    min_run_length_m: float = 1.0,
+    max_relief_m: float = 0.35,
+    min_run_length_m: float = 0.5,
     angle_tol_deg: float = 10.0,
-    full_height_frac: float = 0.5,
+    full_height_frac: float = 0.4,
+    u_gap_m: float = 2.8,
+    min_run_inliers: int = 1200,
     *,
     return_used_indices: bool = False,
 ):
@@ -157,33 +186,55 @@ def group_wall_runs(
     perpendicular offset from that axis is within max_relief_m of the run's
     other members (chained transitively, see _greedy_chain).
 
-    This is deliberately two-tiered:
+    This is deliberately multi-tiered:
       - merge_offset_m (default 0.15 m) controls whether two colinear planes
         collapse into the SAME WallStep, e.g. two DBSCAN pieces of one wall
         face split by a doorway (same physical surface, offset differs only
         by point-cloud noise).
-      - max_relief_m (default 1.0 m) controls how far a face can protrude
-        and still count as relief on the SAME wall rather than a different
-        wall entirely -- e.g. a pillar front 0.3 m proud of its wall, or the
-        ~0.2 m gap between a wall's inner/outer faces (offset > 0.15 m, so it
-        does NOT collapse into the main step, but it is still far short of
-        max_relief_m so it stays part of the same run as its own WallStep).
-      Two distinct real walls in this pipeline's target buildings (room-scale
-      Manhattan floorplans) are always many multiples of max_relief_m apart,
-      so one generous constant safely tells "relief" from "a different wall".
+      - max_relief_m (default 0.35 m, tightened from an earlier 1.0 m by
+        real-scan validation -- see scripts/experiments/README.md) controls
+        how far a face can protrude and still count as relief on the SAME
+        wall rather than a different wall entirely -- e.g. a pillar front
+        0.3 m proud of its wall, or the ~0.2 m gap between a wall's
+        inner/outer faces (offset > 0.15 m, so it does NOT collapse into the
+        main step, but it is still short of max_relief_m so it stays part of
+        the same run as its own WallStep). 0.35 m is tight enough that real
+        corridor walls (parallel, offset by more than a pillar's protrusion)
+        reliably land in different clusters instead of merging into one.
+      - u_gap_m (default 2.8 m, real-scan validated) is the SECOND axis of
+        separation, along the wall's own length rather than its offset: even
+        planes in the same offset cluster are split into separate runs
+        wherever consecutive members' u-intervals leave a hole wider than
+        u_gap_m (see _chain_by_u_interval). This is what tells "two distinct
+        collinear walls that merely share an offset" (a real, if unusual,
+        occurrence -- e.g. two segments of a corridor wall on either side of
+        a wide opening that ISN'T a doorway) from "one wall broken by a
+        doorway/window", which the two-tiered offset clustering alone cannot
+        distinguish (both look identical: same direction, same offset).
+        Holes narrower than u_gap_m stay inside the run as recoverable
+        opening candidates (see the `members` key below and Task 7).
 
     Only "full height" planes are eligible for run formation: a plane's own
-    vertical extent must be >= full_height_frac of the tallest vertical
-    plane's extent (among the input). This keeps beam side faces (elevated,
-    short z-extent, but which can otherwise span the whole room and look
+    vertical extent must be >= full_height_frac (default 0.4, loosened from
+    an earlier 0.5 by real-scan validation, to let occluded/partial-height
+    real wall sections survive) of the tallest vertical plane's extent
+    (among the input). This keeps beam side faces (elevated, short
+    z-extent, but which can otherwise span the whole room and look
     "wall-length") out of wall-run formation, without needing floor_z /
     ceiling_z as parameters here. extract_columns_beams handles columns and
     beams separately, from the *unfiltered* vertical_planes list.
 
-    Candidate runs whose main step spans less than min_run_length_m (default
-    1.0 m) are dropped -- not long enough to be a real wall, most likely a
-    column face caught in the same direction/offset bucket (see
-    extract_columns_beams, which handles those explicitly).
+    Candidate runs are dropped, as likely-not-a-real-wall, if either:
+      - their main step spans less than min_run_length_m (default 0.5 m,
+        loosened from an earlier 1.0 m by real-scan validation, to let
+        short/occluded real partitions survive) -- most likely a column
+        face caught in the same direction/offset bucket otherwise (see
+        extract_columns_beams, which handles those explicitly); or
+      - their combined inlier count (summed across every member plane in the
+        u-interval segment) is below min_run_inliers (default 1200) -- a
+        furniture guard: real scans can produce compact, sparse,
+        coincidentally-aligned-and-offset furniture faces that would
+        otherwise pass the length/height checks.
 
     axes: 3x3 rotation whose first two columns give the two dominant
     horizontal (Manhattan) directions in the frame `xyz` is expressed in. By
@@ -213,10 +264,22 @@ def group_wall_runs(
     Returns a list[dict], one per wall run, each with keys:
       direction: "x" | "y" -- which dominant axis the run's normal is closest to
       normal: (float, float, float) unit vector along `direction`
-      p0, p1: (x, y) centerline endpoints of the run's MAIN step, world frame
+      p0, p1: (x, y) centerline endpoints of the run's u-interval SEGMENT
+              (min(u_min)..max(u_max) across every member, holes from
+              doorways/windows included -- NOT just the longest/main step),
+              at the main step's offset, world frame
       offset_m: the main step's ABSOLUTE perpendicular offset (its world position)
       steps: list[WallStep] (including the main one, offset_m == 0.0),
              sorted by offset_m, relative to the main step as described above
+      members: list[tuple[float, float]] -- the (u_min, u_max) ABSOLUTE
+               world-u interval of every individual member plane that fed
+               this run (before merge_offset_m step-grouping collapses
+               them). Any hole between consecutive member intervals is, by
+               construction (see u_gap_m above), narrower than u_gap_m --
+               i.e. still inside the run -- and is exactly the kind of gap
+               a real doorway/window opening leaves; a caller can recover it
+               by diffing consecutive (sorted) members, which is what this
+               key exists for (see Task 7).
 
     return_used_indices (keyword-only, default False): when True, return
     (runs, used_indices) instead of just runs, where used_indices is a
@@ -257,51 +320,65 @@ def group_wall_runs(
     for axis_name in ("x", "y"):
         group = [s for s in stats if s["axis"] == axis_name]
         for cluster in _greedy_chain(group, key=lambda s: s["offset"], max_gap=max_relief_m):
-            step_groups = _greedy_chain(cluster, key=lambda s: s["offset"], max_gap=merge_offset_m)
-            steps = []
-            for sg in step_groups:
-                total_n = sum(x["n_inliers"] for x in sg)
-                offset_avg = sum(x["offset"] * x["n_inliers"] for x in sg) / total_n
-                steps.append(WallStep(
-                    offset_m=offset_avg,
-                    u_min_m=min(x["u_min"] for x in sg),
-                    u_max_m=max(x["u_max"] for x in sg),
-                    z_min_m=min(x["z_min"] for x in sg),
-                    z_max_m=max(x["z_max"] for x in sg),
-                ))
-            main_step = max(steps, key=lambda st: st.u_max_m - st.u_min_m)
-            if (main_step.u_max_m - main_step.u_min_m) < min_run_length_m:
-                continue  # too short to be a wall -- likely a column face
+            for useg in _chain_by_u_interval(cluster, u_gap_m):
+                total_inliers = sum(x["n_inliers"] for x in useg)
+                if total_inliers < min_run_inliers:
+                    continue  # too little real support -- likely furniture
 
-            main_abs_offset = main_step.offset_m
-            axis_vec = cluster[0]["axis_vec"]
-            u_vec = cluster[0]["u_vec"]
-            p0 = axis_vec * main_abs_offset + u_vec * main_step.u_min_m
-            p1 = axis_vec * main_abs_offset + u_vec * main_step.u_max_m
-            rebased_steps = sorted(
-                (WallStep(
-                    offset_m=st.offset_m - main_abs_offset,
-                    u_min_m=st.u_min_m,
-                    u_max_m=st.u_max_m,
-                    z_min_m=st.z_min_m,
-                    z_max_m=st.z_max_m,
-                ) for st in steps),
-                key=lambda st: st.offset_m,
-            )
-            runs.append(dict(
-                direction=axis_name,
-                normal=(float(axis_vec[0]), float(axis_vec[1]), float(axis_vec[2])),
-                offset_m=main_abs_offset,
-                p0=(float(p0[0]), float(p0[1])),
-                p1=(float(p1[0]), float(p1[1])),
-                steps=rebased_steps,
-            ))
-            # The whole cluster (every step_group / step) is consumed by
-            # this accepted run -- a plane that was chained here but whose
-            # candidate run got dropped by the min_run_length_m check above
-            # (the `continue` a few lines up) never reaches this point, so
-            # it correctly stays out of used_indices.
-            used_indices.update(s["src_index"] for s in cluster)
+                step_groups = _greedy_chain(useg, key=lambda s: s["offset"], max_gap=merge_offset_m)
+                steps = []
+                for sg in step_groups:
+                    total_n = sum(x["n_inliers"] for x in sg)
+                    offset_avg = sum(x["offset"] * x["n_inliers"] for x in sg) / total_n
+                    steps.append(WallStep(
+                        offset_m=offset_avg,
+                        u_min_m=min(x["u_min"] for x in sg),
+                        u_max_m=max(x["u_max"] for x in sg),
+                        z_min_m=min(x["z_min"] for x in sg),
+                        z_max_m=max(x["z_max"] for x in sg),
+                    ))
+                # The run length guard uses the WHOLE segment's u-span
+                # (holes included), not just the longest step's -- a run
+                # broken by a doorway must not be penalized for the main
+                # step's span alone falling short if the segment as a whole
+                # (main step + the piece across the doorway) is long enough.
+                useg_u_min = min(x["u_min"] for x in useg)
+                useg_u_max = max(x["u_max"] for x in useg)
+                if (useg_u_max - useg_u_min) < min_run_length_m:
+                    continue  # too short to be a wall -- likely a column face
+
+                main_step = max(steps, key=lambda st: st.u_max_m - st.u_min_m)
+                main_abs_offset = main_step.offset_m
+                axis_vec = useg[0]["axis_vec"]
+                u_vec = useg[0]["u_vec"]
+                p0 = axis_vec * main_abs_offset + u_vec * useg_u_min
+                p1 = axis_vec * main_abs_offset + u_vec * useg_u_max
+                rebased_steps = sorted(
+                    (WallStep(
+                        offset_m=st.offset_m - main_abs_offset,
+                        u_min_m=st.u_min_m,
+                        u_max_m=st.u_max_m,
+                        z_min_m=st.z_min_m,
+                        z_max_m=st.z_max_m,
+                    ) for st in steps),
+                    key=lambda st: st.offset_m,
+                )
+                runs.append(dict(
+                    direction=axis_name,
+                    normal=(float(axis_vec[0]), float(axis_vec[1]), float(axis_vec[2])),
+                    offset_m=main_abs_offset,
+                    p0=(float(p0[0]), float(p0[1])),
+                    p1=(float(p1[0]), float(p1[1])),
+                    steps=rebased_steps,
+                    members=[(float(x["u_min"]), float(x["u_max"])) for x in useg],
+                ))
+                # The whole segment (every step_group / step) is consumed by
+                # this accepted run -- a plane that was chained here but
+                # whose candidate run got dropped by the min_run_inliers or
+                # min_run_length_m checks above (the `continue`s a few lines
+                # up) never reaches this point, so it correctly stays out of
+                # used_indices.
+                used_indices.update(s["src_index"] for s in useg)
     if return_used_indices:
         return runs, used_indices
     return runs
