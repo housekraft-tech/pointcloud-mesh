@@ -34,6 +34,17 @@ def main(mesh_path, out_dir):
         geom = mesh
     log(f"loaded: {len(mesh.vertices):,} verts / {len(mesh.triangles):,} tris")
 
+    # The saved OBJs are Y-up (for Blender). Open3D's camera conventions
+    # below are Z-up, so rotate Y-up -> Z-up in-memory for rendering
+    # ((x,y,z)->(x,-z,y)); this makes "top_down" actually look straight down
+    # the height axis. Detect Y-up as: the shortest-span axis is Y (height).
+    v = np.asarray(geom.vertices if hasattr(geom, "vertices") else geom.points)
+    spans = v.max(axis=0) - v.min(axis=0)
+    if np.argmin(spans) == 1:   # Y is the height axis -> Y-up mesh
+        Rz = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], float)  # Y-up -> Z-up
+        geom.rotate(Rz, center=(0, 0, 0))
+        log("rotated Y-up mesh -> Z-up for correct camera framing")
+
     vis = o3d.visualization.Visualizer()
     vis.create_window(visible=False, width=1500, height=1100)
     vis.add_geometry(geom)
