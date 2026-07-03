@@ -1,6 +1,6 @@
 import numpy as np
 
-from scripts.recon.trajectory import approx_trajectory, load_trajectory
+from scripts.recon.trajectory import approx_trajectory, load_trajectory, wall_crossings
 
 
 def test_approx_trajectory_follows_time_ordered_line():
@@ -36,3 +36,18 @@ def test_load_trajectory_xyz_only(tmp_path):
     path = load_trajectory(str(p))
     assert path.shape == (2, 3)
     assert np.allclose(path[1], [1, 2, 3])
+
+
+def test_walkthrough_crossing_found_at_door_u():
+    wall = dict(direction="y", offset_m=2.0, p0=(0.0, 2.0), p1=(6.0, 2.0), steps=[])
+    # walk from room A (y=1) through the wall at x=3.2 into room B (y=3)
+    traj = np.array([[3.2, 1.0, 1.2], [3.2, 1.6, 1.2], [3.2, 2.4, 1.2], [3.2, 3.0, 1.2]])
+    hits = wall_crossings(traj, [wall])
+    assert 0 in hits and len(hits[0]) == 1
+    assert abs(hits[0][0] - 3.2) < 1e-6
+
+
+def test_parallel_walk_never_crosses():
+    wall = dict(direction="y", offset_m=2.0, p0=(0.0, 2.0), p1=(6.0, 2.0), steps=[])
+    traj = np.array([[0.5, 1.0, 1.2], [5.5, 1.0, 1.2]])
+    assert wall_crossings(traj, [wall]) == {}

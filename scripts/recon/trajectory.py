@@ -68,3 +68,33 @@ def load_trajectory(path: str) -> np.ndarray:
         arr = arr[np.argsort(arr[:, 0])]
         return arr[:, 1:4]
     return arr[:, 0:3]
+
+
+def wall_crossings(trajectory, walls, end_margin_m: float = 0.15) -> dict:
+    """World-u positions where consecutive trajectory steps cross each wall's
+    centerline. A crossing = the operator walked through that wall line ->
+    a doorway/pathway/balcony-door seed (uses gps_time ordering upstream)."""
+    traj = np.asarray(trajectory, dtype=float)[:, :2]
+    out = {}
+    for wi, w in enumerate(walls):
+        p0 = np.asarray(w["p0"], float)
+        p1 = np.asarray(w["p1"], float)
+        d = p1 - p0
+        length = float(np.linalg.norm(d))
+        if length == 0:
+            continue
+        u_i = 1 if w["direction"] == "x" else 0
+        hits = []
+        for a, b in zip(traj[:-1], traj[1:]):
+            e = b - a
+            denom = d[0] * e[1] - d[1] * e[0]
+            if abs(denom) < 1e-12:
+                continue
+            r = a - p0
+            t = (r[0] * e[1] - r[1] * e[0]) / denom        # along the wall
+            s = (r[0] * d[1] - r[1] * d[0]) / denom        # along the step
+            if 0.0 <= s <= 1.0 and end_margin_m <= t * length <= length - end_margin_m:
+                hits.append(float((p0 + t * d)[u_i]))
+        if hits:
+            out[wi] = sorted(hits)
+    return out
