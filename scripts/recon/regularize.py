@@ -438,3 +438,91 @@ def pair_thickness(walls, points, default_m: float = 0.10,
             run["thickness_source"] = "assumed"
         out.append(run)
     return out
+
+
+# ---------------------------------------------------------------------------
+# recenter_walls
+# ---------------------------------------------------------------------------
+
+def recenter_walls(walls, points, z_floor: float, z_ceiling: float,
+                    min_thickness_m: float = 0.04):
+    """Shift each measured wall's centerline from its detected reference
+    FACE to the midline between its two faces.
+
+    Without this, the whole wall body (its full thickness) gets attributed
+    to whichever adjacent room's plane happened to be the "main" step --
+    p0/p1/offset_m sit on that face, not on the centerline, so the two
+    rooms sharing the wall end up overlapping/absorbing the wall's
+    internals instead of meeting cleanly at its midline. Must be called
+    AFTER pair_thickness (needs thickness_m/thickness_source already set).
+
+    Only walls with thickness_source == "measured" and thickness_m >=
+    min_thickness_m are considered -- an "assumed" (single-sided,
+    default-filled) thickness carries no evidence of where the back face
+    actually is, so shifting would just be a guess in a random direction.
+
+    Back-face side (which way, +normal or -normal, the second face lies)
+    is determined two ways, in order:
+      1. Preferred: one of the run's OWN steps (see pair_thickness/
+         _thickness_from_steps) already sits at |offset_m| ~= thickness_m
+         (+-0.06) -- its sign gives the side directly, no point search
+         needed.
+      2. Fallback: a perpendicular point-density peak at +-thickness_m
+         (+-0.07 window), restricted to a mid-height band
+         (z_floor+0.35 .. z_ceiling-0.35, to dodge floor/ceiling clutter)
+         and to points along the wall's own u-span -- whichever side (+ or
+         -) has >=50 points in that window wins.
+
+    If neither method finds a side, the wall is returned unchanged (no
+    guessing). Shifts p0, p1, and offset_m by thickness_m/2 toward the
+    found back-face side, which places the centerline exactly on the
+    face-pair midline. Non-mutating: returns a new list of shallow-copied
+    dicts.
+    """
+    points = np.asarray(points, dtype=float) if points is not None else np.zeros((0, 3))
+    xy = points[:, :2] if points.size else np.zeros((0, 2))
+    z = points[:, 2] if points.size else np.zeros((0,))
+    mid_band = (z > z_floor + 0.35) & (z < z_ceiling - 0.35)
+
+    out = []
+    for w in walls:
+        w = dict(w)
+        t = float(w.get("thickness_m", 0.0))
+        if w.get("thickness_source") != "measured" or t < min_thickness_m:
+            out.append(w)
+            continue
+
+        sign = None
+        for st in w.get("steps", []):
+            if abs(abs(st.offset_m) - t) < 0.06 and abs(st.offset_m) > 0.03:
+                sign = 1.0 if st.offset_m > 0 else -1.0
+                break
+
+        axis_i = 0 if w["direction"] == "x" else 1
+        u_i = 1 - axis_i
+
+        if sign is None and xy.shape[0]:
+            p0 = np.asarray(w["p0"], dtype=float)
+            p1 = np.asarray(w["p1"], dtype=float)
+            u_lo, u_hi = sorted([p0[u_i], p1[u_i]])
+            band = mid_band & (xy[:, u_i] > u_lo) & (xy[:, u_i] < u_hi)
+            dperp = xy[band, axis_i] - w["offset_m"]
+            n_pos = int(np.count_nonzero(np.abs(dperp - t) < 0.07))
+            n_neg = int(np.count_nonzero(np.abs(dperp + t) < 0.07))
+            if max(n_pos, n_neg) >= 50:
+                sign = 1.0 if n_pos >= n_neg else -1.0
+
+        if sign is None:
+            out.append(w)
+            continue
+
+        shift = sign * t / 2.0
+        delta = np.zeros(2)
+        delta[axis_i] = shift
+        p0 = np.asarray(w["p0"], dtype=float)
+        p1 = np.asarray(w["p1"], dtype=float)
+        w["p0"] = (float(p0[0] + delta[0]), float(p0[1] + delta[1]))
+        w["p1"] = (float(p1[0] + delta[0]), float(p1[1] + delta[1]))
+        w["offset_m"] = float(w["offset_m"] + shift)
+        out.append(w)
+    return out

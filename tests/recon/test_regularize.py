@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from scripts.recon.schema import WallStep
-from scripts.recon.regularize import snap_walls, resolve_corners, pair_thickness
+from scripts.recon.regularize import snap_walls, resolve_corners, pair_thickness, recenter_walls
 
 
 def _wall(p0, p1, normal=None, offset_m=None, steps=None, direction="x"):
@@ -285,6 +285,33 @@ def test_pair_thickness_does_not_mutate_input():
     walls = [run]
     pair_thickness(walls, points=np.zeros((0, 3)))
     assert "thickness_m" not in walls[0]
+
+
+# ---------------------------------------------------------------------------
+# recenter_walls
+# ---------------------------------------------------------------------------
+
+def _run(offset, steps, thickness, source="measured", direction="x"):
+    p0 = (offset, 0.0) if direction == "x" else (0.0, offset)
+    p1 = (offset, 4.0) if direction == "x" else (4.0, offset)
+    return dict(direction=direction, normal=(1.0, 0.0, 0.0) if direction == "x" else (0.0, 1.0, 0.0),
+                offset_m=offset, p0=p0, p1=p1, steps=steps,
+                thickness_m=thickness, thickness_source=source)
+
+
+def test_recenter_shifts_to_midline_using_back_step():
+    steps = [WallStep(0.0, 0.0, 4.0, 0.0, 2.7), WallStep(0.20, 0.0, 4.0, 0.0, 2.7)]
+    w = _run(5.0, steps, thickness=0.20)
+    out = recenter_walls([w], points=np.zeros((0, 3)), z_floor=0.0, z_ceiling=2.7)
+    assert abs(out[0]["offset_m"] - 5.10) < 1e-6
+    assert abs(out[0]["p0"][0] - 5.10) < 1e-6
+    assert w["offset_m"] == 5.0  # input not mutated
+
+
+def test_recenter_leaves_assumed_walls_alone():
+    w = _run(5.0, [WallStep(0.0, 0.0, 4.0, 0.0, 2.7)], thickness=0.10, source="assumed")
+    out = recenter_walls([w], points=np.zeros((0, 3)), z_floor=0.0, z_ceiling=2.7)
+    assert out[0]["offset_m"] == 5.0
 
 
 # ---------------------------------------------------------------------------
