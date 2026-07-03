@@ -35,12 +35,14 @@ from scripts.recon.isolate import select_z_band, isolate_unit
 from scripts.isolidarflow import DEFAULT_CONFIG
 from scripts.experiments.freespace_floorplan import sensor_trajectory_from_gpstime
 from scripts.experiments.hough_vectorize import snap_and_merge
+from scripts.experiments.make_floorplan import close_junctions, merge_parallels
 
 PPM = 50
 CELL = 1.0 / PPM
 UZ_RES = 0.04            # (u,z) silhouette cell size
 WALL_HALF_BAND = 0.18
-GROOVE_MIN_DEPTH = 0.03
+GROOVE_MIN_DEPTH = 0.05     # min face setback to count as a groove
+GROOVE_MIN_BANDS = 2        # groove must span >= this many 0.1m bands (>=0.2m)
 MIN_WALL_LEN = 0.5
 
 
@@ -144,6 +146,12 @@ def main(las_path, out_dir):
     hsegs, vsegs = ([], [])
     if lines is not None:
         hsegs, vsegs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=int(0.25 * PPM), coord_tol_px=int(0.12 * PPM))
+    # perfect the wall lines: collapse doubled faces + close corners/T-junctions
+    # (extend endpoints to meet perpendicular walls) so panels meet cleanly.
+    hsegs, vsegs = merge_parallels(hsegs), merge_parallels(vsegs)
+    hsegs, vsegs = close_junctions(hsegs, vsegs, snap=int(0.4 * PPM))
+    hsegs = [s for s in hsegs if s[1] - s[0] >= int(MIN_WALL_LEN * PPM)]
+    vsegs = [s for s in vsegs if s[1] - s[0] >= int(MIN_WALL_LEN * PPM)]
 
     def px2m(col, row):
         return xmin + col * CELL, ymax - row * CELL
@@ -187,24 +195,38 @@ def main(las_path, out_dir):
             continue
         n_open += sum(len(list(p.interiors)) for p in polys)
 
-        # groove: height bands where the room-side face recedes >= threshold
+        # groove: contiguous height bands where the room-side face recedes.
+        # measure per-band setback, then keep only runs >= GROOVE_MIN_BANDS
+        # tall (rejects per-band noise) and cut ONE channel per run.
         cutters = []
         room = pp > 0
-        if room.sum() > 200:
+        if room.sum() > 300:
             face = np.percentile(pp[room], 80)
-            for zl in np.arange(z_floor + 0.15, z_ceiling - 0.15, 0.1):
+            zb = np.arange(z_floor + 0.15, z_ceiling - 0.15, 0.1)
+            setb = np.full(len(zb), -1.0)
+            for i, zl in enumerate(zb):
                 m = room & (zz >= zl) & (zz < zl + 0.1)
-                if m.sum() < 20:
-                    continue
-                setback = face - np.percentile(pp[m], 80)
-                if setback >= GROOVE_MIN_DEPTH:
-                    depth = float(min(setback, thick * 0.7))
-                    ch = trimesh.creation.box(extents=(L * 0.98, depth * 2.2, 0.1))
-                    Rz = trimesh.transformations.rotation_matrix(np.arctan2(d[1], d[0]), [0, 0, 1])
-                    ch.apply_transform(Rz)
-                    off = (p0 + d * L / 2) + n * (thick / 2)
-                    ch.apply_translation((off[0], off[1], zl + 0.05))
-                    cutters.append(ch); n_groove += 1
+                if m.sum() >= 30:
+                    setb[i] = face - np.percentile(pp[m], 80)
+            active = setb >= GROOVE_MIN_DEPTH
+            i = 0
+            while i < len(active):
+                if active[i]:
+                    j = i
+                    while j < len(active) and active[j]:
+                        j += 1
+                    if (j - i) >= GROOVE_MIN_BANDS:            # >= this many bands tall
+                        z0 = zb[i]; z1 = zb[j - 1] + 0.1
+                        depth = float(min(np.median(setb[i:j]), thick * 0.7))
+                        ch = trimesh.creation.box(extents=(L * 0.98, depth * 2.2, z1 - z0))
+                        Rz = trimesh.transformations.rotation_matrix(np.arctan2(d[1], d[0]), [0, 0, 1])
+                        ch.apply_transform(Rz)
+                        off = (p0 + d * L / 2) + n * (thick / 2)
+                        ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
+                        cutters.append(ch); n_groove += 1
+                    i = j
+                else:
+                    i += 1
         for ch in cutters:
             try:
                 wall = wall.difference(ch)
@@ -212,16 +234,15 @@ def main(las_path, out_dir):
                 pass
         parts.append((f"wall_{wi:02d}", wall))
 
+    # floor slab only (no ceiling, per request -- keeps the interior visible)
     fx, fy = (xmax - xmin), (ymax - ymin)
     parts.append(("floor", slab((xmin + xmax) / 2, (ymin + ymax) / 2, z_floor - 0.05, fx, fy, 0.10)))
-    parts.append(("ceiling", slab((xmin + xmax) / 2, (ymin + ymax) / 2, z_ceiling + 0.05, fx, fy, 0.10)))
 
     scene = trimesh.Scene()
     for name, m in parts:
         if m is None or getattr(m, "is_empty", True):
             continue
         m.visual.face_colors = ([150, 130, 110, 255] if name == "floor"
-                                else [225, 225, 230, 255] if name == "ceiling"
                                 else [205, 205, 210, 255])
         scene.add_geometry(m, geom_name=name)
     scene.export(str(out_dir / "modular_model.glb"))
