@@ -51,9 +51,13 @@ future wall object exposing at least those attributes will work unmodified.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import trimesh
 from shapely.geometry import Polygon as ShapelyPolygon
+
+from .schema import WallStep
 
 # Fallback wall thickness (metres) used only when the `wall` object passed in
 # doesn't carry an explicit thickness_m (floorplan_schema.Wall always does,
@@ -387,3 +391,137 @@ def cut_openings(wall_solid: trimesh.Trimesh, openings: list, wall) -> trimesh.T
             solid, f"cut_openings (opening_id={getattr(opening, 'opening_id', '?')})"
         )
     return solid
+
+
+# ---------------------------------------------------------------------------
+# Task 9 (Architecture Revision R1): per-segment meshing
+# ---------------------------------------------------------------------------
+
+def _wattr(wall, key, default=None):
+    """Read `key` off a wall that may be a group_wall_runs dict OR an object
+    (SimpleNamespace / future Wall type) -- both shapes flow through this
+    module's callers, so accept either uniformly."""
+    if isinstance(wall, dict):
+        return wall.get(key, default)
+    return getattr(wall, key, default)
+
+
+# Feature kinds that ADD material as a stepped extrusion (each becomes a
+# WallStep). "groove" is subtractive relief, "opening" is a through-cut --
+# both handled separately below.
+_ADDITIVE_KINDS = ("face", "l_extrusion", "column_attach", "beam_soffit")
+
+
+def _perp_box(seg_wall, u_lo, u_hi, z_lo, z_hi, v_lo, v_hi) -> trimesh.Trimesh:
+    """World-axis-aligned box in the (segment) wall's frame: u measured from
+    seg_wall.p0 along its snapped world axis (same convention as `_step_box`),
+    perpendicular ("v") spanning [v_lo, v_hi] along the world axis nearest the
+    wall's normal (always its POSITIVE sign, per `_wall_world_axes`), z from
+    z_lo to z_hi. Used to build groove-recess cutters."""
+    u_is_x, u_sign = _wall_world_axes(seg_wall)
+    p0 = np.asarray(seg_wall.p0, dtype=float)
+    u_mid = (u_lo + u_hi) / 2.0
+    v_mid = (v_lo + v_hi) / 2.0
+    z_mid = (z_lo + z_hi) / 2.0
+    if u_is_x:
+        center = np.array([p0[0] + u_sign * u_mid, p0[1] + v_mid, z_mid])
+        extents = (u_hi - u_lo, v_hi - v_lo, z_hi - z_lo)
+    else:
+        center = np.array([p0[0] + v_mid, p0[1] + u_sign * u_mid, z_mid])
+        extents = (v_hi - v_lo, u_hi - u_lo, z_hi - z_lo)
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation(center)
+    return box
+
+
+def segment_to_mesh(segment, wall) -> trimesh.Trimesh:
+    """Build ONE watertight mesh for a room-owned WallSegment (Task 9 / R1).
+
+    Reuses the SAME CSG primitives as the whole-wall builders: a stepped
+    additive extrusion (`wall_to_solid`) for the segment's own u-range built
+    from its clipped ADDITIVE features (face / l_extrusion / column_attach /
+    beam_soffit -- each a WallStep at its own offset & z-range), then boolean
+    subtraction of its "opening" features (through-cuts, via `cut_openings`)
+    and "groove" features (front-face recesses, via `_perp_box`). Relief is
+    thereby preserved per segment (the user's top priority): l_extrusions /
+    column_attach protrude, beam_soffits leave a hollow gap below (they start
+    at their elevated z_min, not the floor), grooves recess, openings punch
+    through.
+
+    `segment.features` are in WALL-LOCAL u (metres from wall.p0). A per-segment
+    wall is built whose own p0/p1 are the segment's world endpoints, so the
+    existing `_step_box` / `_opening_cutter_box` (both measuring u from p0)
+    place everything correctly even for a segment that doesn't start at the
+    parent wall's p0.
+    """
+    p0 = np.asarray(_wattr(wall, "p0"), dtype=float)
+    p1 = np.asarray(_wattr(wall, "p1"), dtype=float)
+    d = p1 - p0
+    length = float(np.linalg.norm(d))
+    if length < 1e-9:
+        raise ValueError("segment_to_mesh: wall.p0 and wall.p1 must be distinct")
+    u_hat = d / length
+    thickness = _wattr(wall, "thickness_m", None) or DEFAULT_WALL_THICKNESS_M
+    floor_z = float(_wattr(wall, "floor_z_m", 0.0) or 0.0)
+
+    seg_p0 = p0 + u_hat * segment.u_min_m
+    seg_p1 = p0 + u_hat * segment.u_max_m
+    seg_len = float(segment.u_max_m - segment.u_min_m)
+    seg_wall = SimpleNamespace(
+        p0=(float(seg_p0[0]), float(seg_p0[1])),
+        p1=(float(seg_p1[0]), float(seg_p1[1])),
+        thickness_m=float(thickness),
+        floor_z_m=floor_z,
+    )
+
+    def _to_local(u):
+        return float(u - segment.u_min_m)
+
+    additive, grooves, openings = [], [], []
+    for f in segment.features:
+        lo = max(0.0, _to_local(f.u_min_m))
+        hi = min(seg_len, _to_local(f.u_max_m))
+        if hi - lo <= 1e-6:
+            continue
+        if f.kind in _ADDITIVE_KINDS:
+            additive.append(WallStep(offset_m=f.offset_m, u_min_m=lo, u_max_m=hi,
+                                     z_min_m=f.z_min_m, z_max_m=f.z_max_m))
+        elif f.kind == "groove":
+            grooves.append((lo, hi, f.z_min_m, f.z_max_m, abs(f.offset_m)))
+        elif f.kind == "opening":
+            openings.append(SimpleNamespace(
+                opening_id=str(f.meta.get("opening_id", "opening")),
+                u_min_m=lo, u_max_m=hi,
+                sill_m=float(f.z_min_m - floor_z),
+                height_m=float(f.z_max_m - f.z_min_m),
+            ))
+
+    if not additive:
+        # Only subtractive features (or none) fell in this segment -- still give
+        # it a plain full-height face so it stays a real watertight wall piece
+        # (never silently dropped). Ceiling from the wall if it carries one,
+        # else the tallest feature's top.
+        z_top = _wattr(wall, "ceiling_z_m", None)
+        if z_top is None:
+            tops = [f.z_max_m for f in segment.features]
+            z_top = max(tops) if tops else floor_z + DEFAULT_WALL_THICKNESS_M
+        additive = [WallStep(offset_m=0.0, u_min_m=0.0, u_max_m=seg_len,
+                             z_min_m=floor_z, z_max_m=float(z_top))]
+
+    solid = wall_to_solid(seg_wall, additive)
+
+    if openings:
+        solid = cut_openings(solid, openings, seg_wall)
+
+    for (lo, hi, z_lo, z_hi, depth) in grooves:
+        depth = min(depth, seg_wall.thickness_m * 0.95)
+        # Recess the front (world-positive perp) face inward by `depth` over the
+        # groove's u/z range. The front face sits at +thickness/2 (see
+        # `_step_box`); overshoot outward so the cut fully clears that face.
+        v_lo = seg_wall.thickness_m / 2.0 - depth
+        v_hi = seg_wall.thickness_m / 2.0 + OPENING_OVERSHOOT_M
+        cutter = _perp_box(seg_wall, lo, hi, z_lo, z_hi, v_lo, v_hi)
+        solid = trimesh.boolean.difference([solid, cutter])
+        _ensure_watertight(solid, "segment_to_mesh (groove)")
+
+    return _ensure_watertight(solid, "segment_to_mesh")
