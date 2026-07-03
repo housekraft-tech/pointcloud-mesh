@@ -44,7 +44,7 @@ from scripts.isolidarflow import DEFAULT_CONFIG
 from scripts.experiments.freespace_floorplan import sensor_trajectory_from_gpstime
 from scripts.experiments import (walk_path_viz, freespace_floorplan,
                                  tomographic_floorplan, diagnostic_atlas,
-                                 las_information_mining)
+                                 las_information_mining, openings_from_sections)
 
 
 def log(msg):
@@ -129,6 +129,7 @@ def main(raw_las, scan_name, poisson=True):
         ("tomographic", lambda: tomographic_floorplan.main(iso_path, scan_name, str(out_dir))),
         ("diagnostic atlas", lambda: diagnostic_atlas.main(iso_path, scan_name, str(out_dir / "atlas"))),
         ("las information mining", lambda: las_information_mining.main(iso_path, scan_name, str(out_dir / "lasmining"))),
+        ("openings from sections", lambda: openings_from_sections.main(iso_path, scan_name, str(out_dir / "openings"))),
     ]
     if poisson:
         # Stage C last -- it's the slow one (~3-5 min Poisson), so every fast
