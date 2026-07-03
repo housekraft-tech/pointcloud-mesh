@@ -24,11 +24,30 @@ sys.path.insert(0, str(ROOT))
 from scripts.experiments.hough_vectorize import snap_and_merge
 
 WALL_THICK_PX = 6
-SNAP_PX = 22           # extend an endpoint up to this far to meet a perpendicular line
+SNAP_PX = 30           # extend an endpoint up to this far to meet a perpendicular line
+MIN_LEN_PX = 16        # drop stub segments shorter than this
+PARALLEL_TOL_PX = 16   # merge parallel overlapping lines within this (wall thickness)
 
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def merge_parallels(segs, tol=PARALLEL_TOL_PX):
+    """Collapse doubled parallel lines (both faces of a thick wall) that
+    overlap and sit within a wall-thickness of each other into one centerline."""
+    segs = sorted(segs, key=lambda s: (s[2], s[0]))
+    out = []
+    for a0, a1, c in segs:
+        placed = False
+        for m in out:
+            if abs(m[2] - c) <= tol and a0 <= m[1] and a1 >= m[0]:   # near + overlap
+                m[0] = min(m[0], a0); m[1] = max(m[1], a1); m[2] = (m[2] + c) // 2
+                placed = True
+                break
+        if not placed:
+            out.append([a0, a1, c])
+    return out
 
 
 def close_junctions(hsegs, vsegs, snap=SNAP_PX):
@@ -76,8 +95,14 @@ def main(mask_path, out_dir):
     hsegs, vsegs = ([], [])
     if lines is not None:
         hsegs, vsegs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=18, coord_tol_px=8)
-    log(f"{0 if lines is None else len(lines)} raw -> {len(hsegs)} H + {len(vsegs)} V, closing junctions ...")
-    hsegs, vsegs = close_junctions(hsegs, vsegs)
+    n0 = len(hsegs) + len(vsegs)
+    hsegs, vsegs = merge_parallels(hsegs), merge_parallels(vsegs)   # collapse doubled faces
+    hsegs, vsegs = close_junctions(hsegs, vsegs)                    # close corners/T-junctions
+    # drop stubs (short leftover fragments), but keep any that got extended
+    hsegs = [s for s in hsegs if s[1] - s[0] >= MIN_LEN_PX]
+    vsegs = [s for s in vsegs if s[1] - s[0] >= MIN_LEN_PX]
+    log(f"{0 if lines is None else len(lines)} raw -> {n0} snapped -> "
+        f"{len(hsegs)} H + {len(vsegs)} V (parallels merged, stubs dropped, junctions closed)")
 
     # ---- render proper walls at thickness on white ----
     plan = np.full((H, W, 3), 255, np.uint8)

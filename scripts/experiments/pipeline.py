@@ -128,6 +128,45 @@ def _to_yup(obj_path):
     m.export(obj_path)
 
 
+def build_mesh_floorplan(out_dir):
+    """Stage D: the ACCURATE mesh-based floorplan. Load the Poisson mesh,
+    rotate 180 about the up axis, project the wall-height vertex band top-down
+    (dense + denoised), then make_floorplan (skeletonize -> Hough -> Manhattan
+    -> merge parallels -> close junctions -> stub removal) -> clean CAD plan."""
+    import trimesh
+    import numpy as np
+    import cv2
+    from scripts.experiments import make_floorplan
+    clean_obj = out_dir / "poisson_mesh_clean.obj"
+    if not clean_obj.exists():
+        log("   no poisson mesh -> skip mesh floorplan"); return
+    mesh = trimesh.load(str(clean_obj), process=False)
+    v = np.asarray(mesh.vertices)
+    spans = v.max(axis=0) - v.min(axis=0)
+    up = int(np.argmin(spans)); plane = [a for a in (0, 1, 2) if a != up]
+    c = v.mean(axis=0); vr = v - c
+    for a in plane:
+        vr[:, a] = -vr[:, a]                       # 180 about up axis
+    vr = vr + c
+    up_lo, up_hi = vr[:, up].min(), vr[:, up].max()
+    floor = up_lo + 0.10 * (up_hi - up_lo)
+    band = (vr[:, up] >= floor + 0.5) & (vr[:, up] <= floor + 2.0)
+    vb = vr[band][:, plane]
+    ppm = 80
+    minx, miny = vb.min(axis=0) - 0.4
+    maxx, maxy = vb.max(axis=0) + 0.4
+    W = int((maxx - minx) * ppm) + 1; H = int((maxy - miny) * ppm) + 1
+    raster = np.zeros((H, W), np.uint8)
+    cc = np.clip(((vb[:, 0] - minx) * ppm).astype(int), 0, W - 1)
+    rr = np.clip(((maxy - vb[:, 1]) * ppm).astype(int), 0, H - 1)
+    raster[rr, cc] = 255
+    raster = cv2.morphologyEx(raster, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    fp_dir = out_dir / "mesh_floorplan"
+    fp_dir.mkdir(exist_ok=True)
+    cv2.imwrite(str(fp_dir / "mesh_slice_raster.png"), raster)
+    make_floorplan.main(str(fp_dir / "mesh_slice_raster.png"), str(fp_dir))
+
+
 def main(raw_las, scan_name, poisson=True):
     out_dir = ROOT / "output" / f"{scan_name}_all"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -146,9 +185,10 @@ def main(raw_las, scan_name, poisson=True):
         ("openings from sections", lambda: openings_from_sections.main(iso_path, scan_name, str(out_dir / "openings"))),
     ]
     if poisson:
-        # Stage C last -- it's the slow one (~3-5 min Poisson), so every fast
-        # image is already written before it runs.
+        # Stage C+D last -- Poisson is the slow one (~3-5 min); the accurate
+        # mesh floorplan (D) reuses the mesh right after it's built.
         stages.append(("poisson mesh (slow)", lambda: build_poisson_mesh(iso_path, out_dir)))
+        stages.append(("mesh floorplan (accurate, rot180)", lambda: build_mesh_floorplan(out_dir)))
     ok, failed = [], []
     for label, fn in stages:
         t0 = time.time()
