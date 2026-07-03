@@ -94,7 +94,27 @@ def isolate_and_save(raw_las, out_dir, cfg):
     return str(iso_path)
 
 
-def main(raw_las, scan_name):
+def build_poisson_mesh(iso_path, out_dir):
+    """Stage C: Poisson surface mesh from isolated.las, then drop tiny
+    floating islands. The organic complete surface -- a visual QC reference
+    beside the clean carved floorplan, and a denoised/gap-filled base that
+    slices more cleanly than raw points.
+
+    REUSES an existing clean mesh if one is already present (Poisson is slow,
+    ~4 min; no point regenerating what's already done)."""
+    from scripts.reconstruct_mesh import main as recon_mesh
+    from scripts.experiments.clean_mesh import main as clean_mesh
+    raw_obj = str(out_dir / "poisson_mesh.obj")
+    clean_obj = str(out_dir / "poisson_mesh_clean.obj")
+    if Path(clean_obj).exists():
+        log(f"   reusing existing {clean_obj} (skip regeneration)")
+        return
+    if not Path(raw_obj).exists():
+        recon_mesh(iso_path, raw_obj)
+    clean_mesh(raw_obj, clean_obj, 0.15)
+
+
+def main(raw_las, scan_name, poisson=True):
     out_dir = ROOT / "output" / f"{scan_name}_all"
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg = dict(DEFAULT_CONFIG)
@@ -110,6 +130,10 @@ def main(raw_las, scan_name):
         ("diagnostic atlas", lambda: diagnostic_atlas.main(iso_path, scan_name, str(out_dir / "atlas"))),
         ("las information mining", lambda: las_information_mining.main(iso_path, scan_name, str(out_dir / "lasmining"))),
     ]
+    if poisson:
+        # Stage C last -- it's the slow one (~3-5 min Poisson), so every fast
+        # image is already written before it runs.
+        stages.append(("poisson mesh (slow)", lambda: build_poisson_mesh(iso_path, out_dir)))
     ok, failed = [], []
     for label, fn in stages:
         t0 = time.time()

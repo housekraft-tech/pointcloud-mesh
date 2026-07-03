@@ -157,6 +157,8 @@ def main(las_path, scan_name, out_dir=None):
                          title=f"{scan_name} 4 INTENSITY VARIANCE: high=glass/specular/edge (windows, glass doors)"))
 
     # ---- 5. RGB material (mujammel) ----
+    ms = None
+    img_rgb = None
     if rgb is not None:
         brgb = rgb[band].astype(float)
         img_rgb = np.zeros((H, W, 3), np.uint8)
@@ -174,8 +176,47 @@ def main(las_path, scan_name, out_dir=None):
                     cmap(ms, cv2.COLORMAP_TURBO,
                          title=f"{scan_name} 6 COLOUR SATURATION: bright=coloured (wood/plants/accent), dark=grey wall"))
 
-    log(f"[{scan_name}] las information mining complete -> {out_dir}")
+    # ---- 7. FUSED OVERLAY: all signals composited on one map ----
+    # base = structure (log-density, gray). Then overlay the meaningful
+    # anomalies so one image answers "where is glass, where is a coloured
+    # feature, and which walls are trustworthy":
+    #   RED   = glass/window/edge (top intensity-variance cells)
+    #   real colour = coloured material (high saturation: wood door / plant)
+    #   BLUE tint = low coverage (glimpsed once -> uncertain wall)
+    valid = np.isfinite(dens)
+    base = np.zeros((H, W), np.uint8)
+    if valid.sum():
+        d = np.log1p(dens)
+        a, b = np.nanpercentile(d, [2, 98])
+        base = np.clip((d - a) / max(b - a, 1e-6), 0, 1)
+        base = np.nan_to_num(base * 200, nan=0).astype(np.uint8)
+    fused = cv2.merge([base, base, base])
+
+    if inten is not None:
+        thr = np.nanpercentile(mstd, 90)                 # top 10% variance = glass/edge
+        glass = np.isfinite(mstd) & (mstd >= thr) & (base > 20)
+        fused[glass] = (0, 0, 255)                       # red
+    if ms is not None and img_rgb is not None:
+        colored = np.isfinite(ms) & (ms >= np.nanpercentile(ms, 92)) & (base > 20)
+        fused[colored] = img_rgb[colored]                # paint real colour
+    if gt is not None:
+        lowcov = np.isfinite(distinct) & (distinct <= 2) & (base > 20)
+        # blue tint where a wall was barely seen (blend, don't overwrite)
+        fused[lowcov] = (0.5 * fused[lowcov] + 0.5 * np.array([200, 60, 0])).astype(np.uint8)
+
+    # legend
+    for i, (lab, col) in enumerate([("structure (density)", (150, 150, 150)),
+                                    ("GLASS/window/edge (intensity var)", (0, 0, 255)),
+                                    ("coloured material (wood/plant)", (60, 180, 60)),
+                                    ("LOW coverage / uncertain", (200, 60, 0))]):
+        cv2.rectangle(fused, (10, 34 + i * 20 - 9), (24, 34 + i * 20 + 1), col, -1)
+        cv2.putText(fused, lab, (30, 34 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (235, 235, 235), 1, cv2.LINE_AA)
+    cv2.putText(fused, f"{scan_name} 7 FUSED: all LAS signals overlapped on one map",
+               (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "7_fused_overlay.png"), fused)
+
+    log(f"[{scan_name}] las information mining complete (6 maps + 1 fused) -> {out_dir}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
