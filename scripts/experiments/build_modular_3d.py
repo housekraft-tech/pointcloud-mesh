@@ -135,28 +135,98 @@ def main(las_path, out_dir):
     W = int((xmax - xmin) / CELL) + 1; H = int((ymax - ymin) / CELL) + 1
     log(f"aligned {scan.n:,} pts | storey {storey:.2f}m")
 
+    from scipy import ndimage
     band = (z >= z_floor + 0.9) & (z <= z_floor + 1.6)
     cc = np.clip(((x[band] - xmin) / CELL).astype(int), 0, W - 1)
     rr = np.clip(((ymax - y[band]) / CELL).astype(int), 0, H - 1)
     occ = np.zeros((H, W), np.uint8); occ[rr, cc] = 255
     occ = cv2.morphologyEx(occ, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-    lines = cv2.HoughLinesP(occ, 1, np.pi / 180, threshold=40,
-                            minLineLength=int(0.6 * PPM), maxLineGap=int(0.3 * PPM))
+
+    # ---- FREE-SPACE CARVED walls (connected, clean -- includes the real
+    # perimeter AND interior partitions), the same accurate source as the
+    # good floorplan. Skeletonize -> Hough -> Manhattan -> close junctions. ----
+    empty = (occ == 0).astype(np.uint8)
+    free = np.zeros_like(empty)
+    if traj.shape[0]:
+        seed = np.zeros_like(empty)
+        for px, py in traj[:, :2]:
+            cx = int((px - xmin) / CELL); cy = int((ymax - py) / CELL)
+            if 0 <= cy < H and 0 <= cx < W and empty[cy, cx]:
+                seed[cy, cx] = 1
+        lbl0, _ = ndimage.label(empty, structure=np.ones((3, 3)))
+        keep = set(lbl0[seed == 1].tolist()) - {0}
+        free = np.isin(lbl0, list(keep)).astype(np.uint8)
+    footprint = ndimage.binary_fill_holes((free | (occ > 0)))
+    walls_solid = (footprint & (free == 0)).astype(np.uint8)
+    walls_solid = ndimage.binary_fill_holes(walls_solid).astype(np.uint8)
+    walls_solid = cv2.morphologyEx(walls_solid, cv2.MORPH_CLOSE,
+                                   cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    # thin to centerlines if cv2 thinning is available, else Hough the solid
+    # directly (merge_parallels collapses the doubled faces either way).
+    try:
+        thin = cv2.ximgproc.thinning(walls_solid)
+    except Exception:
+        thin = walls_solid
+    lines = cv2.HoughLinesP(thin, 1, np.pi / 180, threshold=28,
+                            minLineLength=int(0.5 * PPM), maxLineGap=int(0.35 * PPM))
     hsegs, vsegs = ([], [])
     if lines is not None:
-        hsegs, vsegs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=int(0.25 * PPM), coord_tol_px=int(0.12 * PPM))
-    # perfect the wall lines: collapse doubled faces + close corners/T-junctions
-    # (extend endpoints to meet perpendicular walls) so panels meet cleanly.
+        hsegs, vsegs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=int(0.3 * PPM), coord_tol_px=int(0.12 * PPM))
     hsegs, vsegs = merge_parallels(hsegs), merge_parallels(vsegs)
-    hsegs, vsegs = close_junctions(hsegs, vsegs, snap=int(0.4 * PPM))
+    hsegs, vsegs = close_junctions(hsegs, vsegs, snap=int(0.5 * PPM))
     hsegs = [s for s in hsegs if s[1] - s[0] >= int(MIN_WALL_LEN * PPM)]
     vsegs = [s for s in vsegs if s[1] - s[0] >= int(MIN_WALL_LEN * PPM)]
 
     def px2m(col, row):
         return xmin + col * CELL, ymax - row * CELL
-    walls = [(np.array(px2m(a0, yr)), np.array(px2m(a1, yr))) for a0, a1, yr in hsegs] + \
-            [(np.array(px2m(xc, a0)), np.array(px2m(xc, a1))) for a0, a1, xc in vsegs]
-    log(f"{len(walls)} wall segments -> building (u,z) silhouettes")
+    interior = [(np.array(px2m(a0, yr)), np.array(px2m(a1, yr))) for a0, a1, yr in hsegs] + \
+               [(np.array(px2m(xc, a0)), np.array(px2m(xc, a1))) for a0, a1, xc in vsegs]
+    exterior = []   # perimeter already included in the carved walls above
+
+    # ---- dedup (merge near-identical parallel overlapping segments) ----
+    def dedup(walls, tol=0.16):
+        Hs, Vs = [], []
+        for p0, p1 in walls:
+            dd = p1 - p0
+            if abs(dd[0]) >= abs(dd[1]):
+                Hs.append([min(p0[0], p1[0]), max(p0[0], p1[0]), (p0[1] + p1[1]) / 2])
+            else:
+                Vs.append([min(p0[1], p1[1]), max(p0[1], p1[1]), (p0[0] + p1[0]) / 2])
+
+        def m(segs):
+            segs = sorted(segs, key=lambda s: (s[2], s[0])); out = []
+            for a0, a1, c in segs:
+                hit = False
+                for w in out:
+                    if abs(w[2] - c) <= tol and a0 <= w[1] + tol and a1 >= w[0] - tol:
+                        w[0] = min(w[0], a0); w[1] = max(w[1], a1); w[2] = (w[2] + c) / 2; hit = True; break
+                if not hit:
+                    out.append([a0, a1, c])
+            return out
+        res = []
+        for a0, a1, y in m(Hs):
+            res.append((np.array([a0, y]), np.array([a1, y])))
+        for a0, a1, x in m(Vs):
+            res.append((np.array([x, a0]), np.array([x, a1])))
+        return res
+
+    n_raw = len(interior) + len(exterior)
+    walls = dedup(interior + exterior)
+    log(f"{len(interior)} interior + {len(exterior)} exterior = {n_raw} -> {len(walls)} deduped walls")
+
+    # ---- 2D plan visualization of exactly the walls the 3D is built from ----
+    plan = np.full((H, W, 3), 255, np.uint8)
+    def m2px(p):
+        return int((p[0] - xmin) / CELL), int((ymax - p[1]) / CELL)
+    for p0, p1 in walls:
+        dd = p1 - p0
+        col = (0, 150, 0) if abs(dd[0]) >= abs(dd[1]) else (200, 60, 0)  # H green, V blue
+        cv2.line(plan, m2px(p0), m2px(p1), col, 4, cv2.LINE_AA)
+    cv2.putText(plan, f"2D plan of the 3D model: {len(walls)} walls "
+                      f"(green=horizontal, blue=vertical, deduped)",
+               (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "wall_plan_2d.png"), plan)
+    log(f"wrote wall_plan_2d.png ({len(walls)} walls) -> building (u,z) silhouettes")
 
     z_base = z_floor - 0.10
     nz = int((z_ceiling + 0.15 - z_base) / UZ_RES) + 1
