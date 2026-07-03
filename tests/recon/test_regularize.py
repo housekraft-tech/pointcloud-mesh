@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 
 from scripts.recon.schema import WallStep
-from scripts.recon.regularize import snap_walls, resolve_corners, pair_thickness, recenter_walls
+from scripts.recon.regularize import (
+    snap_walls, resolve_corners, pair_thickness, recenter_walls, snap_endpoints_to_lines,
+)
 
 
 def _wall(p0, p1, normal=None, offset_m=None, steps=None, direction="x"):
@@ -312,6 +314,26 @@ def test_recenter_leaves_assumed_walls_alone():
     w = _run(5.0, [WallStep(0.0, 0.0, 4.0, 0.0, 2.7)], thickness=0.10, source="assumed")
     out = recenter_walls([w], points=np.zeros((0, 3)), z_floor=0.0, z_ceiling=2.7)
     assert out[0]["offset_m"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# snap_endpoints_to_lines
+# ---------------------------------------------------------------------------
+
+def test_t_junction_endpoint_extends_onto_crossing_wall():
+    # wall A vertical x=2, y 0..3.6 (ends 0.4 short of wall B at y=4)
+    a = dict(direction="x", offset_m=2.0, p0=(2.0, 0.0), p1=(2.0, 3.6), steps=[])
+    b = dict(direction="y", offset_m=4.0, p0=(0.0, 4.0), p1=(6.0, 4.0), steps=[])
+    out = snap_endpoints_to_lines([a, b])
+    assert abs(out[0]["p1"][1] - 4.0) < 1e-6   # A now reaches B's line
+    assert out[1]["p0"] == (0.0, 4.0)          # B untouched
+
+
+def test_endpoint_beyond_reach_stays():
+    a = dict(direction="x", offset_m=2.0, p0=(2.0, 0.0), p1=(2.0, 2.9), steps=[])
+    b = dict(direction="y", offset_m=4.0, p0=(0.0, 4.0), p1=(6.0, 4.0), steps=[])
+    out = snap_endpoints_to_lines([a, b])  # gap 1.1 m > reach 0.7
+    assert out[0]["p1"] == (2.0, 2.9)
 
 
 # ---------------------------------------------------------------------------

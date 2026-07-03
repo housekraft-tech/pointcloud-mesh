@@ -526,3 +526,109 @@ def recenter_walls(walls, points, z_floor: float, z_ceiling: float,
         w["offset_m"] = float(w["offset_m"] + shift)
         out.append(w)
     return out
+
+
+# ---------------------------------------------------------------------------
+# snap_endpoints_to_lines
+# ---------------------------------------------------------------------------
+
+def _point_seg_dist(pt, a, b):
+    """Perpendicular (clamped) distance from `pt` to segment a-b."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    pt = np.asarray(pt, dtype=float)
+    ab = b - a
+    length_sq = float(ab @ ab)
+    t = 0.0 if length_sq == 0.0 else float(np.clip((pt - a) @ ab / length_sq, 0.0, 1.0))
+    return float(np.linalg.norm(pt - (a + t * ab)))
+
+
+def snap_endpoints_to_lines(walls, reach_m: float = 0.7, dangling_tol_m: float = 0.15):
+    """Close T-junction corners that endpoint-to-endpoint clustering
+    (resolve_corners) structurally cannot: a wall ending partway ALONG
+    another wall's run, rather than at that other wall's own endpoint.
+
+    Must be run AFTER resolve_corners. For each wall's own endpoint (p0,
+    p1) that is farther than dangling_tol_m from every OTHER wall's own
+    segment (i.e. not already touching anything -- resolve_corners already
+    handled the endpoint-endpoint case), search for the nearest qualifying
+    intersection of this wall's own infinite centerline with another
+    wall's infinite centerline:
+      - the two lines must not be (near-)parallel (2x2 cross-product
+        system singular check);
+      - the intersection point, projected onto THIS wall's own line, must
+        be within reach_m of the dangling endpoint -- so the endpoint only
+        extends/trims along its own centerline, it never jumps sideways;
+      - the intersection point, projected onto the OTHER wall's line, must
+        fall within 0.3 m of that other wall's own [p0, p1] extent -- a
+        crossing far outside the other wall's actual footprint is not a
+        real T-junction.
+
+    Among all walls satisfying both conditions, the nearest intersection
+    (by distance to the dangling endpoint) wins. If no candidate
+    qualifies, the endpoint is left unchanged (real scan evidence: this is
+    the pass that closed a 45 sq m living room corner that
+    endpoint-endpoint clustering alone could not reach).
+
+    Non-mutating: returns a new list of shallow-copied dicts; the second
+    endpoint of a wall sees the (possibly already-moved) first endpoint's
+    result, since a wall's own p0/p1 are re-read from `out` between the
+    two endpoint passes.
+    """
+    out = [dict(w) for w in walls]
+
+    for i, w in enumerate(out):
+        p0 = np.asarray(w["p0"], dtype=float)
+        p1 = np.asarray(w["p1"], dtype=float)
+        seg = p1 - p0
+        length = float(np.linalg.norm(seg))
+        if length < 1e-9:
+            continue
+        d = seg / length
+
+        for key, e in (("p0", p0), ("p1", p1)):
+            nearest = min(
+                _point_seg_dist(e, o["p0"], o["p1"])
+                for j, o in enumerate(out) if j != i
+            )
+            if nearest <= dangling_tol_m:
+                continue  # already touching something -- not dangling
+
+            best = None
+            for j, o in enumerate(out):
+                if j == i:
+                    continue
+                a = np.asarray(o["p0"], dtype=float)
+                d2 = np.asarray(o["p1"], dtype=float) - a
+                length2 = float(np.linalg.norm(d2))
+                if length2 < 1e-9:
+                    continue
+                d2 = d2 / length2
+
+                denom = d[0] * d2[1] - d[1] * d2[0]
+                if abs(denom) < 1e-6:
+                    continue  # near-parallel -- no well-defined crossing
+
+                r = a - p0
+                t = (r[0] * d2[1] - r[1] * d2[0]) / denom   # along this wall
+                s = (r[0] * d[1] - r[1] * d[0]) / denom     # along the other wall
+
+                candidate = p0 + t * d
+                dist = float(np.linalg.norm(candidate - e))
+                if dist > reach_m:
+                    continue
+                if s < -0.3 or s > length2 + 0.3:
+                    continue  # crossing point is far outside the other wall
+
+                if best is None or dist < best[0]:
+                    best = (dist, candidate)
+
+            if best is not None:
+                w[key] = (float(best[1][0]), float(best[1][1]))
+
+        # Re-read p0/p1 so the second endpoint's dangling/geometry checks
+        # see this wall's own already-moved first endpoint.
+        p0 = np.asarray(w["p0"], dtype=float)
+        p1 = np.asarray(w["p1"], dtype=float)
+
+    return out
