@@ -59,6 +59,18 @@ statistical filter (isolation connectivity already drops drift/neighbour
 geometry); `--plane-max-points` caps the working cloud for the heavy
 plane/structure/opening stages (default 1.5 M).
 
+> **Room-closure note:** the shipped default `--plane-max-points 1500000` is
+> tuned for speed, not maximum room closure -- it trades some room-closure
+> completeness for a faster run. On the `koushik` reference scan this default
+> does **not** reliably reach the validated ≥7-room closure bar. To reproduce
+> the ≥7-room (7-8 room) closure demonstrated in the manual experiment chain
+> below, rerun with a much higher cap, e.g.:
+> ```powershell
+> .\venv311\Scripts\python.exe scripts\isolidarflow.py koushikexport.las output\koushik_isolidar --plane-max-points 4000000
+> ```
+> `--plane-max-points >= 4000000` is the value known to reproduce full closure
+> on `koushik`; the default stays low for everyday/fast runs.
+
 ## The flow — run in this order (manual / diagnostic chain)
 
 All commands from the repo root. `<name>` is `koushik` or `mujammel`.
