@@ -242,27 +242,20 @@ def main(las_path, out_dir):
         rel = xyz[:, :2] - p0
         u = rel @ d; perp = rel @ n
         near = (np.abs(perp) <= WALL_HALF_BAND) & (u >= 0) & (u <= L)
-        if near.sum() < 300:
-            continue
-        uu = u[near]; zz = z[near]; pp = perp[near]
-        thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
+        mid = (p0 + p1) / 2
+        if near.sum() >= 200:
+            uu = u[near]; zz = z[near]; pp = perp[near]
+            thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
+        else:
+            uu = np.array([]); zz = np.array([]); pp = np.array([]); thick = DEFAULT_THICK
 
-        # (u,z) occupancy silhouette = the vertical-section cut of this wall
-        nu = int(L / UZ_RES) + 1
-        sil = np.zeros((nz, nu), np.uint8)
-        ui = np.clip((uu / UZ_RES).astype(int), 0, nu - 1)
-        zi = np.clip(((z_ceiling + 0.15 - zz) / UZ_RES).astype(int), 0, nz - 1)
-        sil[zi, ui] = 255
-        sil = cv2.morphologyEx(sil, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
-        sil = cv2.morphologyEx(sil, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
-        polys = silhouette_polygons(sil, UZ_RES, UZ_RES, z_base)
-        if not polys:
-            continue
-        try:
-            wall = extrude_wall(polys, p0, d, n, thick)
-        except Exception as exc:
-            continue
-        n_open += sum(len(list(p.interiors)) for p in polys)
+        # ---- clean SOLID wall box, matching the 2D plan line exactly
+        # (floor -> ceiling, measured thickness). Grooves + doors are cut into
+        # this clean box below, so the walls stay as straight as the 2D. ----
+        Rz = trimesh.transformations.rotation_matrix(np.arctan2(d[1], d[0]), [0, 0, 1])
+        wall = trimesh.creation.box(extents=(L, thick, storey))
+        wall.apply_transform(Rz)
+        wall.apply_translation((mid[0], mid[1], z_floor + storey / 2))
 
         # ---- grooves: pronounced full-width horizontal REVEALS. For each 0.1m
         # height band measure how far the room-side face sits back from the
@@ -270,8 +263,7 @@ def main(las_path, out_dir):
         # (merged only when truly contiguous), so the relief reads clearly as
         # architectural groove lines -- on the clean corner-closed layout. ----
         cutters = []
-        Rz = trimesh.transformations.rotation_matrix(np.arctan2(d[1], d[0]), [0, 0, 1])
-        room = pp > 0
+        room = pp > 0 if pp.size else np.zeros(0, bool)
         if room.sum() > 300:
             face = np.percentile(pp[room], 82)
             zb = np.arange(z_floor + 0.12, z_ceiling - 0.12, 0.1)
@@ -297,6 +289,20 @@ def main(las_path, out_dir):
                     i = j
                 else:
                     i += 1
+
+        # ---- door openings from walk-path crossings (cut into the clean box) ----
+        if traj.shape[0] >= 2:
+            trel = traj[:, :2] - p0
+            tu = trel @ d; tperp = trel @ n
+            for k in range(len(tu) - 1):
+                if (tperp[k] * tperp[k + 1] < 0) and (0.2 < tu[k] < L - 0.2):
+                    du = trimesh.creation.box(extents=(0.9, thick * 3, 2.1))
+                    du.apply_transform(Rz)
+                    dc = p0 + d * tu[k]
+                    du.apply_translation((dc[0], dc[1], z_floor + 1.05))
+                    cutters.append(du); n_open += 1
+                    break
+
         for ch in cutters:
             try:
                 wall = wall.difference(ch)
