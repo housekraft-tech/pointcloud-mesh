@@ -341,14 +341,36 @@ def _room_collection_name(index: int, poly) -> str:
     return f"Room_{index:02d}_{poly.area:.0f}m2"
 
 
+class RoomModel(dict):
+    """dict[str, list[trimesh.Trimesh]] subclass returned by `build_room_model`.
+
+    Behaves exactly like the plain dict callers already expect (iteration,
+    `in`, `.values()`, item access -- see tests/recon/test_model.py), but also
+    carries `.drops`: a dict of failure-category -> list[dict] records for
+    every piece of geometry that failed to mesh and was excluded from the
+    model. This exists so a per-segment/panel/column/beam meshing failure is
+    COUNTED and identifiable (never silently swallowed), matching the
+    pipeline's "never silently drop a wall" guarantee -- see
+    scripts/isolidarflow.py's `degenerate_walls_dropped` for the sibling
+    pattern this mirrors at the wall-regularization stage.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.drops = {"segments": [], "floor_panels": [], "columns": [], "beams": []}
+
+
 def build_room_model(walls, openings_by_wall, columns, beams, rooms,
                      z_floor: float, z_ceiling: float, slab_m: float = FLOOR_SLAB_M):
     """Assemble the final room-owned model.
 
-    Returns dict[str, list[trimesh.Trimesh]] with one `Room_NN_<area>m2`
-    collection per room (its wall-segment meshes + a floor panel), a
-    `Walls_unassigned` collection (segments no room claimed), and `Columns` /
-    `Beams` collections. Every mesh is watertight.
+    Returns a `RoomModel` (dict[str, list[trimesh.Trimesh]] subclass) with one
+    `Room_NN_<area>m2` collection per room (its wall-segment meshes + a floor
+    panel), a `Walls_unassigned` collection (segments no room claimed), and
+    `Columns` / `Beams` collections. Every mesh in the model is watertight.
+    The returned object's `.drops` attribute records anything that failed to
+    mesh and was therefore excluded (see `RoomModel` docstring) -- callers
+    that only need the plain dict behaviour need not change anything.
 
     Design decisions (flagged; the plan left these to this task):
       - Floor is a per-room panel (matches R1's "floor panel per room" and
@@ -368,7 +390,7 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
     named_rooms = [(_room_collection_name(i, poly), poly)
                    for i, (_rid, poly) in enumerate(_normalize_rooms(rooms))]
 
-    model = {}
+    model = RoomModel()
 
     def _add(collection, mesh):
         model.setdefault(collection, []).append(mesh)
@@ -382,8 +404,15 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
         for seg in segments:
             try:
                 mesh = segment_to_mesh(seg, wall)
-            except Exception:
-                continue  # a single bad segment must not sink the whole model
+            except Exception as exc:
+                # A single bad segment must not sink the whole model -- but it
+                # must be COUNTED, not silently absorbed.
+                model.drops["segments"].append({
+                    "wall_id": wall_id, "room_id": seg.room_id,
+                    "u_min_m": seg.u_min_m, "u_max_m": seg.u_max_m,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                continue
             collection = seg.room_id if seg.room_id is not None else "Walls_unassigned"
             _add(collection, mesh)
 
@@ -395,18 +424,26 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
             panel = trimesh.creation.extrude_polygon(poly, slab_m)
             panel.apply_translation([0.0, 0.0, z_floor - slab_m])
             model[name].append(panel)
-        except Exception:
-            pass
+        except Exception as exc:
+            model.drops["floor_panels"].append({
+                "room": name, "error": f"{type(exc).__name__}: {exc}",
+            })
 
-    for c in (columns or []):
+    for i, c in enumerate(columns or []):
         try:
             _add("Columns", column_to_solid(c))
-        except Exception:
-            pass
-    for b in (beams or []):
+        except Exception as exc:
+            cid = str(_wget(c, "column_id", None) or f"column_{i:03d}")
+            model.drops["columns"].append({
+                "column_id": cid, "error": f"{type(exc).__name__}: {exc}",
+            })
+    for i, b in enumerate(beams or []):
         try:
             _add("Beams", beam_to_solid(b))
-        except Exception:
-            pass
+        except Exception as exc:
+            bid = str(_wget(b, "beam_id", None) or f"beam_{i:03d}")
+            model.drops["beams"].append({
+                "beam_id": bid, "error": f"{type(exc).__name__}: {exc}",
+            })
 
     return model

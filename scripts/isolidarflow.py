@@ -140,8 +140,8 @@ DEFAULT_CONFIG = {
     "priors": {
         "door_h_m": 2.13,            # 7 ft door height prior (user requirement)
         "door_h_tol_m": 0.25,        # tolerance band around the door-height prior
-        "window_min_sill_m": 0.30,   # min sill for a void to read as a window
-        "balcony_min_w_m": 1.50,     # min width for a floor-touching void to read balcony
+        "window_min_sill_m": 0.25,   # min sill for a void to read as a window
+        "balcony_min_w_m": 1.3,      # min width for a floor-touching void to read balcony
         "ceiling_m": 2.75,           # 2750 mm ceiling prior (user requirement)
         "ceiling_tol_m": 0.35,       # tolerance band around the ceiling-height prior
     },
@@ -205,13 +205,17 @@ def _write_report(out_dir, in_path, info, error=None):
             f"=> height {info['z_ceiling'] - info['z_floor']:.3f} m")
     for key in ("n_planes", "n_vertical", "n_walls", "degenerate_walls_dropped",
                 "n_columns", "n_beams", "n_unclassified", "n_crossings",
-                "n_openings", "n_rooms", "furniture_dropped"):
+                "n_openings", "n_rooms", "furniture_dropped",
+                "dropped_segments", "dropped_floor_panels", "dropped_columns",
+                "dropped_beams"):
         if key in info:
             lines.append(f"{key}: {info[key]}")
     if "opening_types" in info:
         lines.append(f"opening_types: {info['opening_types']}")
     if "room_areas_m2" in info:
         lines.append(f"room_areas_m2: {info['room_areas_m2']}")
+    if info.get("drop_details"):
+        lines.append(f"drop_details: {info['drop_details']}")
     if error is not None:
         lines += ["", f"ERROR: partial pipeline -- failed with: {error}"]
     with open(os.path.join(out_dir, "report.txt"), "w") as fh:
@@ -399,6 +403,17 @@ def run(in_path, out_dir, config=None):
         # --- 14. 3D model -> GLB ---
         model = build_room_model(walls, openings_by_wall, columns, beams, rooms,
                                  z_floor, z_ceiling)
+        # Meshing failures (per-segment / floor-panel / column / beam) are
+        # never silently swallowed -- build_room_model counts and identifies
+        # them on model.drops; surface the counts the same way
+        # degenerate_walls_dropped is surfaced above.
+        drops = getattr(model, "drops", {}) or {}
+        info["dropped_segments"] = len(drops.get("segments", []))
+        info["dropped_floor_panels"] = len(drops.get("floor_panels", []))
+        info["dropped_columns"] = len(drops.get("columns", []))
+        info["dropped_beams"] = len(drops.get("beams", []))
+        if any(drops.get(k) for k in drops):
+            info["drop_details"] = drops
         glb_path = os.path.join(out_dir, "model.glb")
         write_glb(build_scene(model), glb_path)
 

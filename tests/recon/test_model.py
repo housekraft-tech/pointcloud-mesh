@@ -285,6 +285,45 @@ def test_build_room_model_produces_room_collections_and_unassigned():
             assert m.is_watertight
 
 
+def test_build_room_model_counts_dropped_segments_not_silent(monkeypatch):
+    """A segment whose meshing fails (e.g. _ensure_watertight raising on
+    degenerate geometry) must be COUNTED on model.drops, never silently
+    absorbed -- and the rest of the model must still assemble."""
+    import scripts.recon.model as model_mod
+
+    wall_bottom = _wall(p0=(0.0, 0.0), p1=(6.0, 0.0))
+    wall_top = _wall(p0=(0.0, 4.0), p1=(6.0, 4.0))
+    rooms = [Polygon([(0, 0), (6, 0), (6, 4), (0, 4)])]
+
+    real_segment_to_mesh = segment_to_mesh
+    calls = {"n": 0}
+
+    def _flaky_segment_to_mesh(seg, wall):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("forced degenerate-geometry failure for test")
+        return real_segment_to_mesh(seg, wall)
+
+    monkeypatch.setattr(model_mod, "segment_to_mesh", _flaky_segment_to_mesh, raising=False)
+    import scripts.recon.solids as solids_mod
+    monkeypatch.setattr(solids_mod, "segment_to_mesh", _flaky_segment_to_mesh)
+
+    model = build_room_model([wall_bottom, wall_top], {}, [], [], rooms,
+                             z_floor=0.0, z_ceiling=2.7)
+
+    assert hasattr(model, "drops"), "build_room_model must expose a drop report"
+    assert len(model.drops["segments"]) == 1
+    dropped = model.drops["segments"][0]
+    assert "wall_id" in dropped and "error" in dropped
+    assert "forced degenerate-geometry failure" in dropped["error"]
+    # the model must still assemble successfully for everything else
+    room_keys = [k for k in model if k.startswith("Room_")]
+    assert len(room_keys) == 1
+    for meshes in model.values():
+        for m in meshes:
+            assert m.is_watertight
+
+
 def test_build_room_model_columns_and_floor_panel():
     from scripts.recon.schema import Column
     wall = _wall(p0=(0.0, 0.0), p1=(6.0, 0.0))
