@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from scripts.recon.openings import wall_occupancy, find_voids, classify_opening
+from scripts.recon.openings import wall_occupancy, find_voids, classify_opening, _merge_close_candidates
 
 PRIORS = {"door_h_m": 2.13, "door_h_tol_m": 0.25, "balcony_min_w_m": 1.3, "window_min_sill_m": 0.25}
 WALL = dict(direction="y", offset_m=2.0, p0=(0.0, 2.0), p1=(6.0, 2.0), thickness_m=0.1, steps=[])
@@ -53,6 +53,56 @@ def test_furniture_shadow_fails_gate_real_hole_passes():
     shadow = {"u0": 4.1, "u1": 4.9, "z0": 0.2, "z1": 1.9}  # behind the slab: unseen, NOT open
     assert visibility_gate(real, WALL, traj, tree) is True
     assert visibility_gate(shadow, WALL, traj, tree) is False
+
+
+# ---------------------------------------------------------------------------
+# duplicate-crossing merge + oversized-void flagging
+# ---------------------------------------------------------------------------
+
+def test_merge_close_candidates_unions_overlapping_and_near_rects():
+    # three crossing-seed-shaped rects at (almost) the same doorway, plus one
+    # clearly separate rect elsewhere -- must merge into exactly 2 candidates.
+    candidates = [
+        {"u0": 1.95, "u1": 3.05, "z0": 0.0, "z1": 2.13},
+        {"u0": 2.05, "u1": 3.15, "z0": 0.0, "z1": 2.13},
+        {"u0": 1.90, "u1": 3.00, "z0": 0.0, "z1": 2.13},
+        {"u0": 8.0, "u1": 8.9, "z0": 0.9, "z1": 2.1},
+    ]
+    merged = _merge_close_candidates(candidates, u_gap_m=0.3, z_gap_m=0.3)
+    assert len(merged) == 2
+    doorway = min(merged, key=lambda c: c["u0"])
+    assert abs(doorway["u0"] - 1.90) < 1e-9 and abs(doorway["u1"] - 3.15) < 1e-9
+
+
+def test_detect_openings_merges_duplicate_walkthrough_crossings():
+    # a door walked 6 times produces 6 near-identical crossings -- without
+    # merging, each becomes its own duplicate "door" opening on this wall.
+    xyz = _wall_points_with_hole(hole_u=(2.0, 2.9), hole_z=(0.0, 2.1))
+    traj = np.array([[2.4, y, 1.3] for y in np.linspace(0.5, 3.5, 12)])  # crosses wall repeatedly
+    crossings = {0: [2.4] * 6}
+    result = detect_openings([WALL], xyz, traj, crossings, 0.0, 2.7, PRIORS)
+    assert 0 in result
+    assert len(result[0]) == 1, f"expected 1 merged door, got {len(result[0])}: {result[0]}"
+    assert result[0][0]["type"] == "door"
+
+
+def test_detect_openings_flags_oversized_void_instead_of_misclassifying():
+    # a wall segment that failed to reconstruct leaves one giant gap -- must
+    # NOT be reported as a confident balcony_door; must be flagged oversized.
+    rng = np.random.default_rng(3)
+    u = rng.uniform(0, 12, 60000)
+    z = rng.uniform(0, 2.7, 60000)
+    keep = ~((u > 1.0) & (u < 9.0))  # 8 m gap: far past any real balcony door
+    xyz = np.column_stack([u[keep], np.full(keep.sum(), 2.0), z[keep]])
+    wide_wall = dict(direction="y", offset_m=2.0, p0=(0.0, 2.0), p1=(12.0, 2.0),
+                     thickness_m=0.1, steps=[])
+    traj = np.array([[5.0, 0.5, 1.3], [5.0, 3.5, 1.3]])
+    result = detect_openings([wide_wall], xyz, traj, {}, 0.0, 2.7, PRIORS)
+    assert 0 in result and len(result[0]) == 1
+    opening = result[0][0]
+    assert opening["oversized"] is True
+    assert opening["type"] == "unknown_opening"
+    assert opening["confidence"] == "low"
 
 
 try:

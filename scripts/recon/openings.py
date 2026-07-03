@@ -434,12 +434,51 @@ def _union_voids(voids, seeds):
     return out
 
 
+def _merge_close_candidates(candidates, u_gap_m: float = 0.3, z_gap_m: float = 0.3):
+    """Merge candidate void rects that overlap or sit within u_gap_m/z_gap_m
+    of each other into ONE rect spanning their union.
+
+    Found necessary on real scan data: a real doorway walked several times
+    during one scan produces one crossing-seed PER walkthrough
+    (_seed_voids_from_crossings), all landing at (almost) the same u --
+    _union_voids only dedupes a seed against real occupancy voids, never
+    against another seed, so without this merge one physical door surfaced
+    as N duplicate identical "door" openings (confirmed on koushik: 6
+    identical entries on a single wall). Also merges any occupancy void
+    itself fragmented into adjacent connected components by noise.
+    """
+    remaining = list(candidates)
+    merged = []
+    while remaining:
+        cur = dict(remaining.pop(0))
+        changed = True
+        while changed:
+            changed = False
+            still = []
+            for other in remaining:
+                close_u = cur["u0"] - u_gap_m <= other["u1"] and other["u0"] <= cur["u1"] + u_gap_m
+                close_z = cur["z0"] - z_gap_m <= other["z1"] and other["z0"] <= cur["z1"] + z_gap_m
+                if close_u and close_z:
+                    cur = {
+                        "u0": min(cur["u0"], other["u0"]), "u1": max(cur["u1"], other["u1"]),
+                        "z0": min(cur["z0"], other["z0"]), "z1": max(cur["z1"], other["z1"]),
+                    }
+                    changed = True
+                else:
+                    still.append(other)
+            remaining = still
+        merged.append(cur)
+    return merged
+
+
 def detect_openings(walls, xyz, trajectory, crossings, z_floor: float, z_ceiling: float,
-                     priors, exterior_flags=None):
+                     priors, exterior_flags=None, merge_gap_m: float = 0.3,
+                     max_plausible_width_m: float = 4.0):
     """Per wall: occupancy -> voids, unioned with walkthrough-crossing seeds
-    landing in a `members` coverage hole; gate every void against the
-    trajectory (visibility_gate); refine survivors' edges against point
-    density (refine_edges); classify (classify_opening); return
+    landing in a `members` coverage hole; MERGE duplicate/adjacent candidates
+    (see _merge_close_candidates); gate every void against the trajectory
+    (visibility_gate); refine survivors' edges against point density
+    (refine_edges); classify (classify_opening); return
     {wall_idx: [{u0,u1,z0,z1,type,width_m,height_m,sill_m,walked,confidence}]}.
 
     Voids that fail the visibility gate are healing decisions: the wall
@@ -447,6 +486,16 @@ def detect_openings(walls, xyz, trajectory, crossings, z_floor: float, z_ceiling
     gate failure means no trajectory vertex ever had a clear line of sight
     through that void -- the occupancy hole is far more likely a furniture
     occlusion shadow than a real opening.
+
+    Any merged candidate wider than max_plausible_width_m (default 4.0 m --
+    generous even for a wide sliding balcony door) is NOT trusted as a real
+    classified opening: found on real scan data that a wall segment failing
+    to reconstruct leaves one giant occupancy gap that would otherwise
+    misclassify as an absurdly wide "balcony_door" (observed up to 11.67 m).
+    Instead it is reported as type "unknown_opening", confidence "low", with
+    `"oversized": True` so a caller can tell "ambiguous small void" apart
+    from "this is very likely a missing wall segment, not a real opening" --
+    never silently dropped, never silently mislabeled as high-confidence.
 
     `exterior_flags`: optional dict/list mapping wall_idx -> bool, used by
     classify_opening's balcony_door rule (exterior wall + walked). Defaults
@@ -470,6 +519,7 @@ def detect_openings(walls, xyz, trajectory, crossings, z_floor: float, z_ceiling
         wall_crossings_u = crossings.get(wi, []) if crossings else []
         seeds = _seed_voids_from_crossings(wall, wall_crossings_u, z_floor, priors)
         candidates = _union_voids(voids, seeds)
+        candidates = _merge_close_candidates(candidates, u_gap_m=merge_gap_m, z_gap_m=merge_gap_m)
 
         exterior = False
         if exterior_flags is not None:
@@ -483,15 +533,21 @@ def detect_openings(walls, xyz, trajectory, crossings, z_floor: float, z_ceiling
             if not visibility_gate(void, wall, trajectory, tree):
                 continue
             refined = refine_edges(void, wall, xyz)
-            opening_type = classify_opening(refined, wall_crossings_u, z_floor, z_ceiling, priors,
-                                             exterior=exterior)
+            width = refined["u1"] - refined["u0"]
+            oversized = width > max_plausible_width_m
+            if oversized:
+                opening_type = "unknown_opening"
+            else:
+                opening_type = classify_opening(refined, wall_crossings_u, z_floor, z_ceiling, priors,
+                                                 exterior=exterior)
             sill = refined["z0"] - z_floor
             height = refined["z1"] - refined["z0"]
-            width = refined["u1"] - refined["u0"]
             walked = any(refined["u0"] <= u <= refined["u1"] for u in wall_crossings_u)
             floor_touching = sill <= 0.15
             confidence = "high"
-            if opening_type == "door" and floor_touching and not walked:
+            if oversized:
+                confidence = "low"
+            elif opening_type == "door" and floor_touching and not walked:
                 confidence = "low"
             elif opening_type == "unknown_opening":
                 confidence = "low"
@@ -505,6 +561,7 @@ def detect_openings(walls, xyz, trajectory, crossings, z_floor: float, z_ceiling
                 "sill_m": sill,
                 "walked": walked,
                 "confidence": confidence,
+                "oversized": oversized,
             })
 
         if results:

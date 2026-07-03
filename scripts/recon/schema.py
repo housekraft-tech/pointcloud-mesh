@@ -290,6 +290,7 @@ def build_manifest(walls, openings, columns, beams, rooms, z_floor, z_ceiling, c
                 "height_m": height_m,
                 "walked": o.get("walked", False),
                 "confidence": o.get("confidence"),
+                "oversized": o.get("oversized", False),
                 "flags": flags,
             })
             opening_index += 1
