@@ -226,7 +226,47 @@ def main(las_path, out_dir):
                       f"(green=horizontal, blue=vertical, deduped)",
                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_2d.png"), plan)
-    log(f"wrote wall_plan_2d.png ({len(walls)} walls) -> building (u,z) silhouettes")
+
+    # ---- dimensioned plan: internal wall-to-wall distances in mm + ft ----
+    def cluster(vals, tol=0.15):
+        cl = []
+        for v in sorted(vals):
+            if cl and v - cl[-1][-1] <= tol:
+                cl[-1].append(v)
+            else:
+                cl.append([v])
+        return [float(np.mean(c)) for c in cl]
+
+    vx = cluster([(p0[0] + p1[0]) / 2 for p0, p1 in walls if abs((p1 - p0)[1]) > abs((p1 - p0)[0])])
+    hy = cluster([(p0[1] + p1[1]) / 2 for p0, p1 in walls if abs((p1 - p0)[0]) >= abs((p1 - p0)[1])])
+    dim = plan.copy()
+
+    def label(a, b):
+        mm = abs(b - a) * 1000.0
+        ft = abs(b - a) * 3.28084
+        return f"{mm:.0f}mm / {ft:.1f}ft"
+    # horizontal dimension string across the top (gaps between vertical walls)
+    yline = 60
+    for i in range(len(vx) - 1):
+        x0, _ = m2px((vx[i], 0)); x1, _ = m2px((vx[i + 1], 0))
+        cv2.line(dim, (x0, yline), (x1, yline), (150, 0, 150), 1)
+        cv2.line(dim, (x0, yline - 5), (x0, yline + 5), (150, 0, 150), 1)
+        cv2.line(dim, (x1, yline - 5), (x1, yline + 5), (150, 0, 150), 1)
+        cv2.putText(dim, label(vx[i], vx[i + 1]), ((x0 + x1) // 2 - 45, yline - 8),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 0, 150), 1, cv2.LINE_AA)
+    # vertical dimension string down the left (gaps between horizontal walls)
+    xline = 70
+    for i in range(len(hy) - 1):
+        _, y0 = m2px((0, hy[i])); _, y1 = m2px((0, hy[i + 1]))
+        cv2.line(dim, (xline, y0), (xline, y1), (150, 0, 150), 1)
+        cv2.line(dim, (xline - 5, y0), (xline + 5, y0), (150, 0, 150), 1)
+        cv2.line(dim, (xline - 5, y1), (xline + 5, y1), (150, 0, 150), 1)
+        cv2.putText(dim, label(hy[i], hy[i + 1]), (xline + 6, (y0 + y1) // 2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 0, 150), 1, cv2.LINE_AA)
+    cv2.putText(dim, "Internal wall-to-wall dimensions (mm / ft) -- magenta strings",
+               (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "wall_plan_dimensioned.png"), dim)
+    log(f"wrote wall_plan_2d.png + wall_plan_dimensioned.png ({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
 
     z_base = z_floor - 0.10
     nz = int((z_ceiling + 0.15 - z_base) / UZ_RES) + 1
@@ -243,11 +283,18 @@ def main(las_path, out_dir):
         u = rel @ d; perp = rel @ n
         near = (np.abs(perp) <= WALL_HALF_BAND) & (u >= 0) & (u <= L)
         mid = (p0 + p1) / 2
-        if near.sum() >= 200:
-            uu = u[near]; zz = z[near]; pp = perp[near]
-            thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
-        else:
-            uu = np.array([]); zz = np.array([]); pp = np.array([]); thick = DEFAULT_THICK
+        if near.sum() < 200:
+            continue
+        uu = u[near]; zz = z[near]; pp = perp[near]
+        thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
+
+        # ---- phantom-wall filter: a real wall has material along most of its
+        # length. Drop segments whose u-coverage is sparse (furniture / a
+        # free-space carving artifact -- e.g. false walls inside a bathroom). ----
+        ubins = max(int(L / 0.15) + 1, 2)
+        cov = len(np.unique(np.clip((uu / 0.15).astype(int), 0, ubins - 1))) / ubins
+        if cov < 0.5:
+            continue
 
         # ---- clean SOLID wall box, matching the 2D plan line exactly
         # (floor -> ceiling, measured thickness). Grooves + doors are cut into
@@ -263,15 +310,23 @@ def main(las_path, out_dir):
         # (merged only when truly contiguous), so the relief reads clearly as
         # architectural groove lines -- on the clean corner-closed layout. ----
         cutters = []
-        room = pp > 0 if pp.size else np.zeros(0, bool)
-        if room.sum() > 300:
-            face = np.percentile(pp[room], 82)
+        # measure the face recess from BOTH sides of the wall (room side pp>0
+        # AND the opposite side pp<0), so a groove on either face is caught and
+        # cut into the correct side -- the earlier room-only pass missed grooves
+        # that face the other room.
+        for side in (+1.0, -1.0):
+            sel = (pp * side) > 0 if pp.size else np.zeros(0, bool)
+            if sel.sum() < 300:
+                continue
+            sp = pp[sel] * side          # distances measured outward on this side
+            sz = zz[sel]
+            face = np.percentile(sp, 82)
             zb = np.arange(z_floor + 0.12, z_ceiling - 0.12, 0.1)
             setb = np.full(len(zb), -1.0)
             for i, zl in enumerate(zb):
-                m = room & (zz >= zl) & (zz < zl + 0.1)
+                m = (sz >= zl) & (sz < zl + 0.1)
                 if m.sum() >= 25:
-                    setb[i] = face - np.percentile(pp[m], 82)
+                    setb[i] = face - np.percentile(sp[m], 82)
             active = setb >= GROOVE_MIN_DEPTH
             i = 0
             while i < len(active):
@@ -283,25 +338,43 @@ def main(las_path, out_dir):
                     depth = float(np.clip(np.median(setb[i:j]), 0.03, thick * 0.8))
                     ch = trimesh.creation.box(extents=(L * 0.98, depth * 2.2, z1 - z0))
                     ch.apply_transform(Rz)
-                    off = (p0 + d * L / 2) + n * (thick / 2)
+                    off = (p0 + d * L / 2) + n * side * (thick / 2)   # cut into this face
                     ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
                     cutters.append(ch); n_groove += 1
                     i = j
                 else:
                     i += 1
 
-        # ---- door openings from walk-path crossings (cut into the clean box) ----
-        if traj.shape[0] >= 2:
-            trel = traj[:, :2] - p0
-            tu = trel @ d; tperp = trel @ n
-            for k in range(len(tu) - 1):
-                if (tperp[k] * tperp[k + 1] < 0) and (0.2 < tu[k] < L - 0.2):
-                    du = trimesh.creation.box(extents=(0.9, thick * 3, 2.1))
+        # ---- openings from REAL gaps in the wall material (not trajectory).
+        # Per 0.1m u-bin, does the wall have material floor->header (0.1..2.0m)?
+        # A contiguous run of EMPTY bins flanked by wall = a genuine doorway;
+        # cut only those, so no hallucinated holes in solid walls. ----
+        nub = max(int(L / 0.1) + 1, 2)
+        zmask = (zz >= z_floor + 0.1) & (zz <= z_floor + 2.0)
+        ubv = np.clip((uu[zmask] / 0.1).astype(int), 0, nub - 1)
+        colcnt = np.bincount(ubv, minlength=nub)
+        # relative threshold: a doorway bin has FAR less floor->header material
+        # than the solid wall. Empty = below 25% of the wall's typical column.
+        typ = np.percentile(colcnt[colcnt > 0], 75) if (colcnt > 0).any() else 0
+        occupied = colcnt >= max(3, 0.25 * typ)
+        gap = ~occupied
+        k = 1
+        while k < nub - 1:
+            if gap[k] and occupied[:k].any() and occupied[k:].any():
+                j = k
+                while j < nub - 1 and gap[j]:
+                    j += 1
+                w = (j - k) * 0.1
+                if 0.55 <= w <= 1.5:                       # doorway-width empty run
+                    umid = (k + j) / 2 * 0.1
+                    du = trimesh.creation.box(extents=(w, thick * 3, 2.1))
                     du.apply_transform(Rz)
-                    dc = p0 + d * tu[k]
+                    dc = p0 + d * umid
                     du.apply_translation((dc[0], dc[1], z_floor + 1.05))
                     cutters.append(du); n_open += 1
-                    break
+                k = j
+            else:
+                k += 1
 
         for ch in cutters:
             try:
