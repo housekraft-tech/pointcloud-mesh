@@ -321,6 +321,57 @@ def main(las_path, out_dir):
     cv2.putText(comp, "Complete floorplan - all internal walls of every room (filled)",
                (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "floorplan_complete.png"), comp)
+
+    # ---- proper 2D floorplan with per-ROOM internal clear dimensions INSIDE
+    # each room. Rooms are segmented from free-space by watershed (splitting at
+    # the doorway necks); each room's free-space bounding box IS its clear
+    # internal size, because free space is bounded by the wall inner faces. ----
+    distm = cv2.distanceTransform(free.astype(np.uint8), cv2.DIST_L2, 5) * CELL
+    cores = (distm > 0.6).astype(np.uint8)          # room cores (beyond doorway reach)
+    ncore, cmark = cv2.connectedComponents(cores)
+    mk = np.zeros((H, W), np.int32)
+    mk[cores > 0] = cmark[cores > 0] + 1            # room seeds: 2 ..
+    mk[(free > 0) & (cores == 0)] = 0               # doorway/near-wall = unknown -> flooded
+    mk[free == 0] = 1                               # walls / outside = background
+    cv2.watershed(cv2.merge([free * 200] * 3).astype(np.uint8), mk)
+
+    fr = np.full((H, W, 3), 255, np.uint8)
+    fr[ws > 0] = (40, 40, 40)                       # filled walls (complete)
+    nroom = 0
+    FT = cv2.FONT_HERSHEY_SIMPLEX
+    for Lr in range(2, ncore + 1):
+        m = (mk == Lr)
+        if m.sum() < (1.0 / (CELL * CELL)):         # ignore < 1 m^2
+            continue
+        # deepest interior point of this room (max distance-to-wall)
+        rd = distm * m
+        cy, cx = np.unravel_index(int(np.argmax(rd)), rd.shape)
+        # clear span = contiguous run of THIS room through the center point,
+        # so it stops at walls / doorway necks instead of overshooting.
+        rowm = m[cy, :]; l = r = cx
+        while l > 0 and rowm[l - 1]:
+            l -= 1
+        while r < W - 1 and rowm[r + 1]:
+            r += 1
+        colm = m[:, cx]; t0 = b0 = cy
+        while t0 > 0 and colm[t0 - 1]:
+            t0 -= 1
+        while b0 < H - 1 and colm[b0 + 1]:
+            b0 += 1
+        wdt = (r - l) * CELL
+        hgt = (b0 - t0) * CELL
+        if wdt < 0.5 or hgt < 0.5:                  # sliver / leak -> skip
+            continue
+        nroom += 1
+        for t, dy, sc in [(f"{wdt*1000:.0f} x {hgt*1000:.0f} mm", -6, 0.5),
+                          (f"({wdt*3.28084:.1f} x {hgt*3.28084:.1f} ft)", 12, 0.42)]:
+            (tw, th), _ = cv2.getTextSize(t, FT, sc, 1)
+            cv2.rectangle(fr, (cx - tw // 2 - 2, cy + dy - th - 1), (cx - tw // 2 + tw + 2, cy + dy + 3), (255, 255, 255), -1)
+            cv2.putText(fr, t, (cx - tw // 2, cy + dy), FT, sc, (150, 0, 160), 1, cv2.LINE_AA)
+    cv2.putText(fr, f"2D floorplan - {nroom} rooms, internal CLEAR size inside each (mm / ft)",
+               (10, 22), FT, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "floorplan_rooms_dimensioned.png"), fr)
+    log(f"wrote floorplan_rooms_dimensioned.png ({nroom} rooms)")
     log(f"wrote wall_plan_2d + wall_plan_dimensioned + floorplan_complete "
         f"({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
 
