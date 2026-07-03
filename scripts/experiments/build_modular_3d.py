@@ -294,7 +294,22 @@ def main(las_path, out_dir):
     cv2.putText(dim, "Internal wall-to-wall dimensions  -  mm (ft)",
                (PL, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_dimensioned.png"), dim)
-    log(f"wrote wall_plan_2d.png + wall_plan_dimensioned.png ({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
+
+    # ---- COMPLETE floorplan: every internal wall of every room, rendered as
+    # SOLID filled walls straight from the free-space carved mask (nothing
+    # dropped/fragmented like the vectorized lines). This is the true wall
+    # structure of all rooms. ----
+    ws = walls_solid.copy()
+    lblw, nw = ndimage.label(ws, structure=np.ones((3, 3)))
+    szs = ndimage.sum(np.ones_like(lblw), lblw, index=np.arange(1, nw + 1))
+    ws[np.isin(lblw, [k for k, s in enumerate(szs, 1) if s < (0.06 / (CELL * CELL))])] = 0
+    comp = np.full((H, W, 3), 255, np.uint8)
+    comp[ws > 0] = (35, 35, 35)
+    cv2.putText(comp, "Complete floorplan - all internal walls of every room (filled)",
+               (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "floorplan_complete.png"), comp)
+    log(f"wrote wall_plan_2d + wall_plan_dimensioned + floorplan_complete "
+        f"({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
 
     z_base = z_floor - 0.10
     nz = int((z_ceiling + 0.15 - z_base) / UZ_RES) + 1
