@@ -254,9 +254,22 @@ def main(las_path, out_dir):
         col = (0, 150, 0) if abs(dd[0]) >= abs(dd[1]) else (200, 60, 0)
         cv2.line(dim, dpx(p0), dpx(p1), col, 4, cv2.LINE_AA)
 
-    def lab(a, b):
-        return f"{abs(b-a)*1000:.0f}mm ({abs(b-a)*3.28084:.1f}ft)"
-    MIN_GAP = 0.25   # skip tiny wall-thickness gaps to cut clutter
+    # measure each gridline wall's thickness so dimensions are INTERNAL clear
+    # (inner face to inner face), not centerline to centerline.
+    def gl_thick(coord, axis):
+        sel = (np.abs(x - coord) <= 0.30) if axis == "v" else (np.abs(y - coord) <= 0.30)
+        vals = (x[sel] if axis == "v" else y[sel])
+        if vals.size < 100:
+            return DEFAULT_THICK
+        return float(np.clip(np.percentile(vals, 90) - np.percentile(vals, 10), 0.06, 0.35))
+    vx_t = [gl_thick(c, "v") for c in vx]
+    hy_t = [gl_thick(c, "h") for c in hy]
+
+    def lab_clear(a, b, ta, tb):
+        clear = abs(b - a) - ta / 2 - tb / 2          # inner face to inner face
+        clear = max(clear, 0.0)
+        return f"{clear*1000:.0f}mm ({clear*3.28084:.1f}ft)"
+    MIN_GAP = 0.35   # skip sub-doorway gaps (wall thicknesses) to cut clutter
     # horizontal dimensions (room widths) -- stacked in the top margin, 2 rows
     x_top = min(dpx((0, hy[0]))[1] if hy else PT, PT) - 8
     row = 0
@@ -271,7 +284,7 @@ def main(las_path, out_dir):
         yl = PT - 95 + (row % 2) * 34
         cv2.arrowedLine(dim, (x0, yl), (x1, yl), MAG, 1, cv2.LINE_AA, tipLength=0.03)
         cv2.arrowedLine(dim, (x1, yl), (x0, yl), MAG, 1, cv2.LINE_AA, tipLength=0.03)
-        t = lab(vx[i], vx[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        t = lab_clear(vx[i], vx[i + 1], vx_t[i], vx_t[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
         cv2.rectangle(dim, ((x0 + x1) // 2 - tw // 2 - 2, yl - 18), ((x0 + x1) // 2 + tw // 2 + 2, yl - 5), (255, 255, 255), -1)
         cv2.putText(dim, t, ((x0 + x1) // 2 - tw // 2, yl - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, MAG, 1, cv2.LINE_AA)
         row += 1
@@ -287,11 +300,11 @@ def main(las_path, out_dir):
         xl = PL - 150 + (col % 2) * 96
         cv2.arrowedLine(dim, (xl, y0), (xl, y1), MAG, 1, cv2.LINE_AA, tipLength=0.03)
         cv2.arrowedLine(dim, (xl, y1), (xl, y0), MAG, 1, cv2.LINE_AA, tipLength=0.03)
-        t = lab(hy[i], hy[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        t = lab_clear(hy[i], hy[i + 1], hy_t[i], hy_t[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
         cv2.rectangle(dim, (xl + 2, (y0 + y1) // 2 - 9), (xl + 6 + tw, (y0 + y1) // 2 + 4), (255, 255, 255), -1)
         cv2.putText(dim, t, (xl + 4, (y0 + y1) // 2 + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, MAG, 1, cv2.LINE_AA)
         col += 1
-    cv2.putText(dim, "Internal wall-to-wall dimensions  -  mm (ft)",
+    cv2.putText(dim, "Internal CLEAR room dimensions (inner face to inner face)  -  mm (ft)",
                (PL, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_dimensioned.png"), dim)
 
