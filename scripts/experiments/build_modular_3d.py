@@ -264,12 +264,15 @@ def main(las_path, out_dir):
         if vx[i + 1] - vx[i] < MIN_GAP:
             continue
         x0 = dpx((vx[i], 0))[0]; x1 = dpx((vx[i + 1], 0))[0]
+        # faint guide lines the FULL height of the plan so each tick visibly
+        # lines up with the vertical wall it belongs to.
+        cv2.line(dim, (x0, PT - 100), (x0, DH - PB), (215, 195, 215), 1)
+        cv2.line(dim, (x1, PT - 100), (x1, DH - PB), (215, 195, 215), 1)
         yl = PT - 95 + (row % 2) * 34
-        cv2.line(dim, (x0, yl), (x1, yl), MAG, 1, cv2.LINE_AA)
-        cv2.line(dim, (x0, yl - 5), (x0, yl + 5), MAG, 1); cv2.line(dim, (x1, yl - 5), (x1, yl + 5), MAG, 1)
-        cv2.line(dim, (x0, yl), (x0, PT - 4), (220, 200, 220), 1)   # extension line to plan
-        cv2.line(dim, (x1, yl), (x1, PT - 4), (220, 200, 220), 1)
+        cv2.arrowedLine(dim, (x0, yl), (x1, yl), MAG, 1, cv2.LINE_AA, tipLength=0.03)
+        cv2.arrowedLine(dim, (x1, yl), (x0, yl), MAG, 1, cv2.LINE_AA, tipLength=0.03)
         t = lab(vx[i], vx[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        cv2.rectangle(dim, ((x0 + x1) // 2 - tw // 2 - 2, yl - 18), ((x0 + x1) // 2 + tw // 2 + 2, yl - 5), (255, 255, 255), -1)
         cv2.putText(dim, t, ((x0 + x1) // 2 - tw // 2, yl - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, MAG, 1, cv2.LINE_AA)
         row += 1
     # vertical dimensions (room depths) -- stacked in the left margin, 2 cols
@@ -278,13 +281,15 @@ def main(las_path, out_dir):
         if hy[i + 1] - hy[i] < MIN_GAP:
             continue
         y0 = dpx((0, hy[i]))[1]; y1 = dpx((0, hy[i + 1]))[1]
+        # faint guide lines the FULL width so each tick lines up with its wall
+        cv2.line(dim, (PL - 155, y0), (DW - PR, y0), (215, 195, 215), 1)
+        cv2.line(dim, (PL - 155, y1), (DW - PR, y1), (215, 195, 215), 1)
         xl = PL - 150 + (col % 2) * 96
-        cv2.line(dim, (xl, y0), (xl, y1), MAG, 1, cv2.LINE_AA)
-        cv2.line(dim, (xl - 5, y0), (xl + 5, y0), MAG, 1); cv2.line(dim, (xl - 5, y1), (xl + 5, y1), MAG, 1)
-        cv2.line(dim, (xl, y0), (PL - 4, y0), (220, 200, 220), 1)
-        cv2.line(dim, (xl, y1), (PL - 4, y1), (220, 200, 220), 1)
-        cv2.putText(dim, lab(hy[i], hy[i + 1]), (xl + 4, (y0 + y1) // 2 + 4),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, MAG, 1, cv2.LINE_AA)
+        cv2.arrowedLine(dim, (xl, y0), (xl, y1), MAG, 1, cv2.LINE_AA, tipLength=0.03)
+        cv2.arrowedLine(dim, (xl, y1), (xl, y0), MAG, 1, cv2.LINE_AA, tipLength=0.03)
+        t = lab(hy[i], hy[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cv2.rectangle(dim, (xl + 2, (y0 + y1) // 2 - 9), (xl + 6 + tw, (y0 + y1) // 2 + 4), (255, 255, 255), -1)
+        cv2.putText(dim, t, (xl + 4, (y0 + y1) // 2 + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, MAG, 1, cv2.LINE_AA)
         col += 1
     cv2.putText(dim, "Internal wall-to-wall dimensions  -  mm (ft)",
                (PL, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA)
