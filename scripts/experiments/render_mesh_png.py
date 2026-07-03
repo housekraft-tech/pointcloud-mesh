@@ -60,6 +60,7 @@ def main(mesh_path, out_dir):
         ("perspective_1", dict(front=[0.5, 0.6, 0.6], up=[0, 0, 1], zoom=0.62)),
         ("perspective_2", dict(front=[-0.6, 0.5, 0.55], up=[0, 0, 1], zoom=0.62)),
         ("top_down_plan", dict(front=[0, 0, 1], up=[0, 1, 0], zoom=0.72)),
+        ("bottom_up", dict(front=[0, 0, -1], up=[0, 1, 0], zoom=0.72)),
         ("front_elevation", dict(front=[0, 1, 0.15], up=[0, 0, 1], zoom=0.7)),
     ]
     for name, cam in views:
