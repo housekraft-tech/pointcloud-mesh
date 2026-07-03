@@ -112,6 +112,20 @@ def build_poisson_mesh(iso_path, out_dir):
     if not Path(raw_obj).exists():
         recon_mesh(iso_path, raw_obj)
     clean_mesh(raw_obj, clean_obj, 0.15)
+    # Our data is Z-up (LAS convention); OBJ viewers (Blender default) assume
+    # Y-up, so the model shows up rotated +90 on its side. Convert Z-up -> Y-up
+    # (rotate -90 about X: (x,y,z)->(x,z,-y)) so both meshes open upright.
+    _to_yup(raw_obj)
+    _to_yup(clean_obj)
+
+
+def _to_yup(obj_path):
+    import trimesh
+    import numpy as np
+    m = trimesh.load(obj_path, process=False)
+    v = np.asarray(m.vertices)
+    m.vertices = np.column_stack([v[:, 0], v[:, 2], -v[:, 1]])  # Z-up -> Y-up
+    m.export(obj_path)
 
 
 def main(raw_las, scan_name, poisson=True):
