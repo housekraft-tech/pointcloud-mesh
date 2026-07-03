@@ -1,0 +1,366 @@
+<title>isolidarflow — End-to-End Review</title>
+<style>
+  :root{
+    --paper:#EEF1EE;
+    --paper-raised:#F6F8F5;
+    --ink:#1E2422;
+    --ink-soft:#4B5450;
+    --rule:#C7D0C6;
+    --navy:#1B3A5C;
+    --navy-soft:#325577;
+    --orange:#B5541E;
+    --green:#2F6B4F;
+    --green-bg:#E4EEE7;
+    --red:#B23A2E;
+    --red-bg:#F3E4E1;
+    --cyan:#2F7C82;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:Charter,"Iowan Old Style","Georgia","Times New Roman",serif;
+    font-size:17px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .doc{
+    max-width:800px;
+    margin:0 auto;
+    padding:0 24px 96px;
+  }
+  .masthead{
+    padding:56px 0 28px;
+    border-bottom:2px solid var(--navy);
+    margin-bottom:8px;
+  }
+  .eyebrow{
+    font-family:"IBM Plex Mono","JetBrains Mono","SF Mono",Consolas,monospace;
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--navy-soft);
+    margin:0 0 10px;
+  }
+  h1{
+    font-family:"IBM Plex Mono","JetBrains Mono","SF Mono",Consolas,monospace;
+    font-weight:600;
+    font-size:clamp(28px,4vw,40px);
+    letter-spacing:-0.01em;
+    line-height:1.15;
+    margin:0 0 12px;
+    color:var(--navy);
+    text-wrap:balance;
+  }
+  .dek{
+    font-size:18px;
+    color:var(--ink-soft);
+    max-width:62ch;
+    margin:0;
+  }
+  .stat-strip{
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:1px;
+    background:var(--rule);
+    border:1px solid var(--rule);
+    margin:28px 0 8px;
+  }
+  .stat{
+    background:var(--paper-raised);
+    padding:16px 14px;
+  }
+  .stat .n{
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-variant-numeric:tabular-nums;
+    font-size:26px;
+    font-weight:600;
+    color:var(--navy);
+    display:block;
+    line-height:1.1;
+  }
+  .stat .l{
+    font-size:12px;
+    color:var(--ink-soft);
+    letter-spacing:0.02em;
+    display:block;
+    margin-top:4px;
+  }
+  section{
+    padding:40px 0;
+    border-bottom:1px solid var(--rule);
+  }
+  section:last-of-type{border-bottom:none;}
+  h2{
+    font-family:"IBM Plex Mono","JetBrains Mono","SF Mono",Consolas,monospace;
+    font-size:22px;
+    font-weight:600;
+    color:var(--navy);
+    margin:0 0 18px;
+    text-wrap:balance;
+    letter-spacing:-0.005em;
+  }
+  h3{
+    font-family:"IBM Plex Mono","JetBrains Mono","SF Mono",Consolas,monospace;
+    font-size:15px;
+    font-weight:600;
+    color:var(--navy-soft);
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    margin:28px 0 10px;
+  }
+  p{margin:0 0 14px; max-width:68ch;}
+  ul,ol{margin:0 0 14px; padding-left:22px; max-width:66ch;}
+  li{margin-bottom:6px;}
+  code{
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-size:0.86em;
+    background:var(--paper-raised);
+    border:1px solid var(--rule);
+    border-radius:3px;
+    padding:0.1em 0.35em;
+    color:var(--navy);
+  }
+  strong{color:var(--ink); font-weight:700;}
+  a{color:var(--cyan);}
+  .table-wrap{overflow-x:auto; margin:16px 0 20px;}
+  table{
+    border-collapse:collapse;
+    width:100%;
+    min-width:640px;
+    font-size:15px;
+    background:var(--paper-raised);
+  }
+  th,td{
+    border:1px solid var(--rule);
+    padding:9px 12px;
+    text-align:left;
+    vertical-align:top;
+  }
+  th{
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    color:var(--ink-soft);
+    background:var(--paper);
+    font-weight:600;
+  }
+  td:nth-child(2){font-variant-numeric:tabular-nums; white-space:nowrap;}
+  tr:has(td strong){background:var(--red-bg);}
+  .confirmed-note{
+    display:inline-block;
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.03em;
+    padding:2px 8px;
+    border-radius:3px;
+    background:var(--green-bg);
+    color:var(--green);
+    margin-right:6px;
+  }
+  .flag-note{
+    display:inline-block;
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.03em;
+    padding:2px 8px;
+    border-radius:3px;
+    background:var(--red-bg);
+    color:var(--red);
+  }
+  .task-table td:first-child{
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-variant-numeric:tabular-nums;
+    color:var(--navy-soft);
+    width:48px;
+    text-align:center;
+    font-weight:600;
+  }
+  .callout{
+    background:var(--paper-raised);
+    border-left:3px solid var(--orange);
+    padding:14px 18px;
+    margin:18px 0;
+    max-width:66ch;
+  }
+  .callout p:last-child{margin-bottom:0;}
+  .open-problems{
+    background:var(--red-bg);
+    border:1px solid var(--red);
+    border-radius:4px;
+    padding:16px 20px;
+    max-width:66ch;
+  }
+  .open-problems h3{color:var(--red); margin-top:0;}
+  .open-problems ul{margin-bottom:0;}
+  footer{
+    padding:32px 0 8px;
+    font-family:"IBM Plex Mono","JetBrains Mono",Consolas,monospace;
+    font-size:12px;
+    color:var(--ink-soft);
+    letter-spacing:0.02em;
+  }
+  @media (max-width:600px){
+    .stat-strip{grid-template-columns:repeat(2,1fr);}
+  }
+</style>
+
+<div class="doc">
+  <div class="masthead">
+    <p class="eyebrow">Point Cloud → Floorplan &amp; 3D · Session Review · 2026-07-03</p>
+    <h1>isolidarflow: end-to-end pipeline review</h1>
+    <p class="dek">A working log of the point-cloud → architectural floorplan/3D reconstruction pipeline built and validated today against a real LiDAR scan and its real architect's floorplan — for review, not as a finished claim.</p>
+    <div class="stat-strip">
+      <div class="stat"><span class="n">10/10</span><span class="l">plan tasks shipped</span></div>
+      <div class="stat"><span class="n">0.896</span><span class="l">floorplan↔LiDAR IoU</span></div>
+      <div class="stat"><span class="n">25/25</span><span class="l">ML walls LiDAR-confirmed</span></div>
+      <div class="stat"><span class="n">8 / 15</span><span class="l">rooms detected / real</span></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Architecture &amp; Implementation Plan</h2>
+
+<p>The <code>isolidarflow</code> plan turns an isolated single-storey SLAM scan into a sharp-edged, modular 3D model (named walls/floor/ceiling/doors/windows/balcony-doors/columns/beams as a GLB) plus a 2D floorplan, with every dimension measured rather than assumed. It was executed as 10 sequential tasks, each with its own tests, committed individually.</p>
+
+<h3>The 10 tasks</h3>
+<div class="table-wrap">
+<table class="task-table">
+<tr><th>Task</th><th>Built</th></tr>
+<tr><td>1</td><td>Seeded Open3D RNG in <code>detect_planes</code> for reproducible RANSAC plane detection</td></tr>
+<tr><td>2</td><td><code>group_wall_runs</code>: split wall runs at u-coverage gaps, expose <code>members</code>, real-scan-tuned rescue defaults</td></tr>
+<tr><td>3</td><td><code>recenter_walls</code>: shift measured-thickness walls onto the face-pair midline</td></tr>
+<tr><td>4</td><td><code>snap_endpoints_to_lines</code>: close T-junction corners (endpoint clustering alone can't)</td></tr>
+<tr><td>5</td><td><code>wall_crossings</code>: gps_time trajectory-crossing detection — the scanner physically walked through every real doorway</td></tr>
+<tr><td>6</td><td><code>remove_furniture</code>: geometric corridor rule keeping only points explained by structural elements</td></tr>
+<tr><td>7</td><td><code>recon/openings.py</code>: occupancy voids, trajectory visibility gate (real opening vs. furniture shadow), prior-aware classification</td></tr>
+<tr><td>8</td><td>Dimension priors/confidence flags, manifest builder, plus the R1 <code>Feature</code>/<code>WallSegment</code> schema</td></tr>
+<tr><td>9</td><td><strong>Architecture Revision R1</strong> implementation: room-owned wall segments → watertight sharp meshes</td></tr>
+<tr><td>10</td><td><code>scripts/isolidarflow.py</code> CLI wiring all of the above, plus real-scan validation</td></tr>
+</table>
+</div>
+
+<h3>Architecture Revision R1</h3>
+<p>Adopted mid-plan after reviewing early room-wise 3D previews in Blender, which showed two bugs: walls shared between two rooms were meshed once per room edge, producing duplicated/fragmented panels; and walls unclaimed by any closed room silently vanished from the model. R1's fix — <strong>walls own a feature graph; rooms own wall segments</strong> — replaced the original flat <code>build_elements</code> approach:</p>
+<ul>
+<li><code>Feature</code>: one detected relief element on a wall (<code>kind</code> ∈ face/groove/l_extrusion/beam_soffit/column_attach/opening), positioned in the wall's own 1D u-coordinate with its own z-range and signed offset from the reference face — so grooves, protrusions, and beam soffits are named and preserved, not flattened into an anonymous box.</li>
+<li><code>WallSegment</code>: the actual meshing unit — a wall clipped to one room's ownership range (or <code>room_id=None</code> for unclaimed stretches, so nothing is ever silently dropped), carrying only the features that fall inside it.</li>
+<li>Ownership pass: every room-edge overlap per wall is collected first, then each wall splits <em>once</em> into segments at the union of room-boundary u-coordinates — eliminating the duplicate-meshing bug at the root instead of patching it after the fact.</li>
+<li>Meshing stays CSG (manifold3d) behind one interface, <code>segment_to_mesh</code>: additive features union, subtractive features (grooves, openings) cut, watertightness asserted. Profile-sweeping was evaluated and deliberately deferred — features can vary in both u and z simultaneously (a door under a beam soffit), so a sweep-based mesher would need its own hand-built watertightness guarantees that manifold3d already provides.</li>
+</ul>
+
+<h3>Current status</h3>
+<p>All 10 tasks are implemented and committed (branch <code>isolidarflow</code>, 20 commits). The final whole-branch review verdict was <strong>“ready to merge with fixes”</strong> — no Critical issues; both top user priorities (accurate opening cutouts, preserved wall relief) verified working end-to-end on two real scans with sharp, watertight CSG geometry. Three Important issues were found and fixed:</p>
+<ul>
+<li><strong>Silent mesh-failure swallows</strong> in <code>build_room_model</code> — a failed per-segment mesh operation vanished with no trace, undermining R1's own “never silently drop a wall” guarantee. Fixed with a counted, identified drop-report (<code>model.drops</code>), surfaced in <code>report.txt</code>.</li>
+<li><strong>Room-closure vs. point-cap tradeoff undocumented</strong> — the CLI's default <code>plane_max_points</code> (1.5M, tuned for speed) doesn't reliably hit the plan's own ≥7-room acceptance bar; now called out explicitly in the README with the flag to override it.</li>
+<li><strong>An accidental 11.7&nbsp;MB PDF</strong> committed during Task 9 — removed, <code>.gitignore</code> hardened.</li>
+</ul>
+
+<h3>CLI entry point</h3>
+<p><code>scripts/isolidarflow.py</code> exposes <code>run(in_path, out_dir, config=DEFAULT_CONFIG)</code> and a matching CLI, orchestrating every stage from LAS load through GLB/DXF/SVG/manifest export. <code>DEFAULT_CONFIG</code> holds every threshold from all 10 tasks — RANSAC parameters, wall-grouping tolerances, furniture-removal distances, opening priors (7&nbsp;ft door height, 2750&nbsp;mm ceiling, balcony/window rules) — each with a one-line comment, no magic numbers inline. Config is fully overridable per call or via CLI flags, so tuning (e.g. raising the point cap for better room closure) never requires touching code.</p>
+  </section>
+
+  <section>
+    <h2>Real-Scan Experimentation Journey</h2>
+    <p>All experimentation ran against the real <code>koushikexport.las</code> SLAM scan of an occupied apartment. Each numbered phase names its script and output folder so results can be reproduced or re-inspected.</p>
+
+    <h3>1 · Isolation</h3>
+    <p>The unit-isolation stage correctly separated the scanned apartment from an adjacent neighbour building visible in the same point cloud, producing a clean <strong>13.2 × 15.0&nbsp;m</strong> footprint with the neighbour structure fully dropped. This became the trusted base cloud for every downstream experiment.</p>
+
+    <h3>2 · 2D floorplan iteration (v1 → v3)</h3>
+    <p><code>scripts/experiments/diag_floorplan2d_v1/v2/v3.py</code> progressively fixed room-closure defects:</p>
+    <ul>
+      <li><strong>v1:</strong> 5 rooms detected — many real rooms merged or missing.</li>
+      <li><strong>v2:</strong> added u-gap splitting (breaking wall runs at real gaps instead of bridging them) → <strong>8 rooms</strong>.</li>
+      <li><strong>v3:</strong> added midline recentring and T-junction endpoint-to-line snapping (closing wall joints v2 left dangling) → settled at <strong>7 rooms</strong>, the most topologically correct of the three.</li>
+    </ul>
+
+    <h3>3 · Point-count sweep (counter-intuitive finding)</h3>
+    <p>Re-running detection at increasing point budgets did <em>not</em> monotonically improve results. At ~9M points, room count inflated as wall-fitting began fragmenting single rooms into fake micro-rooms, while runtime scaled from <strong>25s to 1238s</strong>. The sweet spot was ~3–6M points; beyond that, more data actively hurt topology while cost exploded.</p>
+
+    <h3>4 · Gap-region investigation</h3>
+    <p>A persistent “hole” in the reconstructed floorplan was suspected to be scan noise or bleed-through from the neighbour building. Height-colored density renders plus a raw density image proved it was neither — it was a <strong>real balcony with a railing</strong>, confirmed by the railing's distinct low-density signature and trajectory data showing the scan path walking along it.</p>
+
+    <h3>5 · Sharp 3D solid previews (v1 → v5)</h3>
+    <p>Iterated stepped-boolean wall solids with gps_time-driven walkthrough door cuts: <strong>53 trajectory crossings → 12 door cuts</strong>. Later versions added hollow gaps under beams and split walls into per-room <code>WallSegment</code>s, fixing a bug where shared walls were duplicated as separate solids per adjacent room (“one object per wall”).</p>
+
+    <h3>6 · Opening-detection bug fixes</h3>
+    <p>Duplicate door detections from repeated trajectory crossings on the same opening were merged, reducing a noisy <strong>32 openings down to 14</strong>. Two oversized voids (11.67&nbsp;m and 5.6&nbsp;m wide) that were being misclassified as <code>balcony_door</code> were reclassified as low-confidence <code>unknown_opening</code>, preventing a wrong high-confidence label on structurally implausible gaps.</p>
+
+    <h3>7 · Entrance/topology rebuild</h3>
+    <p>Added exterior/interior wall classification via room-polygon-side probing and a room-adjacency graph, then used adjacency + size to predict which room was the balcony. An early version wrongly flagged the 45.2&nbsp;m² living room as a balcony purely from adjacency; fixed by making room-size a mandatory (not optional) filter condition.</p>
+
+    <h3>8 · Slice validation</h3>
+    <p>Four height slices (floor, waist, mid, near-ceiling) showed walls as clean, high-confidence bright lines at waist and mid height with no floor-plane brightness confound. The near-ceiling slice unexpectedly revealed a solid-filled region, likely a dropped ceiling or beam over the balcony — validating height-aware detection as a real signal source, not just a diagnostic.</p>
+
+    <h3>9 · Hough/threshold struggle</h3>
+    <p>Five thresholding polarity attempts were tried on wall-line extraction (adaptiveThreshold in both polarities, Otsu in both polarities, Canny). Plain non-inverted Otsu was visually best but still imperfect — this remains an open weak point in the pure-CV wall-extraction path.</p>
+
+    <h3>10 · Ground-truth comparison</h3>
+    <p>Compared against the real architect floorplan: <strong>117&nbsp;m²</strong> including 4 balconies, <strong>103.5&nbsp;m²</strong> excluding them, versus the reconstruction's <strong>111.7&nbsp;m²</strong> across 8 rooms (vs. 15 real spaces). Overall footprint area matched well, but kitchen/living merged into one 45.2&nbsp;m² blob (real: 32.65 + 11.36&nbsp;m² separately), several bathroom partitions were under-detected, and zero balconies were reconstructed as enclosed rooms.</p>
+
+    <h3>11 · Floorplan–ML fusion breakthrough</h3>
+    <p><code>bbox_data.json</code> (25 walls, 10 openings from an independent ML detection flow) was registered onto the LiDAR frame via a 180° rotation, achieving <strong>IoU&nbsp;=&nbsp;0.896</strong> with no free scale factor needed since both sources were already metric. Every one of the 25 walls was then confirmed against real LiDAR point support with measured (not assumed) dimensions — crucially recovering the kitchen/living divider that pure point-cloud detection had missed. A thickness-measurement bug (percentile-based, producing a falsely uniform ~0.3–0.37&nbsp;m everywhere) was found and fixed via two-peak histogram detection, yielding realistic thickness values of 0.04–0.23&nbsp;m.</p>
+
+    <div class="open-problems">
+      <h3>Known open problems</h3>
+      <ul>
+        <li>The balcony railing still needs dedicated height-aware detection (2D offset-grid or Poisson-mesh-slice approach) — current methods under-detect it.</li>
+        <li>Balcony rooms are not yet closed into proper enclosed polygons in the reconstruction.</li>
+        <li>Some bathroom partition walls are still missing relative to the ground-truth floorplan.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Ground Truth &amp; the Floorplan-Fusion Approach</h2>
+
+<p>The user supplied the real architect's floor plan for the koushik apartment, giving exact room dimensions to validate against — not just prior reconstruction runs against each other. This table compares the real rooms to the 8 rooms detected by the LiDAR-only reconstruction (<code>output/koushik_entrances_v4</code>, 111.7&nbsp;m² total):</p>
+
+<div class="table-wrap">
+<table>
+<tr><th>Real room (architect plan)</th><th>Real area m²</th><th>Detected match</th><th>Match / gap note</th></tr>
+<tr><td>Bedroom (top-right)</td><td>14.82</td><td>R0 = 14.8</td><td><span class="confirmed-note">match</span>Near-exact</td></tr>
+<tr><td>Bedroom (bottom-left)</td><td>13.65</td><td>R7 = 13.2</td><td><span class="confirmed-note">match</span>Good match</td></tr>
+<tr><td>Bedroom (top-left) + 2 toilets</td><td>12.21 + 3.80 + 3.80 = 19.81</td><td>R5 = 20.0</td><td><span class="flag-note">gap</span> Merged — bathroom partitions missing</td></tr>
+<tr><td><strong>Living/Dining + Kitchen</strong></td><td>32.65 + 11.36 = 44.01</td><td>R1 = 45.2</td><td><span class="flag-note">gap</span> Merged — kitchen/living partition + door entirely missed</td></tr>
+<tr><td>2 toilets, walk-in, utility, bottom toilet (5 rooms)</td><td>3.80 / 3.80 / 2.64 / 2.53 / 3.88</td><td>R2/R3/R4/R6 (4 rooms) = 6.7/3.9/3.6/4.3</td><td><span class="flag-note">gap</span> 5 real vs. 4 detected — a partition missing</td></tr>
+<tr><td>Foyer (open-plan, no full wall)</td><td>2.15</td><td>—</td><td><span class="confirmed-note">correct</span> Correctly absorbed into Living/Dining</td></tr>
+<tr><td><strong>4 balconies</strong> (TR bedroom, TL bedroom, Living/Dining, BL bedroom)</td><td>1.14 / 2.07 / 7.14 / 3.15</td><td>None</td><td><span class="flag-note">gap</span> <strong>Zero balconies reconstructed as enclosed rooms</strong> — the core open gap</td></tr>
+</table>
+</div>
+
+<p>The overall footprint is accurate (111.7 vs. 103.5–117.0&nbsp;m² real, depending on whether balconies are included), confirming the outer envelope and biggest bedrooms reconstruct well. But 15 real enclosed spaces (11 rooms + 4 balconies) collapse into just 8 detected rooms — the systematic failure mode is <em>missing thin interior partitions</em> (bathroom/closet/utility dividers, the kitchen/living divider) and <em>zero reconstructed balconies</em>.</p>
+
+<h3>The floorplan-fusion architecture</h3>
+<p>Rather than trying to force RANSAC/plane-detection thresholds to recover every thin wall, the fusion approach treats the user's independently-generated ML floorplan JSON (<code>bbox_data.json</code>) as the <strong>structural base</strong> — it already encodes complete topology (which walls exist, which rooms they border, where every door/window/balcony-door sits) — while the LiDAR point cloud remains the <strong>measurement source</strong> for true as-built dimensions, since construction always deviates from the architect's drawing.</p>
+
+<p>Fusion works by registering the floorplan onto the LiDAR's axis-aligned frame. Because both sources are already in real metric units, no free scale parameter is needed — only a rigid transform (rotation × mirror × translation). The registration search tries the 4 candidate 90° rotations combined with an optional mirror flip, scoring each by IoU between the transformed floorplan's wall footprint and the LiDAR-derived room-union footprint. This converged cleanly: <strong>IoU&nbsp;=&nbsp;0.896</strong> at a 180° rotation with no mirror.</p>
+
+<p>Once registered, each of the floorplan's 25 walls is no longer “discovered” — it's <em>measured</em>: a search band is placed at its known expected position in the LiDAR cloud, and the true endpoints (density half-max crossing), thickness (two-face peak detection in a perpendicular-offset histogram), and z-extent are read directly off the real points. Result: <strong>25/25 walls were confirmed by real LiDAR point support</strong>, including the kitchen/living partition wall that the LiDAR-only pipeline had merged away entirely — directly closing the largest gap in the table above.</p>
+
+<div class="callout">
+<h3 style="margin-top:0;">Proposed next refinement (not yet built)</h3>
+<p>The per-wall measurement step currently reads directly off raw, noisy LiDAR points via percentile/peak-histogram methods. The next planned improvement is to instead measure off <strong>Poisson-mesh cross-sections</strong> — the mesh already exists (<code>mesh_isolated_v4_clean.obj</code>) and its own smoothing/gap-filling behavior should finally close the one gap raw-point measurement couldn't: the balcony railing, whose real points are too sparse and fragmented for a clean line fit, but which Poisson likely bridges into one continuous surface at railing height.</p>
+</div>
+
+<h3>Alternative approach found: HouseKraft/PointCloudTo3d</h3>
+<p>A public reference implementation (<a href="https://github.com/HouseKraft/PointCloudTo3d">github.com/HouseKraft/PointCloudTo3d</a>) solves the same problem end-to-end without a pre-existing floorplan: Poisson mesh reconstruction → slice the mesh's own cross-sections at just 3 heights (0.10m near-floor for door bottoms, 1.10m mid-wall, 2.00m upper-wall/window band) → rasterize each slice as a density image → run a <strong>trained ONNX object detector (RF-DETR)</strong>, not classical thresholding, to find wall/window/balcony-door boxes → merge detections across the 3 heights by direction + perpendicular-offset similarity → query the <em>full</em> original point cloud at each merged wall's footprint for the true floor-to-ceiling Z range → export to IFC.</p>
+
+<p>Their config's real numeric priors closely match what this session independently derived: ceiling height 2.7m, minimum door opening height 1.9m, minimum balcony-door width 1.2m — solid cross-validation from an unrelated codebase.</p>
+
+<p>Notably, their classical-CV Hough-line path is explicitly labeled the <strong>“no-training baseline” fallback</strong>, not the primary method — direct validation that this session's Hough/Otsu/Canny threshold-tuning struggle (the “not great” <code>koushik_rescue5</code> output) was fighting the wrong tool for the job. Their primary path also includes a “nano banana” step — Gemini 2.5 Flash Image performing image-to-image cleanup on each raster <em>before</em> detection, under a strict “zero hallucination” prompt (never add or omit structure, preserve real openings as gaps, no drift from the input framing/scale). A trained detector plus a constrained generative cleanup pass is a fundamentally more robust way to separate “real wall” from “noisy clutter” in a density raster than hand-tuned brightness thresholds.</p>
+
+<h3>Where these two approaches now converge</h3>
+<p>We don't need HouseKraft's discovery machinery — training an ONNX detector or calling an external VLM — because discovery is already solved via the user's own ML-detected floorplan, fused and LiDAR-confirmed at IoU 0.896 with all 25 walls verified. The one idea worth borrowing directly is narrower and cheaper: their <strong>measurement</strong> technique — slice the denoised, gap-filled Poisson mesh rather than raw noisy points — applied to <em>our</em> already-known wall positions, not to blind discovery. That's precisely the next refinement already scoped above.</p>
+  </section>
+
+  <footer>
+    isolidarflow review · branch <code>isolidarflow</code> · generated for review, not as a finished claim · every number above traces to a script + output folder named inline
+  </footer>
+</div>

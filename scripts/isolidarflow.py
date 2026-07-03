@@ -56,6 +56,9 @@ from scripts.recon.assemble import build_scene, write_glb  # noqa: E402
 DEFAULT_CONFIG = {
     # --- reproducibility (Task 1) ---
     "seed": 0,                       # RNG seed for Open3D RANSAC + numpy subsampling
+    # --- diagnostics ---
+    "atlas": True,                   # write the full diagnostic-atlas PNG suite to <out>/atlas/ every run
+    # --- reproducibility continued ---
     # --- ingest (Task 1) ---
     "max_points": None,              # uniform subsample cap at load (None = full resolution)
     # --- clean: percentile bbox crop (Task 1) ---
@@ -297,6 +300,12 @@ def run(in_path, out_dir, config=None):
         if traj.shape[0]:
             traj = traj @ np.asarray(R, dtype=float).T
 
+        # keep a reference to the FULL-density aligned scan (before the
+        # detection-stage subsample below thins it) so the diagnostic atlas
+        # renders from full point density, and so its gps_time/intensity/rgb
+        # fields survive for the intensity/color/time views.
+        atlas_scan = scan
+
         # --- working cloud (cap density for the heavy detection stages) ---
         if cfg["plane_max_points"] and scan.n > cfg["plane_max_points"]:
             keep = rng.choice(scan.n, size=cfg["plane_max_points"], replace=False)
@@ -308,6 +317,19 @@ def run(in_path, out_dir, config=None):
         z_floor = float(np.percentile(xyz[:, 2], cfg["z_floor_pct"]))
         z_ceiling = float(np.percentile(xyz[:, 2], cfg["z_ceiling_pct"]))
         info["z_floor"], info["z_ceiling"] = z_floor, z_ceiling
+
+        # --- diagnostic atlas: full field-mining visualization suite, written
+        # into <out_dir>/atlas/ on EVERY run (height slices, hough-clean wall
+        # lines, height-colored density, trajectory overlay, gps_time heatmap,
+        # intensity, RGB if present, elevation profile). Never sinks the run.
+        if cfg.get("atlas", True):
+            try:
+                from scripts.experiments.diagnostic_atlas import render_atlas
+                scan_name = os.path.splitext(os.path.basename(in_path))[0]
+                render_atlas(atlas_scan, traj, z_floor, z_ceiling,
+                             os.path.join(out_dir, "atlas"), scan_name)
+            except Exception as exc:
+                print(f"[isolidarflow] atlas skipped: {exc}", file=sys.stderr)
 
         # --- 7. plane detection ---
         all_planes = planes.detect_planes(
@@ -552,6 +574,67 @@ def _write_debug_png(out_dir, xyz, walls, rooms, columns, openings_by_wall,
         cen = poly.centroid
         cv2.putText(img, f"{poly.area:.1f}m2", to_px((cen.x, cen.y)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 210, 150), 1, cv2.LINE_AA)
+
+    # entrance markers: a door-swing arc (architectural convention) on every
+    # walkable opening (door / balcony_door) so entrances read as obviously
+    # walkable, not just a tinted patch of wall the same way a window is.
+    from shapely.geometry import Point as _Pt
+    DOOR_TYPES = ("door", "balcony_door")
+    for wi, ops in (openings_by_wall or {}).items():
+        w = walls[wi]
+        p0 = np.asarray(w["p0"], float)
+        d_full = np.asarray(w["p1"], float) - p0
+        L = float(np.linalg.norm(d_full))
+        if L == 0:
+            continue
+        d = d_full / L
+        n = np.array([-d[1], d[0]])
+        u_i = 1 if w["direction"] == "x" else 0
+        if abs(d[u_i]) < 1e-9:
+            continue
+        for op in ops:
+            if op["type"] not in DOOR_TYPES:
+                continue
+            t0 = (op["u0"] - p0[u_i]) / d[u_i]
+            t1 = (op["u1"] - p0[u_i]) / d[u_i]
+            lo, hi = sorted((t0, t1))
+            lo, hi = max(lo, 0.0), min(hi, L)
+            width = hi - lo
+            if width < 0.02:
+                continue
+            hinge = p0 + d * lo
+            # which side is the room interior? probe both normal directions,
+            # keep whichever lands inside a real room polygon.
+            probe_dist = 0.3
+            sign = 1.0
+            for cand_sign in (1.0, -1.0):
+                probe = hinge + n * cand_sign * probe_dist + d * (width / 2)
+                if any(poly.contains(_Pt(probe[0], probe[1])) for poly in rooms):
+                    sign = cand_sign
+                    break
+            leaf_tip = hinge + n * sign * width
+            color = type_color.get(op["type"], (0, 255, 255))
+            hinge_px, tip_px = to_px(hinge), to_px(leaf_tip)
+            cv2.line(img, hinge_px, tip_px, color, 2, cv2.LINE_AA)
+            arc_r_px = max(1, int(width * ppm))
+            start_angle = np.degrees(np.arctan2(-(n[1] * sign), n[0] * sign))
+            end_angle = np.degrees(np.arctan2(-d[1], d[0]))
+            cv2.ellipse(img, hinge_px, (arc_r_px, arc_r_px), 0,
+                       min(start_angle, end_angle), max(start_angle, end_angle),
+                       color, 1, cv2.LINE_AA)
+            label = "BALCONY" if op["type"] == "balcony_door" else "DOOR"
+            mid_px = to_px(hinge + d * (width / 2) + n * sign * (width * 0.3))
+            cv2.putText(img, label, mid_px, cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
+
+    legend_y = H - 18
+    for i, (label, color) in enumerate([("door", type_color["door"]),
+                                        ("balcony", type_color["balcony_door"]),
+                                        ("window", type_color["window"]),
+                                        ("unclear/oversized", type_color["unknown_opening"])]):
+        x = 10 + i * 150
+        cv2.rectangle(img, (x, legend_y - 8), (x + 14, legend_y + 4), color, -1)
+        cv2.putText(img, label, (x + 18, legend_y + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                   (230, 230, 230), 1, cv2.LINE_AA)
 
     # RGB-per-wall-band annotation (evidence for a future colour-assisted
     # opening/frame detector -- printed, and drawn as a swatch when RGB exists)

@@ -47,8 +47,14 @@ CLUSTER_OFFSET_TOL_M = 0.20
 EXISTING_WALL_REACH_M = 0.25   # skip candidates already explained by an accepted wall
 BAND_M = 0.15
 MIN_SUPPORT_PTS = 150
-MIN_HEIGHT_FRAC = 0.55
+MIN_HEIGHT_FRAC = 0.55          # tier 1: solid wall (near-full floor-to-ceiling)
 FLOOR_TOUCH_TOL_M = 0.35
+RAILING_MIN_HEIGHT_M = 0.70     # tier 2: railing/half-wall -- floor-touching but
+RAILING_MAX_HEIGHT_M = 1.30     # only waist-high (0.7-1.3m), NOT near ceiling.
+RAILING_MIN_SUPPORT_PTS = 400   # stricter point-count bar than a full wall (3x),
+                               # since a shorter candidate needs stronger real
+                               # evidence to rule out furniture (e.g. a sofa
+                               # back) rather than a genuine balcony railing.
 
 
 def log(msg):
@@ -73,18 +79,22 @@ def px_to_world(x_px, y_px, xmin, ymax, ppm):
 
 
 def detect_candidate_lines(gray):
-    """Binarize (adaptive) + close small gaps + probabilistic Hough.
+    """Binarize (plain Otsu, non-inverted) + close small gaps + Hough.
 
-    C must be POSITIVE: adaptiveThreshold marks a pixel white iff it exceeds
-    its local neighborhood mean + C. Walls are BRIGHTER than the surrounding
-    floor/background in the density image (see build_density_image), so a
-    positive C selects locally-bright wall pixels as white/foreground for
-    Hough. A negative C (an earlier version of this script used -8) inverts
-    this: nearly every pixel clears a lowered bar and floor interiors turn
-    white while thin wall lines -- which barely move a large local mean --
-    turn black, so Hough ends up tracing floor-blob edges instead of walls."""
-    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                   cv2.THRESH_BINARY, 31, 8)
+    Four other attempts were tried and rejected by visual inspection:
+    adaptiveThreshold (both C signs), Otsu inverted, and Canny edge
+    detection (which picks up per-pixel shot noise across the whole sparse
+    interior instead of just the walls). Plain non-inverted Otsu -- despite
+    putting walls on the black/background side rather than white/foreground
+    -- is the one that empirically traced a clean, complete, fully-connected
+    floorplan outline: cv2.HoughLinesP still finds the right lines here
+    because it traces the boundary of the large white floor-interior blobs,
+    and that boundary is geometrically coincident with the wall centerlines
+    either way -- which side is nominally "foreground" turned out not to
+    matter for line position, only for how much noise survives, and this
+    combination has the least.
+    """
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
     lines = cv2.HoughLinesP(closed, 1, np.pi / 180, threshold=HOUGH_THRESH,
@@ -155,8 +165,11 @@ def already_explained(cand, existing_walls):
 
 
 def verify_candidate(cand, xyz, z_floor, z_ceiling):
-    """3D verification: real point support in a band along the candidate
-    line, spanning most of the floor-ceiling height, touching the floor."""
+    """3D verification, two tiers: a full solid wall (near-full height) or a
+    railing/half-wall (floor-touching, waist-high only, stricter point-count
+    bar). Returns None if neither tier is satisfied -- a candidate that is
+    floor-touching but SHORT (e.g. a sofa back) and lacks the railing tier's
+    higher support count is correctly rejected as furniture, not a wall."""
     axis_i = 0 if cand["direction"] == "y" else 1   # perpendicular axis index
     u_i = 1 - axis_i
     perp = xyz[:, axis_i]
@@ -168,11 +181,21 @@ def verify_candidate(cand, xyz, z_floor, z_ceiling):
         return None
     band_z = z[in_band]
     z_lo, z_hi = np.percentile(band_z, [2, 98])
-    height_frac = (z_hi - z_lo) / max(z_ceiling - z_floor, 1e-6)
+    height = z_hi - z_lo
+    height_frac = height / max(z_ceiling - z_floor, 1e-6)
     touches_floor = (z_lo - z_floor) <= FLOOR_TOUCH_TOL_M
-    if height_frac < MIN_HEIGHT_FRAC or not touches_floor:
+    if not touches_floor:
         return None
-    return dict(n_support=n_support, z_min=float(z_lo), z_max=float(z_hi), height_frac=float(height_frac))
+
+    if height_frac >= MIN_HEIGHT_FRAC:
+        tier = "wall"
+    elif (RAILING_MIN_HEIGHT_M <= height <= RAILING_MAX_HEIGHT_M
+          and n_support >= RAILING_MIN_SUPPORT_PTS):
+        tier = "railing"
+    else:
+        return None
+    return dict(n_support=n_support, z_min=float(z_lo), z_max=float(z_hi),
+               height_frac=float(height_frac), tier=tier)
 
 
 def build_rescue_run(cand, verified):
@@ -189,7 +212,7 @@ def build_rescue_run(cand, verified):
                members_z=[dict(u_min=float(cand["u_min"]), u_max=float(cand["u_max"]),
                               z_min=verified["z_min"], z_max=verified["z_max"],
                               offset=0.0, n=verified["n_support"])],
-               rescued_2d=True)
+               rescued_2d=True, tier=verified["tier"])
 
 
 def main(in_path, out_dir):
@@ -277,7 +300,7 @@ def main(in_path, out_dir):
     log(f"rescue result: {len(rescued_runs)} NEW walls accepted "
         f"({already_have} already explained, {rejected_no3d} failed 3D verification)")
     for r in rescued_runs:
-        log(f"  rescued {r['direction']}-wall at offset={r['offset_m']:.2f} "
+        log(f"  rescued [{r.get('tier','?')}] {r['direction']}-wall at offset={r['offset_m']:.2f} "
             f"u=[{r['members'][0][0]:.2f},{r['members'][0][1]:.2f}] "
             f"z=[{r['steps'][0].z_min_m:.2f},{r['steps'][0].z_max_m:.2f}] "
             f"support={r['members_z'][0]['n']}")
