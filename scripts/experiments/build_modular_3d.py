@@ -239,32 +239,55 @@ def main(las_path, out_dir):
 
     vx = cluster([(p0[0] + p1[0]) / 2 for p0, p1 in walls if abs((p1 - p0)[1]) > abs((p1 - p0)[0])])
     hy = cluster([(p0[1] + p1[1]) / 2 for p0, p1 in walls if abs((p1 - p0)[0]) >= abs((p1 - p0)[1])])
-    dim = plan.copy()
 
-    def label(a, b):
-        mm = abs(b - a) * 1000.0
-        ft = abs(b - a) * 3.28084
-        return f"{mm:.0f}mm / {ft:.1f}ft"
-    # horizontal dimension string across the top (gaps between vertical walls)
-    yline = 60
+    # padded canvas: dimension strings live in clean margins OUTSIDE the plan
+    PT, PL, PR, PB = 150, 210, 60, 60
+    DH, DW = H + PT + PB, W + PL + PR
+    dim = np.full((DH, DW, 3), 255, np.uint8)
+    MAG = (170, 0, 170)
+
+    def dpx(p):
+        c, r = m2px(p)
+        return c + PL, r + PT
+    for p0, p1 in walls:
+        dd = p1 - p0
+        col = (0, 150, 0) if abs(dd[0]) >= abs(dd[1]) else (200, 60, 0)
+        cv2.line(dim, dpx(p0), dpx(p1), col, 4, cv2.LINE_AA)
+
+    def lab(a, b):
+        return f"{abs(b-a)*1000:.0f}mm ({abs(b-a)*3.28084:.1f}ft)"
+    MIN_GAP = 0.25   # skip tiny wall-thickness gaps to cut clutter
+    # horizontal dimensions (room widths) -- stacked in the top margin, 2 rows
+    x_top = min(dpx((0, hy[0]))[1] if hy else PT, PT) - 8
+    row = 0
     for i in range(len(vx) - 1):
-        x0, _ = m2px((vx[i], 0)); x1, _ = m2px((vx[i + 1], 0))
-        cv2.line(dim, (x0, yline), (x1, yline), (150, 0, 150), 1)
-        cv2.line(dim, (x0, yline - 5), (x0, yline + 5), (150, 0, 150), 1)
-        cv2.line(dim, (x1, yline - 5), (x1, yline + 5), (150, 0, 150), 1)
-        cv2.putText(dim, label(vx[i], vx[i + 1]), ((x0 + x1) // 2 - 45, yline - 8),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 0, 150), 1, cv2.LINE_AA)
-    # vertical dimension string down the left (gaps between horizontal walls)
-    xline = 70
+        if vx[i + 1] - vx[i] < MIN_GAP:
+            continue
+        x0 = dpx((vx[i], 0))[0]; x1 = dpx((vx[i + 1], 0))[0]
+        yl = PT - 95 + (row % 2) * 34
+        cv2.line(dim, (x0, yl), (x1, yl), MAG, 1, cv2.LINE_AA)
+        cv2.line(dim, (x0, yl - 5), (x0, yl + 5), MAG, 1); cv2.line(dim, (x1, yl - 5), (x1, yl + 5), MAG, 1)
+        cv2.line(dim, (x0, yl), (x0, PT - 4), (220, 200, 220), 1)   # extension line to plan
+        cv2.line(dim, (x1, yl), (x1, PT - 4), (220, 200, 220), 1)
+        t = lab(vx[i], vx[i + 1]); (tw, _), _ = cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        cv2.putText(dim, t, ((x0 + x1) // 2 - tw // 2, yl - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, MAG, 1, cv2.LINE_AA)
+        row += 1
+    # vertical dimensions (room depths) -- stacked in the left margin, 2 cols
+    col = 0
     for i in range(len(hy) - 1):
-        _, y0 = m2px((0, hy[i])); _, y1 = m2px((0, hy[i + 1]))
-        cv2.line(dim, (xline, y0), (xline, y1), (150, 0, 150), 1)
-        cv2.line(dim, (xline - 5, y0), (xline + 5, y0), (150, 0, 150), 1)
-        cv2.line(dim, (xline - 5, y1), (xline + 5, y1), (150, 0, 150), 1)
-        cv2.putText(dim, label(hy[i], hy[i + 1]), (xline + 6, (y0 + y1) // 2),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 0, 150), 1, cv2.LINE_AA)
-    cv2.putText(dim, "Internal wall-to-wall dimensions (mm / ft) -- magenta strings",
-               (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 1, cv2.LINE_AA)
+        if hy[i + 1] - hy[i] < MIN_GAP:
+            continue
+        y0 = dpx((0, hy[i]))[1]; y1 = dpx((0, hy[i + 1]))[1]
+        xl = PL - 150 + (col % 2) * 96
+        cv2.line(dim, (xl, y0), (xl, y1), MAG, 1, cv2.LINE_AA)
+        cv2.line(dim, (xl - 5, y0), (xl + 5, y0), MAG, 1); cv2.line(dim, (xl - 5, y1), (xl + 5, y1), MAG, 1)
+        cv2.line(dim, (xl, y0), (PL - 4, y0), (220, 200, 220), 1)
+        cv2.line(dim, (xl, y1), (PL - 4, y1), (220, 200, 220), 1)
+        cv2.putText(dim, lab(hy[i], hy[i + 1]), (xl + 4, (y0 + y1) // 2 + 4),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, MAG, 1, cv2.LINE_AA)
+        col += 1
+    cv2.putText(dim, "Internal wall-to-wall dimensions  -  mm (ft)",
+               (PL, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_dimensioned.png"), dim)
     log(f"wrote wall_plan_2d.png + wall_plan_dimensioned.png ({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
 
