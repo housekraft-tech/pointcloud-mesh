@@ -61,6 +61,15 @@ def main(mask_path, out_dir):
         log(f"cannot read {mask_path}"); return
     _, binm = cv2.threshold(img, 40, 255, cv2.THRESH_BINARY)
     H, W = binm.shape
+    # if the input is a THICK wall footprint (not a 1px skeleton), skeletonize
+    # first so Hough sees clean centerlines instead of doubled parallel edges.
+    if (binm > 0).mean() > 0.02:
+        try:
+            from skimage.morphology import skeletonize
+            binm = skeletonize(binm > 0).astype(np.uint8) * 255
+            log("input was thick -> skeletonized to centerlines")
+        except Exception:
+            pass
 
     lines = cv2.HoughLinesP(binm, 1, np.pi / 180, threshold=28,
                             minLineLength=22, maxLineGap=16)
