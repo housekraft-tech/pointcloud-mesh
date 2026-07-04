@@ -99,6 +99,71 @@ def extrude_wall(polys, p0, d, n, thick):
     return prism
 
 
+def regularize_metric(walls, occ, xmin, ymax, tol_c=0.25, tol_s=0.60):
+    """Grid-snap the wall graph and bridge Hough-miss gaps so rooms CLOSE and no
+    wall is left missing (the same fix as the 2D fusion plan). Manhattan walls
+    are snapped onto shared gridlines, endpoints extended onto crossing lines,
+    and collinear runs merged across a gap only when that gap is filled with wall
+    material (occ) -- a real doorway (empty gap) stays open."""
+    Hi, Wi = occ.shape
+    Hs, Vs = [], []
+    for p0, p1 in walls:
+        dd = p1 - p0
+        if abs(dd[0]) >= abs(dd[1]):
+            Hs.append([min(p0[0], p1[0]), max(p0[0], p1[0]), (p0[1] + p1[1]) / 2])   # xa,xb,y
+        else:
+            Vs.append([min(p0[1], p1[1]), max(p0[1], p1[1]), (p0[0] + p1[0]) / 2])   # ya,yb,x
+
+    def cluster(vals, tol):
+        if not vals:
+            return []
+        s = sorted(vals); g = [[s[0]]]
+        for v in s[1:]:
+            if v - g[-1][-1] <= tol:
+                g[-1].append(v)
+            else:
+                g.append([v])
+        return [float(np.mean(x)) for x in g]
+    ys = cluster([h[2] for h in Hs], tol_c); xs = cluster([v[2] for v in Vs], tol_c)
+
+    def near(v, arr):
+        return min(arr, key=lambda a: abs(a - v)) if arr else v
+    for h in Hs:
+        h[2] = near(h[2], ys)
+        if abs(near(h[0], xs) - h[0]) <= tol_s: h[0] = near(h[0], xs)
+        if abs(near(h[1], xs) - h[1]) <= tol_s: h[1] = near(h[1], xs)
+    for v in Vs:
+        v[2] = near(v[2], xs)
+        if abs(near(v[0], ys) - v[0]) <= tol_s: v[0] = near(v[0], ys)
+        if abs(near(v[1], ys) - v[1]) <= tol_s: v[1] = near(v[1], ys)
+
+    def occupied(axis, c, g0, g1):
+        if g1 - g0 < 0.02:
+            return False
+        if axis == "h":
+            r = int((ymax - c) / CELL); a = int((g0 - xmin) / CELL); b = int((g1 - xmin) / CELL)
+            band = occ[max(0, r - 4):r + 5, max(0, min(a, b)):min(Wi, max(a, b))]
+            prof = band.max(axis=0) if band.size else np.array([0])
+        else:
+            col = int((c - xmin) / CELL); a = int((ymax - g1) / CELL); b = int((ymax - g0) / CELL)
+            band = occ[max(0, min(a, b)):min(Hi, max(a, b)), max(0, col - 4):col + 5]
+            prof = band.max(axis=1) if band.size else np.array([0])
+        return prof.size > 0 and (prof > 0).mean() >= 0.6
+
+    def merge(lines, axis):
+        lines = sorted(lines, key=lambda s: (s[2], s[0])); out = []
+        for a0, a1, c in lines:
+            if out and abs(out[-1][2] - c) < 1e-6 and (a0 <= out[-1][1] + tol_c or occupied(axis, c, out[-1][1], a0)):
+                out[-1][1] = max(out[-1][1], a1)
+            else:
+                out.append([a0, a1, c])
+        return out
+    Hs, Vs = merge(Hs, "h"), merge(Vs, "v")
+    res = [(np.array([a0, y]), np.array([a1, y])) for a0, a1, y in Hs]
+    res += [(np.array([x, a0]), np.array([x, a1])) for a0, a1, x in Vs]
+    return res
+
+
 def main(las_path, out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +277,10 @@ def main(las_path, out_dir):
 
     n_raw = len(interior) + len(exterior)
     walls = dedup(interior + exterior)
-    log(f"{len(interior)} interior + {len(exterior)} exterior = {n_raw} -> {len(walls)} deduped walls")
+    # close the wall GRAPH (grid-snap + occupancy-aware gap fill) so the 3D has
+    # no missing/gappy walls -- the same fix the 2D fusion plan uses.
+    walls = regularize_metric(walls, occ, xmin, ymax)
+    log(f"{len(interior)} interior + {len(exterior)} exterior = {n_raw} -> {len(walls)} deduped+regularized walls")
 
     # ---- 2D plan visualization of exactly the walls the 3D is built from ----
     plan = np.full((H, W, 3), 255, np.uint8)
