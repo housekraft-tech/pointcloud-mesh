@@ -471,6 +471,43 @@ def render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir):
     log(f"wrote {pg}  ({ng} grooved walls)")
 
 
+def compare_overlay(R, lsegs, bgr, dbox, lbox, o, out_dir):
+    """Overlay my LiDAR reconstruction onto the ACTUAL architect drawing (kept
+    upright), using the registration transform, so my measured clear spans sit
+    right next to the architect's printed room dimensions for direct comparison."""
+    Hd, Wd = bgr.shape[:2]
+    dcorners = np.float32([[dbox[0], dbox[1]], [dbox[2], dbox[1]], [dbox[0], dbox[3]]])
+    lcorners = np.float32([map_pt((c[0], c[1]), dbox, lbox, o) for c in dcorners])
+    M = cv2.getAffineTransform(dcorners, lcorners)
+    Minv = cv2.invertAffineTransform(M)
+
+    H, W = R["H"], R["W"]
+    wimg = np.zeros((H, W, 3), np.uint8)
+    for x0, y0, x1, y1 in regularize(lsegs, R["occ"]):
+        cv2.line(wimg, (int(x0), int(y0)), (int(x1), int(y1)), (40, 40, 235),
+                 max(4, int(0.11 / CELL)), cv2.LINE_8)
+    warped = cv2.warpAffine(wimg, Minv, (Wd, Hd))
+    out = bgr.copy()
+    m = warped.sum(2) > 0
+    out[m] = (0.45 * out[m] + 0.55 * warped[m]).astype(np.uint8)
+
+    def ap(px, py):
+        return (int(Minv[0, 0] * px + Minv[0, 1] * py + Minv[0, 2]),
+                int(Minv[1, 0] * px + Minv[1, 1] * py + Minv[1, 2]))
+    FT = cv2.FONT_HERSHEY_SIMPLEX
+    for cx, cy, wdt, hgt, opn, *_ in room_dims(R):
+        dx, dy = ap(cx, cy)
+        t = f"{'~' if opn else ''}{wdt*1000:.0f}x{hgt*1000:.0f}"
+        (tw, th), _ = cv2.getTextSize(t, FT, 0.5, 2)
+        cv2.rectangle(out, (dx - 2, dy + 6), (dx + tw + 2, dy + th + 12), (255, 255, 255), -1)
+        cv2.putText(out, t, (dx, dy + th + 9), FT, 0.5, (0, 0, 220), 2, cv2.LINE_AA)
+    cv2.putText(out, "OVERLAY: architect drawing + my LiDAR walls (red) & measured clear dims (red, mm)",
+                (12, 34), FT, 0.6, (0, 0, 200), 2, cv2.LINE_AA)
+    p = out_dir / "compare_overlay.png"
+    cv2.imwrite(str(p), out)
+    log(f"wrote {p}")
+
+
 def main(drawing, las, out_dir):
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -537,6 +574,7 @@ def main(drawing, las, out_dir):
     # --- Stage 2: the accurate, good-looking fused floorplan ---
     render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir)
     render_dimensioned(R, lsegs, out_dir)
+    compare_overlay(R, lsegs, bgr, dbox, lbox, o, out_dir)
 
 
 if __name__ == "__main__":
