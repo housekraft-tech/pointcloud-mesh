@@ -79,6 +79,107 @@ def map_pt(p, dbox, lbox, o):
     return (lx0 + ox * (lx1 - lx0), ly0 + oy * (ly1 - ly0))
 
 
+GROOVE_MIN_DEPTH = 0.03
+
+
+def wall_grooves(R, p0, p1):
+    """Detect grooves on a wall the same way the 3D does: per 0.1m height band,
+    how far the face sets back from its main plane (both faces). Returns the
+    recessed side, max depth, band count, thickness -- or None."""
+    x, y, z = R["x"], R["y"], R["z"]; zf, zc = R["z_floor"], R["z_ceiling"]
+    d = p1 - p0; L = float(np.linalg.norm(d))
+    if L < 0.5:
+        return None
+    d = d / L; n = np.array([-d[1], d[0]])
+    rel = np.column_stack([x, y]) - p0
+    u = rel @ d; perp = rel @ n
+    near = (np.abs(perp) <= 0.18) & (u >= 0) & (u <= L)
+    if near.sum() < 200:
+        return None
+    zz, pp = z[near], perp[near]
+    thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
+    best = None
+    for side in (1.0, -1.0):
+        sel = (pp * side) > 0
+        if sel.sum() < 300:
+            continue
+        sp = pp[sel] * side; sz = zz[sel]
+        face = np.percentile(sp, 82)
+        zb = np.arange(zf + 0.12, zc - 0.12, 0.1)
+        setb = np.full(len(zb), np.nan)
+        for i, zl in enumerate(zb):
+            m = (sz >= zl) & (sz < zl + 0.1)
+            if m.sum() >= 25:
+                setb[i] = face - np.percentile(sp[m], 82)
+        bands = np.nan_to_num(setb) >= GROOVE_MIN_DEPTH
+        if bands.any():
+            maxd = float(np.nanmax(setb[bands]))
+            if best is None or maxd > best["maxd"]:
+                best = dict(side=side, maxd=maxd, nbands=int(bands.sum()), thick=thick)
+    return best
+
+
+def wall_room_grooves(R, p0, p1):
+    """ROOM-BY-ROOM 3D groove detection. For each side of the wall that faces a
+    room, use ONLY that room-side surface; a groove RECEDES away from the room
+    (furniture protrudes toward it -> excluded); threshold above the wall's own
+    noise (robust MAD); and require the recess to be COHERENT along the wall
+    (>=60% of its length). Returns list of dict(side, depth, z0, z1)."""
+    x, y, z = R["x"], R["y"], R["z"]; zf, zc = R["z_floor"], R["z_ceiling"]
+    mk, xmin, ymax, Hh, Ww = R["mk"], R["xmin"], R["ymax"], R["H"], R["W"]
+    rooms = set(R["room_labels"])
+    d = p1 - p0; L = float(np.linalg.norm(d))
+    if L < 0.6:
+        return []
+    d = d / L; n = np.array([-d[1], d[0]])
+    rel = np.column_stack([x, y]) - p0
+    u = rel @ d; perp = rel @ n
+    near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
+    if near.sum() < 300:
+        return []
+    uu, zz, pp = u[near], z[near], perp[near]
+    zb = np.arange(zf + 0.15, zc - 0.15, 0.1)
+    out = []
+    for side in (1.0, -1.0):
+        # does this side face a ROOM? sample offset midpoints into the room map
+        hits = tot = 0
+        for tt in np.linspace(0.15, 0.85, 6):
+            mp = p0 + d * (tt * L) + n * side * 0.25
+            cx = int((mp[0] - xmin) / CELL); cy = int((ymax - mp[1]) / CELL)
+            if 0 <= cy < Hh and 0 <= cx < Ww:
+                tot += 1; hits += int(mk[cy, cx] in rooms)
+        if tot == 0 or hits / tot < 0.5:
+            continue
+        sel = (pp * side) > 0
+        if sel.sum() < 300:
+            continue
+        sp = pp[sel] * side; sz = zz[sel]; su = uu[sel]
+        surf = np.full(len(zb), np.nan)
+        for i, zl in enumerate(zb):
+            bm = (sz >= zl) & (sz < zl + 0.1)
+            if bm.sum() >= 20:
+                surf[i] = np.median(sp[bm])
+        valid = ~np.isnan(surf)
+        if valid.sum() < 4:
+            continue
+        face = np.median(surf[valid])                       # typical room-side surface
+        noise = 1.4826 * np.median(np.abs(surf[valid] - face)) + 1e-6
+        thr = max(0.025, 3.0 * noise)                       # above this wall's own scatter
+        need = max(3, int(0.4 * L / 0.1))
+        for i, zl in enumerate(zb):
+            if np.isnan(surf[i]) or face - surf[i] < thr:
+                continue
+            bm = (sz >= zl) & (sz < zl + 0.1)
+            ub = np.round(su[bm] / 0.1).astype(int); rec = cov = 0
+            for b in np.unique(ub):
+                m2 = ub == b
+                if m2.sum() >= 3:
+                    cov += 1; rec += int(face - np.median(sp[bm][m2]) >= 0.7 * thr)
+            if cov >= need and rec / cov >= 0.6:            # coherent horizontal reveal
+                out.append(dict(side=side, depth=float(face - surf[i]), z0=float(zl), z1=float(zl + 0.1)))
+    return out
+
+
 def regularize(lsegs, occ=None):
     """Turn loose Manhattan wall segments into a clean wall GRAPH the way a
     floorplan is drawn: snap every wall onto a shared set of gridlines, then
@@ -284,6 +385,36 @@ def render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir):
     p = out_dir / "fused_floorplan.png"
     cv2.imwrite(str(p), plan)
     log(f"wrote {p}  ({len(wins)} windows, {len(bdoors)} balcony doors placed)")
+
+    # ---- groove overlay: ROOM-BY-ROOM 3D detection -- a groove must recede from
+    #      the room, exceed the wall's own noise, and run coherently along it. ----
+    gpl = plan.copy()
+    xmin, ymax = R["xmin"], R["ymax"]
+    ng = 0
+    for pm0, pm1 in R["walls"]:
+        gs = wall_room_grooves(R, pm0, pm1)
+        if not gs:
+            continue
+        ng += 1
+        d = pm1 - pm0; L = np.linalg.norm(d); u = d / L; nrm = np.array([-u[1], u[0]])
+        maxd = max(g["depth"] for g in gs); side = gs[0]["side"]
+        off = nrm * side * 0.05                                   # sit just off the room face
+        a = pm0 + off; b = pm1 + off
+        t = float(np.clip((maxd - 0.02) / 0.06, 0, 1))           # 20..80mm ramp
+        col = (int(40), int(200 * (1 - t)), int(60 + 195 * t))   # green -> red (BGR)
+        A = P(((a[0] - xmin) / CELL, (ymax - a[1]) / CELL))
+        B = P(((b[0] - xmin) / CELL, (ymax - b[1]) / CELL))
+        cv2.line(gpl, A, B, col, 3, cv2.LINE_AA)
+        mid = ((A[0] + B[0]) // 2, (A[1] + B[1]) // 2)
+        cv2.putText(gpl, f"{maxd*1000:.0f}mm x{len(gs)}", (mid[0] - 16, mid[1] - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, col, 1, cv2.LINE_AA)
+    cv2.rectangle(gpl, (0, 0), (W, TOP), (255, 255, 255), -1)
+    cv2.putText(gpl, f"ROOM-BY-ROOM GROOVE MAP  {ng} grooved walls  "
+                     "(room-side, noise-aware, coherent; green=shallow -> red=deep)",
+                (8, 22), FT, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
+    pg = out_dir / "fused_floorplan_grooves.png"
+    cv2.imwrite(str(pg), gpl)
+    log(f"wrote {pg}  ({ng} grooved walls)")
 
 
 def main(drawing, las, out_dir):
