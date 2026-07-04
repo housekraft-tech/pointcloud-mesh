@@ -337,30 +337,48 @@ def main(las_path, out_dir):
 
     fr = np.full((H, W, 3), 255, np.uint8)
     fr[ws > 0] = (40, 40, 40)                       # filled walls (complete)
+    # ---- DIRECT-FROM-LIDAR clear-span measurement (not from the 2D raster).
+    # At a room's center, scan a thin strip of the actual wall-height points
+    # along each axis; a wall is a bin whose points span the full storey height
+    # (>1.5m) -- furniture doesn't. Clear span = distance between the nearest
+    # full-height wall faces on each side, from the real point coordinates. ----
+    # use the FULL storey height so a real wall bin spans >1.5m (furniture won't)
+    wb = (z >= z_floor + 0.2) & (z <= z_ceiling - 0.1)
+    xw, yw, zw = x[wb], y[wb], z[wb]
+
+    def clear_span(axis, along_c, perp_c):
+        if axis == "x":
+            m2 = np.abs(yw - perp_c) <= 0.12
+            co, zc = xw[m2], zw[m2]
+        else:
+            m2 = np.abs(xw - perp_c) <= 0.12
+            co, zc = yw[m2], zw[m2]
+        if co.size < 30:
+            return None
+        b = np.round(co / 0.05).astype(int)
+        wallpos = []
+        for bb in np.unique(b):
+            mm = b == bb
+            if mm.sum() >= 6 and (zc[mm].max() - zc[mm].min()) > 1.5:
+                wallpos.append(bb * 0.05)
+        wp = np.array(sorted(wallpos))
+        lft = wp[wp < along_c]; rgt = wp[wp > along_c]
+        if lft.size == 0 or rgt.size == 0:
+            return None
+        return float(rgt.min() - lft.max())
+
     nroom = 0
     FT = cv2.FONT_HERSHEY_SIMPLEX
     for Lr in range(2, ncore + 1):
         m = (mk == Lr)
         if m.sum() < (1.0 / (CELL * CELL)):         # ignore < 1 m^2
             continue
-        # deepest interior point of this room (max distance-to-wall)
         rd = distm * m
         cy, cx = np.unravel_index(int(np.argmax(rd)), rd.shape)
-        # clear span = contiguous run of THIS room through the center point,
-        # so it stops at walls / doorway necks instead of overshooting.
-        rowm = m[cy, :]; l = r = cx
-        while l > 0 and rowm[l - 1]:
-            l -= 1
-        while r < W - 1 and rowm[r + 1]:
-            r += 1
-        colm = m[:, cx]; t0 = b0 = cy
-        while t0 > 0 and colm[t0 - 1]:
-            t0 -= 1
-        while b0 < H - 1 and colm[b0 + 1]:
-            b0 += 1
-        wdt = (r - l) * CELL
-        hgt = (b0 - t0) * CELL
-        if wdt < 0.5 or hgt < 0.5:                  # sliver / leak -> skip
+        rcx = xmin + cx * CELL; rcy = ymax - cy * CELL   # room center in METRIC
+        wdt = clear_span("x", rcx, rcy)                  # direct from LiDAR points
+        hgt = clear_span("y", rcy, rcx)
+        if wdt is None or hgt is None or wdt < 0.5 or hgt < 0.5:
             continue
         nroom += 1
         for t, dy, sc in [(f"{wdt*1000:.0f} x {hgt*1000:.0f} mm", -6, 0.5),
