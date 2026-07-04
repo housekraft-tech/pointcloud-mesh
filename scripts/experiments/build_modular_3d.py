@@ -346,7 +346,18 @@ def main(las_path, out_dir):
     wb = (z >= z_floor + 0.2) & (z <= z_ceiling - 0.1)
     xw, yw, zw = x[wb], y[wb], z[wb]
 
-    def clear_span(axis, along_c, perp_c):
+    OPEN_MARGIN = 0.30    # a wall this far BEYOND the room's free-space edge means
+                          # that side is open -> cap at the partition, don't overshoot
+
+    def clear_span(axis, along_c, perp_c, fs_lo, fs_hi):
+        """Clear span between the room's bounding faces, direct from LiDAR.
+
+        On an ENCLOSED side a full-height wall sits right at the room's
+        free-space edge (fs_lo/fs_hi) -> use its exact point-measured position
+        (this is the 0-2%-accurate case). On an OPEN side (open-plan living,
+        one-open-side room) the nearest wall is far past the segmented edge, so
+        the ray would overshoot to a distant wall -> instead cap the span at the
+        watershed partition (fs_lo/fs_hi) and flag it open. Returns (span, open)."""
         if axis == "x":
             m2 = np.abs(yw - perp_c) <= 0.12
             co, zc = xw[m2], zw[m2]
@@ -363,9 +374,20 @@ def main(las_path, out_dir):
                 wallpos.append(bb * 0.05)
         wp = np.array(sorted(wallpos))
         lft = wp[wp < along_c]; rgt = wp[wp > along_c]
-        if lft.size == 0 or rgt.size == 0:
+        # left face: nearest wall if it sits at the room edge, else the partition
+        if lft.size and lft.max() >= fs_lo - OPEN_MARGIN:
+            left, open_l = float(lft.max()), False
+        else:
+            left, open_l = fs_lo, True
+        # right face: same logic mirrored
+        if rgt.size and rgt.min() <= fs_hi + OPEN_MARGIN:
+            right, open_r = float(rgt.min()), False
+        else:
+            right, open_r = fs_hi, True
+        span = right - left
+        if span < 0.5:
             return None
-        return float(rgt.min() - lft.max())
+        return span, (open_l or open_r)
 
     nroom = 0
     FT = cv2.FONT_HERSHEY_SIMPLEX
@@ -376,18 +398,42 @@ def main(las_path, out_dir):
         rd = distm * m
         cy, cx = np.unravel_index(int(np.argmax(rd)), rd.shape)
         rcx = xmin + cx * CELL; rcy = ymax - cy * CELL   # room center in METRIC
-        wdt = clear_span("x", rcx, rcy)                  # direct from LiDAR points
-        hgt = clear_span("y", rcy, rcx)
-        if wdt is None or hgt is None or wdt < 0.5 or hgt < 0.5:
+        # room free-space extent through the center (contiguous run of this
+        # room's mask): the watershed edge that bounds it on each side, used to
+        # cap open sides so the LiDAR ray can't overshoot to a distant wall.
+        row = m[cy, :]
+        c0 = cx
+        while c0 > 0 and row[c0 - 1]:
+            c0 -= 1
+        c1 = cx
+        while c1 < W - 1 and row[c1 + 1]:
+            c1 += 1
+        fs_x_lo, fs_x_hi = xmin + c0 * CELL, xmin + c1 * CELL
+        col = m[:, cx]
+        r0 = cy
+        while r0 > 0 and col[r0 - 1]:
+            r0 -= 1
+        r1 = cy
+        while r1 < H - 1 and col[r1 + 1]:
+            r1 += 1
+        fs_y_lo, fs_y_hi = ymax - r1 * CELL, ymax - r0 * CELL   # row down = -y
+        rw = clear_span("x", rcx, rcy, fs_x_lo, fs_x_hi)        # direct from LiDAR
+        rh = clear_span("y", rcy, rcx, fs_y_lo, fs_y_hi)
+        if rw is None or rh is None:
             continue
+        wdt, ow = rw; hgt, oh = rh
         nroom += 1
-        for t, dy, sc in [(f"{wdt*1000:.0f} x {hgt*1000:.0f} mm", -6, 0.5),
+        op = "~" if (ow or oh) else ""                          # ~ = open-side span
+        for t, dy, sc in [(f"{op}{wdt*1000:.0f} x {hgt*1000:.0f} mm", -6, 0.5),
                           (f"({wdt*3.28084:.1f} x {hgt*3.28084:.1f} ft)", 12, 0.42)]:
             (tw, th), _ = cv2.getTextSize(t, FT, sc, 1)
-            cv2.rectangle(fr, (cx - tw // 2 - 2, cy + dy - th - 1), (cx - tw // 2 + tw + 2, cy + dy + 3), (255, 255, 255), -1)
-            cv2.putText(fr, t, (cx - tw // 2, cy + dy), FT, sc, (150, 0, 160), 1, cv2.LINE_AA)
-    cv2.putText(fr, f"2D floorplan - {nroom} rooms, internal CLEAR size inside each (mm / ft)",
-               (10, 22), FT, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+            tx = int(np.clip(cx - tw // 2, 2, W - tw - 2))       # keep label on-canvas
+            cv2.rectangle(fr, (tx - 2, cy + dy - th - 1), (tx + tw + 2, cy + dy + 3), (255, 255, 255), -1)
+            cv2.putText(fr, t, (tx, cy + dy), FT, sc, (150, 0, 160), 1, cv2.LINE_AA)
+    cv2.putText(fr, f"2D floorplan - {nroom} rooms, internal CLEAR size (mm / ft)",
+               (10, 20), FT, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.putText(fr, "~ = open side, span capped at partition",
+               (10, 40), FT, 0.44, (150, 0, 160), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "floorplan_rooms_dimensioned.png"), fr)
     log(f"wrote floorplan_rooms_dimensioned.png ({nroom} rooms)")
     log(f"wrote wall_plan_2d + wall_plan_dimensioned + floorplan_complete "
