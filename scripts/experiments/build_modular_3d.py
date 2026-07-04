@@ -227,6 +227,21 @@ def main(las_path, out_dir):
                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_2d.png"), plan)
 
+    # ---- CAD-clean architectural plan (POCHE): the deduped vector walls drawn
+    # at real thickness on white, corners squared so junctions read solid. This
+    # is the domain an RF-DETR trained on 2D drawings understands -- the carved
+    # rasters (filled/centerline) are too noisy for the detector. ----
+    cad = np.full((H, W, 3), 255, np.uint8)
+    tpx = max(5, int(round(0.14 / CELL)))            # ~140mm poche wall thickness
+    EXT = 0.14                                       # extend ends to seal corner/T gaps
+    for p0, p1 in walls:
+        d = p1 - p0
+        n = np.linalg.norm(d)
+        u = d / n if n > 0 else d
+        q0, q1 = p0 - u * EXT, p1 + u * EXT
+        cv2.line(cad, m2px(q0), m2px(q1), (0, 0, 0), tpx, cv2.LINE_8)
+    cv2.imwrite(str(out_dir / "floorplan_cad.png"), cad)
+
     # ---- dimensioned plan: internal wall-to-wall distances in mm + ft ----
     def cluster(vals, tol=0.15):
         cl = []
