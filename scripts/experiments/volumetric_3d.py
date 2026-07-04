@@ -59,6 +59,11 @@ def wall_footprint(R):
             if ext >= 1.2 and s / max((xs.max() - xs.min() + 1) * (ys.max() - ys.min() + 1), 1) < 0.6:
                 keep.add(k)                                  # long + thin => a wall, not a blob
         ws = np.isin(lbl, list(keep)).astype(np.uint8)
+    # merge two close internal walls / fill a narrow cavity between them into ONE
+    # solid wall (narrow gaps close; real rooms + ~0.9m doorways are far wider).
+    mk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.30 / CELL) | 1,) * 2)
+    ws = cv2.morphologyEx(ws, cv2.MORPH_CLOSE, mk)
+    ws = ndimage.binary_fill_holes(ws).astype(np.uint8)     # solid, no interior voids
     return ws
 
 
