@@ -86,6 +86,45 @@ def silhouette_polygons(mask, ures, zres, z_base):
     return polys
 
 
+def footprint_polygons(ws, xmin, ymax, eps_m=0.03):
+    """The carved wall material (ws mask) -> metric shapely polygons (with room
+    holes), Manhattan-simplified so real 90-degree JOGS / pilasters / niches are
+    KEPT while pixel noise is smoothed. Extruding these gives thick walls that
+    follow the true footprint, not straightened boxes."""
+    cnts, hier = cv2.findContours(ws, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is None:
+        return []
+    hier = hier[0]
+    eps = eps_m / CELL
+
+    def m(c, r):
+        return (xmin + c * CELL, ymax - r * CELL)
+    out = []
+    for i, cnt in enumerate(cnts):
+        if hier[i][3] != -1:                       # a hole; handled with its parent
+            continue
+        ap = cv2.approxPolyDP(cnt, eps, True)
+        if len(ap) < 3:
+            continue
+        ext = [m(c, r) for c, r in ap[:, 0, :]]
+        holes = []
+        child = hier[i][2]
+        while child != -1:
+            hc = cv2.approxPolyDP(cnts[child], eps, True)
+            if len(hc) >= 3:
+                holes.append([m(c, r) for c, r in hc[:, 0, :]])
+            child = hier[child][0]
+        try:
+            pg = Polygon(ext, holes)
+            if not pg.is_valid:
+                pg = pg.buffer(0)
+            if pg.area > 0.05:
+                out.append(pg)
+        except Exception:
+            pass
+    return out
+
+
 def extrude_wall(polys, p0, d, n, thick):
     """Extrude (u,z) polygons by thickness along n, place at wall p0/d/n."""
     geom = unary_union(polys) if len(polys) > 1 else polys[0]
@@ -619,6 +658,7 @@ def main(las_path, out_dir):
     nz = int((z_ceiling + 0.15 - z_base) / UZ_RES) + 1
     parts = []
     n_open = n_groove = 0
+    all_cutters = []
     for wi, (p0, p1) in enumerate(walls):
         d = p1 - p0
         L = float(np.linalg.norm(d))
@@ -643,13 +683,10 @@ def main(las_path, out_dir):
         if cov < 0.35:                  # more lenient so short real walls survive
             continue
 
-        # ---- clean SOLID wall box, matching the 2D plan line exactly
-        # (floor -> ceiling, measured thickness). Grooves + doors are cut into
-        # this clean box below, so the walls stay as straight as the 2D. ----
+        # The wall SOLID comes from the extruded footprint (jogs preserved); here
+        # we only compute the opening + reveal cutters per segment. Rz orients the
+        # cutter boxes along this wall.
         Rz = trimesh.transformations.rotation_matrix(np.arctan2(d[1], d[0]), [0, 0, 1])
-        wall = trimesh.creation.box(extents=(L, thick, storey))
-        wall.apply_transform(Rz)
-        wall.apply_translation((mid[0], mid[1], z_floor + storey / 2))
 
         # ---- grooves from the EXACT 3D recess silhouette (top-view slices x side
         # view). Build a (height z x along-wall u) grid of the room-side surface
@@ -704,11 +741,15 @@ def main(las_path, out_dir):
                     continue
                 z0 = zb[ys.min()]; z1 = zb[ys.max()] + 0.1
                 u0 = xs.min() * UB; u1 = (xs.max() + 1) * UB
-                depth = float(np.clip(np.median(recess[ys, xs]), 0.03, thick * 0.6))
+                # SHALLOW surface reveal (a deviation), not a hole: remove only the
+                # outer measured-depth shell off this face; wall stays solid behind.
+                depth = float(np.clip(np.median(recess[ys, xs]), 0.005, min(0.035, thick * 0.4)))
                 uw = max(u1 - u0, UB)
-                ch = trimesh.creation.box(extents=(uw * 0.98, depth * 2.2, z1 - z0))
+                box_th = depth + 0.02                       # slight overshoot for a clean cut
+                cn = thick / 2 - depth + box_th / 2         # inner face at thick/2-depth
+                ch = trimesh.creation.box(extents=(uw * 0.98, box_th, z1 - z0))
                 ch.apply_transform(Rz)
-                off = (p0 + d * (u0 + u1) / 2) + n * side * (thick / 2)
+                off = (p0 + d * (u0 + u1) / 2) + n * side * cn
                 ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
                 cutters.append(ch); n_groove += 1
 
@@ -754,12 +795,29 @@ def main(las_path, out_dir):
             except Exception:
                 pass
 
-        for ch in cutters:
-            try:
-                wall = wall.difference(ch)
-            except Exception:
-                pass
-        parts.append((f"wall_{wi:02d}", wall))
+        all_cutters.extend(cutters)
+
+    # ---- WALL SOLID from the extruded carved footprint (jogs / pilasters /
+    # niches / true thickness preserved), then subtract every opening + reveal
+    # cutter. This replaces the straight-box walls so the small 90-degree jogs
+    # the user flagged are kept. ----
+    fp_polys = footprint_polygons(ws, xmin, ymax)
+    wall_solid = None
+    for pg in fp_polys:
+        try:
+            geoms = pg.geoms if hasattr(pg, "geoms") else [pg]
+            for g in geoms:
+                pr = trimesh.creation.extrude_polygon(g, height=storey)
+                pr.apply_translation((0, 0, z_floor))
+                wall_solid = pr if wall_solid is None else trimesh.util.concatenate([wall_solid, pr])
+        except Exception:
+            pass
+    for ch in all_cutters:
+        try:
+            wall_solid = wall_solid.difference(ch)
+        except Exception:
+            pass
+    parts.append(("walls", wall_solid))
 
     # floor slab only (no ceiling, per request -- keeps the interior visible)
     fx, fy = (xmax - xmin), (ymax - ymin)
