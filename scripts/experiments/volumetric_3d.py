@@ -108,14 +108,16 @@ def build_volume(R, ws):
 
 def volume_to_mesh(vol, R, zf):
     xmin, ymax = R["xmin"], R["ymax"]
-    volp = np.pad(vol, 1).astype(np.float32)
-    volp = ndimage.gaussian_filter(volp, 0.6)                 # light smooth -> less staircase
+    volp = np.pad(vol, 2).astype(np.float32)
+    # anisotropic smooth: strong in-plane to kill the 2cm voxel stair-stepping on
+    # wall faces, gentle in z so height-varying features (jog/opening tops) stay.
+    volp = ndimage.gaussian_filter(volp, (1.3, 1.3, 0.6))
     verts, faces, _, _ = measure.marching_cubes(volp, 0.5, spacing=(CELL, CELL, DZ))
-    wx = xmin + (verts[:, 1] - CELL)
-    wy = ymax - (verts[:, 0] - CELL)
-    wz = zf + (verts[:, 2] - DZ)
+    wx = xmin + (verts[:, 1] - 2 * CELL)
+    wy = ymax - (verts[:, 0] - 2 * CELL)
+    wz = zf + (verts[:, 2] - 2 * DZ)
     m = trimesh.Trimesh(vertices=np.column_stack([wx, wy, wz]), faces=faces, process=True)
-    trimesh.smoothing.filter_taubin(m, iterations=3)
+    trimesh.smoothing.filter_taubin(m, iterations=8)          # relax staircase -> flat faces
     return m
 
 
