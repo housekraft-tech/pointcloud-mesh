@@ -13,3 +13,6 @@ output/
 # Stray unrelated documents accidentally dropped at repo root (e.g. scanned
 # quotations/invoices) -- not pipeline output, never intentionally tracked.
 /*.pdf
+
+# large model weights
+*.onnx
