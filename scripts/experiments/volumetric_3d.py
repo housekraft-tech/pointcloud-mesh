@@ -81,8 +81,22 @@ def build_volume(R, ws):
         occk[rr, cc] = 1
         occk = cv2.dilate(occk, kern)
         vol[:, :, k] = (ws > 0) & (occk > 0)
-    # bridge scan pinholes vertically (a wall shouldn't blink out for one slice)
-    vol = ndimage.binary_closing(vol, structure=np.ones((1, 1, 5))).astype(np.uint8)
+    # ---- fill GAPS between/within walls from scan occlusion, without erasing
+    # genuine openings ----
+    # (a) in-plane: connect wall segments within each slice
+    ck = np.ones((5, 5), np.uint8)
+    for k in range(nz):
+        if vol[:, :, k].any():
+            vol[:, :, k] = cv2.morphologyEx(vol[:, :, k], cv2.MORPH_CLOSE, ck)
+    # (b) vertical: bridge occlusion holes up to ~0.35m; real doors/windows
+    #     (>=0.5m tall gaps) stay open
+    vol = ndimage.binary_closing(vol, structure=np.ones((1, 1, 15))).astype(np.uint8)
+    # (c) a wall column with support over most of the height is solid: fill it
+    #     floor->ceiling EXCEPT where a tall empty run (a real opening) exists
+    support = vol.sum(axis=2)
+    solidish = support >= int(0.6 * nz)                      # present most of the height
+    fill = np.repeat(solidish[:, :, None], nz, axis=2) & (ws[:, :, None] > 0)
+    vol = ((vol > 0) | fill).astype(np.uint8)
     log(f"volume {vol.shape}  {int(vol.sum()):,} filled voxels over {nz} height slices")
     return vol, levels
 
