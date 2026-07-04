@@ -335,8 +335,53 @@ def main(las_path, out_dir):
     mk[free == 0] = 1                               # walls / outside = background
     cv2.watershed(cv2.merge([free * 200] * 3).astype(np.uint8), mk)
 
+    # ---- MERGE regions split across OPEN space. Watershed cuts a big open-plan
+    # area at the distance-transform ridge even where there is NO partition,
+    # inventing two "rooms" out of one Living/Dining. Two adjacent regions whose
+    # shared interface runs through WIDE free space (not a wall, not a ~0.9m
+    # doorway neck) are really one open room -> union them. Real rooms stay split
+    # because their interface is a narrow doorway (low distm) or a wall. ----
+    from collections import defaultdict
+    parent = list(range(ncore + 2))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]; a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    # watershed separates regions by a -1 ridge line. The width of that ridge =
+    # the opening between the two regions. A doorway is <=~1.2m; furniture in an
+    # open room fragments the free-space distance transform so distm can't tell
+    # open from doorway -- but the RIDGE LENGTH can: a shared interface several
+    # metres wide is one open room split in two (there are no 5m doorways).
+    iface = defaultdict(int)
+    ys, xs = np.where(mk == -1)
+    for yy, xx in zip(ys.tolist(), xs.tolist()):
+        y0, y1 = max(0, yy - 1), min(H, yy + 2)
+        x0, x1 = max(0, xx - 1), min(W, xx + 2)
+        labs = sorted(int(v) for v in np.unique(mk[y0:y1, x0:x1]) if v > 1)
+        for i in range(len(labs)):
+            for j in range(i + 1, len(labs)):
+                iface[(labs[i], labs[j])] += 1
+    OPEN_RIDGE_M = 1.6     # interface wider than this => open connection, not a doorway
+    nmerge = 0
+    for (a, b), n in sorted(iface.items()):
+        if n * CELL >= OPEN_RIDGE_M:                   # open connection, not a doorway
+            union(a, b); nmerge += 1
+            log(f"   merged open regions across {n*CELL:.1f}m opening (no partition)")
+    for r in range(2, ncore + 1):                     # collapse each region to its root
+        mk[mk == r] = find(r)
+    room_labels = sorted(set(int(v) for v in np.unique(mk) if v > 1))
+
     fr = np.full((H, W, 3), 255, np.uint8)
     fr[ws > 0] = (40, 40, 40)                       # filled walls (complete)
+    seg = np.full((H, W, 3), 255, np.uint8)         # DEBUG: colored room regions
+    seg[ws > 0] = (40, 40, 40)
     # ---- DIRECT-FROM-LIDAR clear-span measurement (not from the 2D raster).
     # At a room's center, scan a thin strip of the actual wall-height points
     # along each axis; a wall is a bin whose points span the full storey height
@@ -391,13 +436,17 @@ def main(las_path, out_dir):
 
     nroom = 0
     FT = cv2.FONT_HERSHEY_SIMPLEX
-    for Lr in range(2, ncore + 1):
+    for Lr in room_labels:
         m = (mk == Lr)
         if m.sum() < (1.0 / (CELL * CELL)):         # ignore < 1 m^2
             continue
         rd = distm * m
         cy, cx = np.unravel_index(int(np.argmax(rd)), rd.shape)
         rcx = xmin + cx * CELL; rcy = ymax - cy * CELL   # room center in METRIC
+        dbg_col = cv2.applyColorMap(np.uint8([[(Lr * 47) % 256]]), cv2.COLORMAP_HSV)[0, 0].tolist()
+        seg[m] = dbg_col                                 # DEBUG: paint this region
+        cv2.circle(seg, (cx, cy), 4, (0, 0, 0), -1)
+        cv2.putText(seg, str(nroom + 1), (cx + 5, cy), FT, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
         # room free-space extent through the center (contiguous run of this
         # room's mask): the watershed edge that bounds it on each side, used to
         # cap open sides so the LiDAR ray can't overshoot to a distant wall.
@@ -435,7 +484,10 @@ def main(las_path, out_dir):
     cv2.putText(fr, "~ = open side, span capped at partition",
                (10, 40), FT, 0.44, (150, 0, 160), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "floorplan_rooms_dimensioned.png"), fr)
-    log(f"wrote floorplan_rooms_dimensioned.png ({nroom} rooms)")
+    cv2.putText(seg, f"DEBUG regions: {ncore-1} watershed seeds -> {len(room_labels)} merged -> {nroom} rooms",
+               (10, 22), FT, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "debug_room_regions.png"), seg)
+    log(f"wrote floorplan_rooms_dimensioned.png ({nroom} rooms) + debug_room_regions.png")
     log(f"wrote wall_plan_2d + wall_plan_dimensioned + floorplan_complete "
         f"({len(vx)} V-gridlines, {len(hy)} H-gridlines)")
 
