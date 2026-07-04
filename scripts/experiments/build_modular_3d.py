@@ -99,6 +99,44 @@ def extrude_wall(polys, p0, d, n, thick):
     return prism
 
 
+def recover_tiny_walls(walls, walls_solid, xmin, ymax, min_len=0.12, max_len=0.55):
+    """Recover SHORT wall nibs (foyer jambs, small returns) that Hough drops.
+    Take the carved wall material NOT already covered by a detected wall; keep
+    the small elongated pieces that TOUCH an existing wall (a real nib, not
+    furniture). Line detectors miss these; the material is right there."""
+    H, W = walls_solid.shape
+    tpx = max(6, int(round(0.16 / CELL)))
+    covered = np.zeros((H, W), np.uint8)
+    for p0, p1 in walls:
+        a = (int((p0[0] - xmin) / CELL), int((ymax - p0[1]) / CELL))
+        b = (int((p1[0] - xmin) / CELL), int((ymax - p1[1]) / CELL))
+        cv2.line(covered, a, b, 255, tpx + 4)
+    resid = ((walls_solid > 0) & (covered == 0)).astype(np.uint8) * 255
+    resid = cv2.morphologyEx(resid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    near_wall = cv2.dilate(covered, np.ones((tpx, tpx), np.uint8))
+    n, lbl, stats, _ = cv2.connectedComponentsWithStats(resid, 8)
+    add = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if area < (0.015 / (CELL * CELL)):
+            continue
+        comp = lbl == i
+        if not (comp & (near_wall > 0)).any():          # must attach to a real wall
+            continue
+        L = max(w, h) * CELL
+        if L < min_len or L > max_len:                  # tiny only
+            continue
+        if w >= h:
+            yc = y + h / 2.0
+            add.append((np.array([xmin + x * CELL, ymax - yc * CELL]),
+                        np.array([xmin + (x + w) * CELL, ymax - yc * CELL])))
+        else:
+            xc = x + w / 2.0
+            add.append((np.array([xmin + xc * CELL, ymax - y * CELL]),
+                        np.array([xmin + xc * CELL, ymax - (y + h) * CELL])))
+    return add
+
+
 def regularize_metric(walls, occ, xmin, ymax, tol_c=0.25, tol_s=0.60):
     """Grid-snap the wall graph and bridge Hough-miss gaps so rooms CLOSE and no
     wall is left missing (the same fix as the 2D fusion plan). Manhattan walls
@@ -280,7 +318,10 @@ def main(las_path, out_dir):
     # close the wall GRAPH (grid-snap + occupancy-aware gap fill) so the 3D has
     # no missing/gappy walls -- the same fix the 2D fusion plan uses.
     walls = regularize_metric(walls, occ, xmin, ymax)
-    log(f"{len(interior)} interior + {len(exterior)} exterior = {n_raw} -> {len(walls)} deduped+regularized walls")
+    tiny = recover_tiny_walls(walls, walls_solid, xmin, ymax)   # foyer jambs / small returns
+    walls = walls + tiny
+    log(f"{len(interior)} interior + {len(exterior)} exterior = {n_raw} -> "
+        f"{len(walls)} walls ({len(tiny)} tiny nibs recovered)")
 
     # ---- 2D plan visualization of exactly the walls the 3D is built from ----
     plan = np.full((H, W, 3), 255, np.uint8)
