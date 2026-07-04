@@ -42,7 +42,7 @@ CELL = 1.0 / PPM
 UZ_RES = 0.04            # (u,z) silhouette cell size
 WALL_HALF_BAND = 0.18
 GROOVE_MIN_DEPTH = 0.03     # min face setback to count as a groove (sensitive -> visible reveals)
-MIN_WALL_LEN = 0.5
+MIN_WALL_LEN = 0.35     # keep short walls (utility/duct/wardrobe returns) -- don't drop them
 
 
 def log(msg):
@@ -521,7 +521,7 @@ def main(las_path, out_dir):
         u = rel @ d; perp = rel @ n
         near = (np.abs(perp) <= WALL_HALF_BAND) & (u >= 0) & (u <= L)
         mid = (p0 + p1) / 2
-        if near.sum() < 200:
+        if near.sum() < 120:            # keep sparser (small) walls
             continue
         uu = u[near]; zz = z[near]; pp = perp[near]
         thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
@@ -531,7 +531,7 @@ def main(las_path, out_dir):
         # free-space carving artifact -- e.g. false walls inside a bathroom). ----
         ubins = max(int(L / 0.15) + 1, 2)
         cov = len(np.unique(np.clip((uu / 0.15).astype(int), 0, ubins - 1))) / ubins
-        if cov < 0.5:
+        if cov < 0.35:                  # more lenient so short real walls survive
             continue
 
         # ---- clean SOLID wall box, matching the 2D plan line exactly
@@ -542,46 +542,66 @@ def main(las_path, out_dir):
         wall.apply_transform(Rz)
         wall.apply_translation((mid[0], mid[1], z_floor + storey / 2))
 
-        # ---- grooves: pronounced full-width horizontal REVEALS. For each 0.1m
-        # height band measure how far the room-side face sits back from the
-        # wall's main face; every recessed band gets its own full-width channel
-        # (merged only when truly contiguous), so the relief reads clearly as
-        # architectural groove lines -- on the clean corner-closed layout. ----
+        # ---- grooves from the EXACT 3D recess silhouette (top-view slices x side
+        # view). Build a (height z x along-wall u) grid of the room-side surface
+        # depth; the recess = main face - surface. Cut only the connected recessed
+        # POCKETS (their real u-range), room-side only, above the wall's own noise
+        # and coherent -- so small walls and non-recessed spans are never carved
+        # away, and grooves land exactly where the 3D space actually steps back. ----
         cutters = []
-        # measure the face recess from BOTH sides of the wall (room side pp>0
-        # AND the opposite side pp<0), so a groove on either face is caught and
-        # cut into the correct side -- the earlier room-only pass missed grooves
-        # that face the other room.
+        room_set = set(room_labels)
+        UB = 0.10
         for side in (+1.0, -1.0):
             sel = (pp * side) > 0 if pp.size else np.zeros(0, bool)
-            if sel.sum() < 300:
+            if sel.sum() < 200:
                 continue
-            sp = pp[sel] * side          # distances measured outward on this side
-            sz = zz[sel]
-            face = np.percentile(sp, 82)
-            zb = np.arange(z_floor + 0.12, z_ceiling - 0.12, 0.1)
-            setb = np.full(len(zb), -1.0)
-            for i, zl in enumerate(zb):
-                m = (sz >= zl) & (sz < zl + 0.1)
-                if m.sum() >= 25:
-                    setb[i] = face - np.percentile(sp[m], 82)
-            active = setb >= GROOVE_MIN_DEPTH
-            i = 0
-            while i < len(active):
-                if active[i]:
-                    j = i
-                    while j < len(active) and active[j]:
-                        j += 1
-                    z0 = zb[i]; z1 = zb[j - 1] + 0.1
-                    depth = float(np.clip(np.median(setb[i:j]), 0.03, thick * 0.8))
-                    ch = trimesh.creation.box(extents=(L * 0.98, depth * 2.2, z1 - z0))
-                    ch.apply_transform(Rz)
-                    off = (p0 + d * L / 2) + n * side * (thick / 2)   # cut into this face
-                    ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
-                    cutters.append(ch); n_groove += 1
-                    i = j
-                else:
-                    i += 1
+            # only cut a face that looks toward a ROOM (top-view room map)
+            hits = tot = 0
+            for tt in np.linspace(0.15, 0.85, 6):
+                mp = p0 + d * (tt * L) + n * side * 0.25
+                cxp = int((mp[0] - xmin) / CELL); cyp = int((ymax - mp[1]) / CELL)
+                if 0 <= cyp < H and 0 <= cxp < W:
+                    tot += 1; hits += int(mk[cyp, cxp] in room_set)
+            if tot == 0 or hits / tot < 0.5:
+                continue
+            sp = pp[sel] * side; sz = zz[sel]; su = uu[sel]
+            nu = max(int(L / UB), 1)
+            zb = np.arange(z_floor + 0.15, z_ceiling - 0.15, 0.1)
+            surf = np.full((len(zb), nu), np.nan)      # (z, u) room-side surface depth
+            for iz, zl in enumerate(zb):
+                zm = (sz >= zl) & (sz < zl + 0.1)
+                if zm.sum() < 8:
+                    continue
+                ui = np.clip((su[zm] / UB).astype(int), 0, nu - 1); spz = sp[zm]
+                for iu in np.unique(ui):
+                    cm = ui == iu
+                    if cm.sum() >= 3:
+                        surf[iz, iu] = np.median(spz[cm])
+            valid = ~np.isnan(surf)
+            if valid.sum() < 6:
+                continue
+            face = float(np.nanmedian(surf))
+            noise = 1.4826 * float(np.nanmedian(np.abs(surf[valid] - face))) + 1e-6
+            thr = max(0.025, 3.0 * noise)              # above this wall's own scatter
+            recess = np.where(valid, face - surf, 0.0)
+            groove = (recess >= thr) & valid           # exact (z,u) groove silhouette
+            lbl, ncomp = ndimage.label(groove, structure=np.ones((3, 3)))
+            for cc in range(1, ncomp + 1):
+                ys, xs = np.where(lbl == cc)
+                if ys.size < 3:
+                    continue
+                bb = (ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1)
+                if ys.size / bb < 0.5:                 # coherent, not a scatter of specks
+                    continue
+                z0 = zb[ys.min()]; z1 = zb[ys.max()] + 0.1
+                u0 = xs.min() * UB; u1 = (xs.max() + 1) * UB
+                depth = float(np.clip(np.median(recess[ys, xs]), 0.03, thick * 0.6))
+                uw = max(u1 - u0, UB)
+                ch = trimesh.creation.box(extents=(uw * 0.98, depth * 2.2, z1 - z0))
+                ch.apply_transform(Rz)
+                off = (p0 + d * (u0 + u1) / 2) + n * side * (thick / 2)
+                ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
+                cutters.append(ch); n_groove += 1
 
         # ---- openings from REAL gaps in the wall material (not trajectory).
         # Per 0.1m u-bin, does the wall have material floor->header (0.1..2.0m)?
