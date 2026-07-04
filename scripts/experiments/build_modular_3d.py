@@ -712,36 +712,47 @@ def main(las_path, out_dir):
                 ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
                 cutters.append(ch); n_groove += 1
 
-        # ---- openings from REAL gaps in the wall material (not trajectory).
-        # Per 0.1m u-bin, does the wall have material floor->header (0.1..2.0m)?
-        # A contiguous run of EMPTY bins flanked by wall = a genuine doorway;
-        # cut only those, so no hallucinated holes in solid walls. ----
-        nub = max(int(L / 0.1) + 1, 2)
-        zmask = (zz >= z_floor + 0.1) & (zz <= z_floor + 2.0)
-        ubv = np.clip((uu[zmask] / 0.1).astype(int), 0, nub - 1)
-        colcnt = np.bincount(ubv, minlength=nub)
-        # relative threshold: a doorway bin has FAR less floor->header material
-        # than the solid wall. Empty = below 25% of the wall's typical column.
-        typ = np.percentile(colcnt[colcnt > 0], 75) if (colcnt > 0).any() else 0
-        occupied = colcnt >= max(3, 0.25 * typ)
-        gap = ~occupied
-        k = 1
-        while k < nub - 1:
-            if gap[k] and occupied[:k].any() and occupied[k:].any():
-                j = k
-                while j < nub - 1 and gap[j]:
-                    j += 1
-                w = (j - k) * 0.1
-                if 0.55 <= w <= 1.5:                       # doorway-width empty run
-                    umid = (k + j) / 2 * 0.1
-                    du = trimesh.creation.box(extents=(w, thick * 3, 2.1))
-                    du.apply_transform(Rz)
-                    dc = p0 + d * umid
-                    du.apply_translation((dc[0], dc[1], z_floor + 1.05))
-                    cutters.append(du); n_open += 1
-                k = j
-            else:
-                k += 1
+        # ---- openings as their REAL (u,z) SILHOUETTE, not rectangles. Build a
+        # fine (height z x along-wall u) material mask; an opening is a wide EMPTY
+        # region inside the wall body, flanked by material. Cut its exact contour
+        # so an ARCHED head (material curving down over the opening) stays arched,
+        # and door/window profiles match what was actually built. ----
+        UR = 0.02
+        z0w = z_floor - 0.05; z1w = z_ceiling + 0.05
+        nu2 = max(int(L / UR) + 1, 4); nz2 = max(int((z1w - z0w) / UR) + 1, 4)
+        mat = np.zeros((nz2, nu2), np.uint8)
+        mat[np.clip(((zz - z0w) / UR).astype(int), 0, nz2 - 1),
+            np.clip((uu / UR).astype(int), 0, nu2 - 1)] = 1
+        mat = cv2.morphologyEx(mat, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))  # fill scan gaps
+        core = np.zeros_like(mat)
+        core[int((z_floor + 0.08 - z0w) / UR):int((z_ceiling - 0.12 - z0w) / UR), :] = 1
+        empty = cv2.morphologyEx(((core > 0) & (mat == 0)).astype(np.uint8),
+                                 cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        ncE, lblE, statsE, _ = cv2.connectedComponentsWithStats(empty, 8)
+        for i in range(1, ncE):
+            x, y, w, h, _ = statsE[i]
+            if not (0.5 <= w * UR <= 3.0) or h * UR < 0.6:      # opening size gate
+                continue
+            if x <= 1 or x + w >= nu2 - 1:                      # must be flanked by wall (not wall end)
+                continue
+            cnts, _ = cv2.findContours((lblE == i).astype(np.uint8),
+                                       cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnt = max(cnts, key=cv2.contourArea)
+            cnt = cv2.approxPolyDP(cnt, 0.02 / UR, True)        # smooth pixel steps, keep the arch
+            if len(cnt) < 3:
+                continue
+            poly = Polygon([(c * UR, z0w + r * UR) for c, r in cnt[:, 0, :]])
+            if not poly.is_valid or poly.area < 0.3:
+                continue
+            try:
+                cutter = trimesh.creation.extrude_polygon(poly, height=thick * 3)
+                cutter.apply_transform(np.array(
+                    [[d[0], 0, n[0], p0[0] - n[0] * thick * 1.5],
+                     [d[1], 0, n[1], p0[1] - n[1] * thick * 1.5],
+                     [0, 1, 0, 0], [0, 0, 0, 1]], float))
+                cutters.append(cutter); n_open += 1
+            except Exception:
+                pass
 
         for ch in cutters:
             try:
