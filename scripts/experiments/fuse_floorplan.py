@@ -79,12 +79,16 @@ def map_pt(p, dbox, lbox, o):
     return (lx0 + ox * (lx1 - lx0), ly0 + oy * (ly1 - ly0))
 
 
-def regularize(lsegs):
+def regularize(lsegs, occ=None):
     """Turn loose Manhattan wall segments into a clean wall GRAPH the way a
     floorplan is drawn: snap every wall onto a shared set of gridlines, then
     extend each endpoint onto the crossing gridline so walls actually MEET at
     L/T junctions. Rendering thick strokes of the result unions cleanly at every
-    corner (no gaps, no notches)."""
+    corner (no gaps, no notches).
+
+    If `occ` (wall-material mask) is given, collinear segments separated by an
+    OCCUPIED gap are merged (a Hough miss along a continuous wall) while gaps
+    over EMPTY space are kept (a real doorway)."""
     Hs, Vs = [], []
     for x0, y0, x1, y1 in lsegs:
         if abs(x1 - x0) >= abs(y1 - y0):
@@ -119,16 +123,34 @@ def regularize(lsegs):
         if abs(near(v[0], ys) - v[0]) <= tol_s: v[0] = near(v[0], ys)
         if abs(near(v[1], ys) - v[1]) <= tol_s: v[1] = near(v[1], ys)
 
-    # merge collinear overlapping/abutting runs on the same gridline
-    def merge(lines):
+    # merge collinear runs on the same gridline: always if abutting, or across a
+    # gap that is filled with wall material (Hough miss) -- but never across an
+    # empty gap (a real doorway).
+    H_img = occ.shape[0] if occ is not None else 0
+    W_img = occ.shape[1] if occ is not None else 0
+
+    def occupied(axis, c, g0, g1):
+        if occ is None or g1 - g0 < 1:
+            return False
+        c = int(round(c)); g0, g1 = int(g0), int(g1)
+        if axis == "h":
+            band = occ[max(0, c - 4):c + 5, max(0, g0):min(W_img, g1)]
+            prof = band.max(axis=0) if band.size else np.array([0])
+        else:
+            band = occ[max(0, g0):min(H_img, g1), max(0, c - 4):c + 5]
+            prof = band.max(axis=1) if band.size else np.array([0])
+        return prof.size > 0 and (prof > 0).mean() >= 0.6
+
+    def merge(lines, axis):
         lines = sorted(lines, key=lambda s: (s[2], s[0])); out = []
         for a0, a1, c in lines:
-            if out and out[-1][2] == c and a0 <= out[-1][1] + tol_c:
+            if out and out[-1][2] == c and (a0 <= out[-1][1] + tol_c
+                                            or occupied(axis, c, out[-1][1], a0)):
                 out[-1][1] = max(out[-1][1], a1)
             else:
                 out.append([a0, a1, c])
         return out
-    Hs, Vs = merge(Hs), merge(Vs)
+    Hs, Vs = merge(Hs, "h"), merge(Vs, "v")
     return [(a0, c, a1, c) for a0, a1, c in Hs] + [(c, a0, c, a1) for a0, a1, c in Vs]
 
 
@@ -198,7 +220,7 @@ def render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir):
     # 2. CLEAN poche from the regularized wall GRAPH: grid-snapped centerlines
     #    that meet at L/T junctions, drawn as thick strokes -> union fills every
     #    corner seamlessly (the architectural way -- no gaps, no notches).
-    rsegs = regularize(lsegs)
+    rsegs = regularize(lsegs, R["occ"])
     wm = np.zeros((H, W), np.uint8)
     for x0, y0, x1, y1 in rsegs:
         cv2.line(wm, (int(round(x0)), int(round(y0))), (int(round(x1)), int(round(y1))), 255, tpx, cv2.LINE_8)
