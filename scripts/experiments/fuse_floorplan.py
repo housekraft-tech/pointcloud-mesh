@@ -301,8 +301,62 @@ def room_dims(R):
         rw = measure_axis(xw[mx], zw[mx], rcx, xmin + c0 * CELL, xmin + c1 * CELL)
         rh = measure_axis(yw[my], zw[my], rcy, ymax - r1 * CELL, ymax - r0 * CELL)
         opn = rw["open_l"] or rw["open_r"] or rh["open_l"] or rh["open_r"]
-        out.append((cx, cy, rw["span"], rh["span"], opn))
+        # also return the measured face positions (metric) for dimension lines
+        out.append((cx, cy, rw["span"], rh["span"], opn,
+                    rw["left"], rw["right"], rh["left"], rh["right"]))
     return out
+
+
+def render_dimensioned(R, lsegs, out_dir):
+    """Proper per-room dimensioned plan: clean poche walls + a width and depth
+    DIMENSION LINE (arrows spanning the measured clear faces) inside each room,
+    labelled mm (ft). Numbers are the validated direct-from-LiDAR clear spans."""
+    H, W = R["H"], R["W"]; TOP = 34
+    plan = np.full((H + TOP, W, 3), 255, np.uint8)
+    tpx = max(6, int(round(0.16 / CELL)))
+    xmin, ymax = R["xmin"], R["ymax"]
+
+    def P(px, py):
+        return (int(round(px)), int(round(py)) + TOP)
+
+    def MX(mx):
+        return (mx - xmin) / CELL
+
+    def MY(my):
+        return (ymax - my) / CELL
+    plan[TOP:][R["free"] > 0] = (245, 244, 242)
+    rsegs = regularize(lsegs, R["occ"])
+    wm = np.zeros((H, W), np.uint8)
+    for x0, y0, x1, y1 in rsegs:
+        cv2.line(wm, (int(x0), int(y0)), (int(x1), int(y1)), 255, tpx, cv2.LINE_8)
+    plan[TOP:][wm > 0] = (40, 40, 40)
+
+    FT = cv2.FONT_HERSHEY_SIMPLEX; MAG = (150, 0, 160)
+
+    def dimline(a, b, label, horiz):
+        cv2.arrowedLine(plan, a, b, MAG, 1, cv2.LINE_AA, tipLength=0.03)
+        cv2.arrowedLine(plan, b, a, MAG, 1, cv2.LINE_AA, tipLength=0.03)
+        (tw, th), _ = cv2.getTextSize(label, FT, 0.38, 1)
+        mx = (a[0] + b[0]) // 2; my = (a[1] + b[1]) // 2
+        org = (mx - tw // 2, my - 4) if horiz else (mx + 5, my + th // 2)
+        org = (int(np.clip(org[0], 2, W - tw - 2)), int(np.clip(org[1], TOP + th, H + TOP - 2)))
+        cv2.rectangle(plan, (org[0] - 2, org[1] - th - 2), (org[0] + tw + 2, org[1] + 3), (255, 255, 255), -1)
+        cv2.putText(plan, label, org, FT, 0.38, MAG, 1, cv2.LINE_AA)
+
+    for cx, cy, wdt, hgt, opn, xL, xR, yLo, yHi in room_dims(R):
+        op = "~" if opn else ""
+        wy = cy - int(0.22 * hgt / CELL)                    # width line: upper part
+        dimline(P(MX(xL), wy), P(MX(xR), wy),
+                f"{op}{wdt*1000:.0f} ({wdt*3.28084:.1f}ft)", True)
+        hx = cx - int(0.22 * wdt / CELL)                    # depth line: left part
+        dimline(P(hx, MY(yHi)), P(hx, MY(yLo)),
+                f"{op}{hgt*1000:.0f} ({hgt*3.28084:.1f}ft)", False)
+    cv2.rectangle(plan, (0, 0), (W, TOP), (255, 255, 255), -1)
+    cv2.putText(plan, "PER-ROOM DIMENSIONS  -  internal clear span, direct from LiDAR  |  mm (ft)   ~ = open side",
+                (8, 22), FT, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
+    p = out_dir / "fused_floorplan_dimensioned.png"
+    cv2.imwrite(str(p), plan)
+    log(f"wrote {p}")
 
 
 def render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir):
@@ -370,7 +424,7 @@ def render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir):
 
     # 4. validated room clear-dimensions
     FT = cv2.FONT_HERSHEY_SIMPLEX
-    for cx, cy, wdt, hgt, opn in room_dims(R):
+    for cx, cy, wdt, hgt, opn, xL, xR, yLo, yHi in room_dims(R):
         op = "~" if opn else ""
         t = f"{op}{wdt*1000:.0f}x{hgt*1000:.0f}"
         (tw, th), _ = cv2.getTextSize(t, FT, 0.4, 1)
@@ -482,6 +536,7 @@ def main(drawing, las, out_dir):
 
     # --- Stage 2: the accurate, good-looking fused floorplan ---
     render_fused(R, lsegs, wins, bdoors, dbox, lbox, o, out_dir)
+    render_dimensioned(R, lsegs, out_dir)
 
 
 if __name__ == "__main__":
