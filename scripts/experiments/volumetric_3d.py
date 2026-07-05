@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.experiments.explain_lidar_to_3d import reconstruct, measure_axis, CELL, STRIP
 
-DZ = 0.025             # slice thickness (2.5cm) -- fine enough for real features
+DZ = 0.010            # 1cm slices (finest feasible; 1mm is below the point-density + memory floor)
 DIL_M = 0.12           # dilate each slice's face points to fill wall thickness
 
 
@@ -106,6 +106,46 @@ def build_volume(R, ws):
     return vol, levels
 
 
+def rectilinear(vol, ws):
+    """Snap every height slice onto a SHARED set of wall gridlines (from the
+    footprint's axis-aligned edges). Each slice is quantised to the grid cells by
+    majority vote -> all wall faces become flat planes at gridline positions with
+    sharp 90-degree corners, while slices snap independently so jogs/openings stay
+    height-accurate."""
+    H, W, nz = vol.shape
+    cnts, _ = cv2.findContours(ws, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    xs, ys = [], []
+    for cnt in cnts:
+        ap = cv2.approxPolyDP(cnt, 0.03 / CELL, True)[:, 0, :].astype(float)
+        m = len(ap)
+        for k in range(m):
+            x0, y0 = ap[k]; x1, y1 = ap[(k + 1) % m]
+            (xs if abs(x1 - x0) <= abs(y1 - y0) else ys).append(
+                (x0 + x1) / 2 if abs(x1 - x0) <= abs(y1 - y0) else (y0 + y1) / 2)
+
+    def cl(vals, tol):
+        if not vals:
+            return []
+        s = np.sort(vals); g = [[s[0]]]
+        for x in s[1:]:
+            (g[-1].append(x) if x - g[-1][-1] <= tol else g.append([x]))
+        return [float(np.mean(c)) for c in g]
+    tol = 0.06 / CELL
+    gx = cl(xs, tol); gy = cl(ys, tol)
+    if len(gx) < 2 or len(gy) < 2:
+        return vol
+    colx = np.digitize(np.arange(W), gx); coly = np.digitize(np.arange(H), gy)
+    ncx = int(colx.max()) + 1
+    cellid = (coly[:, None] * ncx + colx[None, :]).astype(np.int64)
+    flat = cellid.ravel(); ncell = int(cellid.max()) + 1
+    cnt = np.bincount(flat, minlength=ncell).astype(float); cnt[cnt == 0] = 1
+    out = np.zeros_like(vol)
+    for k in range(nz):
+        sums = np.bincount(flat, weights=vol[:, :, k].ravel().astype(float), minlength=ncell)
+        out[:, :, k] = ((sums / cnt) > 0.5)[cellid].astype(np.uint8)
+    return out
+
+
 def plane_snap(m, tol=0.05):
     """Hybrid regularization: snap each near-axis wall FACE onto a shared plane
     so faces come out flat, while topology (openings, feature heights, jogs) is
@@ -132,8 +172,10 @@ def plane_snap(m, tol=0.05):
     return m
 
 
-def volume_to_mesh(vol, R, zf):
+def volume_to_mesh(vol, R, zf, ws=None):
     xmin, ymax = R["xmin"], R["ymax"]
+    if ws is not None:
+        vol = rectilinear(vol, ws)                            # snap slices to shared gridlines
     volp = np.pad(vol, 2).astype(np.float32)
     # anisotropic smooth: strong in-plane to kill the 2cm voxel stair-stepping on
     # wall faces, gentle in z so height-varying features (jog/opening tops) stay.
@@ -204,7 +246,7 @@ def main(las, out_dir):
     zf = R["z_floor"]
     vol, levels = build_volume(R, ws)
     log("marching cubes ...")
-    walls = volume_to_mesh(vol, R, zf)
+    walls = volume_to_mesh(vol, R, zf, ws)
     # floor slab
     xmin, ymax = R["xmin"], R["ymax"]
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()

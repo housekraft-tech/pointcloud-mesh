@@ -64,7 +64,7 @@ def main(las, mesh_path, out_dir):
     Rm["x"], Rm["y"], Rm["z"] = mv[:, 0], mv[:, 1], mv[:, 2]
     vol, levels = build_volume(Rm, ws)
     log("marching cubes ...")
-    walls = volume_to_mesh(vol, R, R["z_floor"])
+    walls = volume_to_mesh(vol, R, R["z_floor"], ws)
 
     zf = R["z_floor"]
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
