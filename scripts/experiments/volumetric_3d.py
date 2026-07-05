@@ -106,6 +106,32 @@ def build_volume(R, ws):
     return vol, levels
 
 
+def plane_snap(m, tol=0.05):
+    """Hybrid regularization: snap each near-axis wall FACE onto a shared plane
+    so faces come out flat, while topology (openings, feature heights, jogs) is
+    untouched. X-facing vertices -> nearest shared X-plane; Y-facing -> Y-plane."""
+    vn = np.asarray(m.vertex_normals); v = np.asarray(m.vertices).copy()
+
+    def cluster(vals):
+        s = np.sort(vals); g = [[s[0]]]
+        for x in s[1:]:
+            (g[-1].append(x) if x - g[-1][-1] <= tol else g.append([x]))
+        return np.array([np.mean(c) for c in g])
+
+    for ax, other in ((0, 1), (1, 0)):
+        sel = np.abs(vn[:, ax]) > 0.80                      # clearly a wall face on this axis
+        if sel.sum() < 20:
+            continue
+        gl = cluster(v[sel, ax])
+        idx = np.argmin(np.abs(v[sel, ax][:, None] - gl[None, :]), axis=1)
+        moved = v[sel, ax].copy()
+        near = np.abs(moved - gl[idx]) <= 3 * tol           # don't drag a face across a gap
+        moved[near] = gl[idx][near]
+        col = v[sel, ax]; col[:] = moved; v[sel, ax] = col
+    m.vertices = v
+    return m
+
+
 def volume_to_mesh(vol, R, zf):
     xmin, ymax = R["xmin"], R["ymax"]
     volp = np.pad(vol, 2).astype(np.float32)
@@ -117,7 +143,9 @@ def volume_to_mesh(vol, R, zf):
     wy = ymax - (verts[:, 0] - 2 * CELL)
     wz = zf + (verts[:, 2] - 2 * DZ)
     m = trimesh.Trimesh(vertices=np.column_stack([wx, wy, wz]), faces=faces, process=True)
-    trimesh.smoothing.filter_taubin(m, iterations=8)          # relax staircase -> flat faces
+    trimesh.smoothing.filter_taubin(m, iterations=8)          # relax staircase
+    plane_snap(m)                                            # flatten wall faces to planes
+    trimesh.smoothing.filter_taubin(m, iterations=2)          # settle after snap
     return m
 
 
