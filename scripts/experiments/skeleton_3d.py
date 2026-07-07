@@ -120,7 +120,9 @@ def main(las, out_dir):
     from shapely.geometry import Polygon as _Poly
     polys = []
     for pg in footprint_polygons(thick, xmin, ymax):
-        ext = rectify_ring(pg.exterior.coords)
+        # OUTER perimeter (exterior ring): keep SMOOTH (light simplify).
+        # INTERIOR walls (room-outline holes): rectify to crisp 90-degree corners.
+        ext = [(float(x), float(y)) for x, y in pg.exterior.simplify(0.06).coords]
         holes = [h for h in (rectify_ring(r.coords) for r in pg.interiors) if len(h) >= 4]
         if len(ext) < 4:
             continue
