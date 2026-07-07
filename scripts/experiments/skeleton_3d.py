@@ -201,6 +201,70 @@ def main(las, out_dir):
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
 
+    # ---- shallow REVEALS / shadow-gaps: NOT openings -- a small-depth recess
+    # over a HEIGHT RANGE (starts at a certain z, runs partway). Map via the
+    # (u,z) recess silhouette: per (along-wall u, height z) cell measure how far
+    # the face sets back; cut a shallow shell of the measured depth over the
+    # recessed (u, z) region so the height extent is preserved. ----
+    nrev = 0
+    for p0, p1 in segs:
+        dd = p1 - p0; L = float(np.linalg.norm(dd))
+        if L < 0.5:
+            continue
+        dd = dd / L; nn = np.array([-dd[1], dd[0]])
+        rel = xy - p0; u = rel @ dd; perp = rel @ nn
+        near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
+        if near.sum() < 200:
+            continue
+        uu, zz, pp = u[near], z[near], perp[near]
+        thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
+        Rz = trimesh.transformations.rotation_matrix(np.arctan2(dd[1], dd[0]), [0, 0, 1])
+        for side in (+1.0, -1.0):
+            sel = (pp * side) > 0
+            if sel.sum() < 200:
+                continue
+            sp = pp[sel] * side; sz = zz[sel]; su = uu[sel]
+            UB = 0.10; zb = np.arange(zf + 0.15, zc - 0.15, 0.1); nu = max(int(L / UB), 1)
+            surf = np.full((len(zb), nu), np.nan)
+            for iz, zl in enumerate(zb):
+                zm = (sz >= zl) & (sz < zl + 0.1)
+                if zm.sum() < 8:
+                    continue
+                ui = np.clip((su[zm] / UB).astype(int), 0, nu - 1); spz = sp[zm]
+                for iu in np.unique(ui):
+                    cm = ui == iu
+                    if cm.sum() >= 3:
+                        surf[iz, iu] = np.median(spz[cm])
+            valid = ~np.isnan(surf)
+            if valid.sum() < 6:
+                continue
+            face = float(np.nanmedian(surf))
+            noise = 1.4826 * float(np.nanmedian(np.abs(surf[valid] - face))) + 1e-6
+            thr = max(0.02, 3.0 * noise)
+            recess = np.where(valid, face - surf, 0.0)
+            groove = (recess >= thr) & valid
+            lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
+            for cc in range(1, nc2 + 1):
+                ys, xs = np.where(lbl2 == cc)
+                if ys.size < 3:
+                    continue
+                bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
+                if ys.size / bb < 0.5:
+                    continue
+                z0 = zb[ys.min()]; z1 = zb[ys.max()] + 0.1
+                u0 = xs.min() * UB; u1 = (xs.max() + 1) * UB
+                depth = float(np.clip(np.median(recess[ys, xs]), 0.005, min(0.035, thick * 0.4)))
+                box_th = depth + 0.02; cn = thick / 2 - depth + box_th / 2
+                ch = trimesh.creation.box(extents=(max(u1 - u0, UB) * 0.98, box_th, z1 - z0))
+                ch.apply_transform(Rz)
+                off = (p0 + dd * (u0 + u1) / 2) + nn * side * cn
+                ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
+                try:
+                    wall_solid = wall_solid.difference(ch); nrev += 1
+                except Exception:
+                    pass
+    log(f"cut {nrev} shallow reveals / shadow-gaps (height-mapped)")
+
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
     floor.apply_translation(((R["x"].min() + R["x"].max()) / 2, (R["y"].min() + R["y"].max()) / 2, zf - 0.05))
