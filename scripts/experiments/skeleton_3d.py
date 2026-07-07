@@ -141,6 +141,66 @@ def main(las, out_dir):
                 wall_solid = pr if wall_solid is None else trimesh.util.concatenate([wall_solid, pr])
             except Exception:
                 pass
+    # ---- cut door/passage openings as their real (u,z) SILHOUETTE, so ARCHED
+    # heads (material spanning the opening only near the top) are kept. The mid-
+    # level skeleton has the gap; the arch lives in the top slices -> the
+    # silhouette cutter stops at the arch soffit instead of going full height. ----
+    from shapely.geometry import Polygon as _Poly2
+    from scripts.experiments.hough_vectorize import snap_and_merge
+    ppm = 1.0 / CELL
+    lines = cv2.HoughLinesP(skel * 255, 1, np.pi / 180, threshold=20,
+                            minLineLength=int(0.4 * ppm), maxLineGap=int(0.3 * ppm))
+    segs = []
+    if lines is not None:
+        hs, vs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=int(0.25 * ppm), coord_tol_px=int(0.1 * ppm))
+        segs = [(np.array([xmin + a0 * CELL, ymax - yr * CELL]), np.array([xmin + a1 * CELL, ymax - yr * CELL]))
+                for a0, a1, yr in hs] + \
+               [(np.array([xmin + xc * CELL, ymax - a0 * CELL]), np.array([xmin + xc * CELL, ymax - a1 * CELL]))
+                for a0, a1, xc in vs]
+    xy = np.column_stack([x, y]); ncut = 0
+    UR = 0.02; z0w = zf - 0.05; z1w = zc + 0.05
+    for p0, p1 in segs:
+        dd = p1 - p0; L = float(np.linalg.norm(dd))
+        if L < 0.5:
+            continue
+        dd = dd / L; nn = np.array([-dd[1], dd[0]])
+        rel = xy - p0; u = rel @ dd; perp = rel @ nn
+        near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
+        if near.sum() < 200:
+            continue
+        uu, zz = u[near], z[near]
+        nu2 = max(int(L / UR) + 1, 4); nz2 = max(int((z1w - z0w) / UR) + 1, 4)
+        mat = np.zeros((nz2, nu2), np.uint8)
+        mat[np.clip(((zz - z0w) / UR).astype(int), 0, nz2 - 1),
+            np.clip((uu / UR).astype(int), 0, nu2 - 1)] = 1
+        mat = cv2.morphologyEx(mat, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        core = np.zeros_like(mat)
+        core[int((zf + 0.08 - z0w) / UR):int((zc - 0.12 - z0w) / UR), :] = 1
+        empty = cv2.morphologyEx(((core > 0) & (mat == 0)).astype(np.uint8),
+                                 cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        ncE, lblE, st, _ = cv2.connectedComponentsWithStats(empty, 8)
+        for i in range(1, ncE):
+            bx, by, bw, bh, _ = st[i]
+            if not (0.5 <= bw * UR <= 3.0) or bh * UR < 0.6 or bx <= 1 or bx + bw >= nu2 - 1:
+                continue
+            cs, _ = cv2.findContours((lblE == i).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnt = cv2.approxPolyDP(max(cs, key=cv2.contourArea), 0.02 / UR, True)
+            if len(cnt) < 3:
+                continue
+            poly = _Poly2([(c * UR, z0w + r * UR) for c, r in cnt[:, 0, :]])
+            if not poly.is_valid or poly.area < 0.3:
+                continue
+            try:
+                cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
+                cutter.apply_transform(np.array(
+                    [[dd[0], 0, nn[0], p0[0] - nn[0] * WALL_T * 2],
+                     [dd[1], 0, nn[1], p0[1] - nn[1] * WALL_T * 2],
+                     [0, 1, 0, 0], [0, 0, 0, 1]], float))
+                wall_solid = wall_solid.difference(cutter); ncut += 1
+            except Exception:
+                pass
+    log(f"cut {ncut} openings (arched heads kept)")
+
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
     floor.apply_translation(((R["x"].min() + R["x"].max()) / 2, (R["y"].min() + R["y"].max()) / 2, zf - 0.05))
