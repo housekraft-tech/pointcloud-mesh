@@ -35,6 +35,36 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def _cluster(vals, tol):
+    s = sorted(vals); g = [[s[0]]]
+    for v in s[1:]:
+        (g[-1].append(v) if v - g[-1][-1] <= tol else g.append([v]))
+    return [float(np.mean(c)) for c in g]
+
+
+def rectify_ring(coords, thr=0.025):
+    """Square off 45-degree chamfers into 90-degree L corners WITHOUT snapping
+    coordinates (snapping would collapse the ~11cm-thin walls). Each clearly
+    diagonal edge is replaced by two axis-aligned edges via an inserted corner."""
+    pts = [(float(x), float(y)) for x, y in coords]
+    if len(pts) > 1 and abs(pts[0][0] - pts[-1][0]) < 1e-9 and abs(pts[0][1] - pts[-1][1]) < 1e-9:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return []
+    out = []
+    n = len(pts)
+    for i in range(n):
+        x0, y0 = pts[i]; x1, y1 = pts[(i + 1) % n]
+        out.append((x0, y0))
+        if abs(x1 - x0) > thr and abs(y1 - y0) > thr:         # a real chamfer -> square L
+            out.append((x1, y0) if abs(x1 - x0) >= abs(y1 - y0) else (x0, y1))
+    clean = []
+    for p in out:
+        if not clean or abs(clean[-1][0] - p[0]) > 1e-6 or abs(clean[-1][1] - p[1]) > 1e-6:
+            clean.append(p)
+    return clean
+
+
 def main(las, out_dir):
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     R = reconstruct(las)
@@ -85,8 +115,23 @@ def main(las, out_dir):
     plan[thick > 0] = (40, 40, 40)
     cv2.imwrite(str(out_dir / "skeleton_walls_plan.png"), plan)
 
-    # 3. extrude the thickened skeleton footprint to ceiling
-    polys = footprint_polygons(thick, xmin, ymax)
+    # 3. extrude the thickened skeleton footprint to ceiling -- rectified to
+    #    strict 90-degree (L) corners first.
+    from shapely.geometry import Polygon as _Poly
+    polys = []
+    for pg in footprint_polygons(thick, xmin, ymax):
+        ext = rectify_ring(pg.exterior.coords)
+        holes = [h for h in (rectify_ring(r.coords) for r in pg.interiors) if len(h) >= 4]
+        if len(ext) < 4:
+            continue
+        try:
+            p = _Poly(ext, holes)
+            if not p.is_valid:
+                p = p.buffer(0)
+            if p.area > 0.05:
+                polys.append(p)
+        except Exception:
+            pass
     wall_solid = None
     for pg in polys:
         for g in (pg.geoms if hasattr(pg, "geoms") else [pg]):
