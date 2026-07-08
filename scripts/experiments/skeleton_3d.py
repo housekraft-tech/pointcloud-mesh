@@ -263,30 +263,52 @@ def main(las, out_dir):
             groove = (recess >= thr) & valid
             # close 1-cell gaps so a band split by a missing column stays one region
             groove = ndimage.binary_closing(groove, structure=np.ones((3, 3)))
+            zf_band = zf + 0.10
             lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
             for cc in range(1, nc2 + 1):
-                ys, xs = np.where(lbl2 == cc)
+                mask = (lbl2 == cc)
+                ys, xs = np.where(mask)
                 area = ys.size * (UB * ZB)
-                if area < 0.06:                               # >= ~600 cm2 region
-                    continue
-                bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
-                if ys.size / max(bb, 1) < 0.45:               # must be a coherent patch
+                if area < 0.05:                               # >= ~500 cm2 region
                     continue
                 du = (np.ptp(xs) + 1) * UB; dz = (np.ptp(ys) + 1) * ZB
                 if max(du, dz) < 0.15:
                     continue
-                z0 = zb[ys.min()]; z1 = min(zb[ys.max()] + ZB, zc)
-                u0 = xs.min() * UB; u1 = (xs.max() + 1) * UB
-                depth_cut = float(np.clip(np.median(recess[ys, xs]), MIN_DEPTH, MAX_DEPTH))
-                box_th = depth_cut + 0.03; cn = WALL_T / 2 - depth_cut + box_th / 2
-                ch = trimesh.creation.box(extents=(max(u1 - u0, UB), box_th, z1 - z0))
-                ch.apply_transform(Rz)
-                off = (p0 + dd * (u0 + u1) / 2) + nn * side * cn
-                ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
-                try:
-                    wall_solid = wall_solid.difference(ch); nrev += 1
-                except Exception:
-                    pass
+                # gate on depth COHERENCE, not bounding-box fill -- a recessed
+                # head+jamb casing is a FRAME/L (low fill) but has uniform depth;
+                # scattered noise has high depth variation. Keep coherent, drop noise.
+                rv = recess[ys, xs]
+                bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
+                fill = ys.size / max(bb, 1)
+                cvv = float(np.std(rv) / (np.mean(rv) + 1e-6))
+                if fill < 0.4 and cvv > 0.55:
+                    continue
+                depth_cut = float(np.clip(np.median(rv), MIN_DEPTH, MAX_DEPTH))
+                box_th = depth_cut + 0.03
+                # cut the region's ACTUAL shape (contours in (u,z)) extruded along
+                # the wall normal -- so a frame recesses its casing, not the opening.
+                m8 = mask.astype(np.uint8)
+                cnts, _ = cv2.findContours(m8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                # local->world: x=u -> dd, y=height(z) -> world Z, z=depth -> nn*side
+                M = np.array([
+                    [dd[0], 0, nn[0] * side, p0[0] + nn[0] * side * (WALL_T / 2 - depth_cut)],
+                    [dd[1], 0, nn[1] * side, p0[1] + nn[1] * side * (WALL_T / 2 - depth_cut)],
+                    [0, 1, 0, 0], [0, 0, 0, 1]], float)
+                for cnt in cnts:
+                    ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
+                    if len(ap) < 3:
+                        continue
+                    poly = _Poly2([(float(c) * UB, zf_band + float(r) * ZB) for c, r in ap])
+                    if not poly.is_valid:
+                        poly = poly.buffer(0)
+                    if poly.is_empty or poly.area < 0.02:
+                        continue
+                    try:
+                        ch = trimesh.creation.extrude_polygon(poly, height=box_th)
+                        ch.apply_transform(M)
+                        wall_solid = wall_solid.difference(ch); nrev += 1
+                    except Exception:
+                        pass
     log(f"cut {nrev} offset-plane reveals / soffit faces (true depth, height-mapped)")
 
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
