@@ -371,105 +371,66 @@ def main(las, out_dir):
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
 
-    # ---- WALK-PATH ENTRANCE DOORS: at every wall the trajectory crossed, cut a
-    # standard doorway (~0.9m wide, floor -> 2.05m head) unless a geometric opening
-    # already covers it. Catches shut interior doors the empty-silhouette test
-    # misses, and gives every room its real entrance. ----
-    DOOR_W = 0.9; DOOR_H = zf + 2.05; ndoor_traj = 0
-    for si, ulist in traj_hits.items():
-        p0, p1 = segs[si]; dvec = p1 - p0; Ls = float(np.linalg.norm(dvec))
-        if Ls < 0.6:
-            continue
-        dvec = dvec / Ls; nvec = np.array([-dvec[1], dvec[0]])
-        clusters = []
-        for u in ulist:
-            if clusters and u - clusters[-1][-1] < 0.6:
-                clusters[-1].append(u)
-            else:
-                clusters.append([u])
-        for cl in clusters:
-            uc = float(np.mean(cl)); center = p0 + dvec * uc
-            if any(float(np.linalg.norm(o["center"] - center)) < 0.6 for o in openings):
-                continue                                      # already have an opening here
-            u0d = max(uc - DOOR_W / 2, 0.05); u1d = min(uc + DOOR_W / 2, Ls - 0.05)
-            if u1d - u0d < 0.4:
+    # ---- DOORS = the narrow (2-3.5 ft) NECK where two rooms connect, i.e. the gap
+    # you physically walk through. The watershed room map is well-segmented, so a
+    # doorway is exactly where two room regions touch through a short neck (a full
+    # wall keeps them apart; only a door-width gap lets them touch). Far more
+    # accurate than the noisy gps-centroid path. ----
+    DOOR_W = 0.9; DOOR_H = zf + 2.05
+    _mk = R["mk"]; _labs = list(R["room_labels"])
+
+    def _snap_cut_door(cx, cy, want_w):
+        best = None
+        q = np.array([cx, cy])
+        for p0, p1 in segs:
+            d = p1 - p0; L = float(np.linalg.norm(d))
+            if L < 0.6:
                 continue
-            poly = _Poly2([(u0d, zf + 0.02), (u1d, zf + 0.02), (u1d, DOOR_H), (u0d, DOOR_H)])
-            try:
-                cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
-                cutter.apply_transform(np.array(
-                    [[dvec[0], 0, nvec[0], p0[0] - nvec[0] * WALL_T * 2],
-                     [dvec[1], 0, nvec[1], p0[1] - nvec[1] * WALL_T * 2],
-                     [0, 1, 0, 0], [0, 0, 0, 1]], float))
-                negatives.append(cutter)
-                openings.append(dict(center=center, dd=dvec.copy(), nn=nvec.copy(),
-                                     width=u1d - u0d, z0=zf + 0.02, z1=DOOR_H, walked=True))
-                ndoor_traj += 1
-            except Exception:
-                pass
-    log(f"walk-path entrance doors added: {ndoor_traj}")
-
-    # ---- GUARANTEE EVERY VISITED ROOM HAS AN ENTRANCE: if a room the path entered
-    # still has no opening on its boundary (a crossing filtered out), force a door
-    # at the path's entry point into that room. No room left sealed. ----
-    _mk = R["mk"]
-
-    def _px(pt):
-        return int((ymax - pt[1]) / CELL), int((pt[0] - xmin) / CELL)
-
-    def _roomlab(pt):
-        r, c = _px(pt)
-        return int(_mk[r, c]) if 0 <= r < H and 0 <= c < W else 0
-
-    def _room_has_opening(lab):
-        rm = cv2.dilate((_mk == lab).astype(np.uint8),
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.35 / CELL) | 1,) * 2))
-        for o in openings:
-            r, c = _px(o["center"])
-            if 0 <= r < H and 0 <= c < W and rm[r, c]:
-                return True
-        return False
-
-    def _add_door(dvec, nvec, uc, p0, Ls):
-        u0d = max(uc - DOOR_W / 2, 0.05); u1d = min(uc + DOOR_W / 2, Ls - 0.05)
+            dv = d / L; uu = float((q - p0) @ dv); pp = abs(float((q - p0) @ np.array([-dv[1], dv[0]])))
+            if 0.05 <= uu <= L - 0.05 and (best is None or pp < best[0]):
+                best = (pp, uu, p0, dv, np.array([-dv[1], dv[0]]), L)
+        if best is None or best[0] > 0.6:               # doorway not near any wall line
+            return False
+        pp, uc, p0, dv, nv, L = best
+        center = p0 + dv * uc
+        if any(float(np.linalg.norm(o["center"] - center)) < 0.5 for o in openings):
+            return False                                # already have an opening here
+        dw = float(np.clip(want_w, 0.6, 1.1))
+        u0d = max(uc - dw / 2, 0.05); u1d = min(uc + dw / 2, L - 0.05)
         if u1d - u0d < 0.4:
             return False
         poly = _Poly2([(u0d, zf + 0.02), (u1d, zf + 0.02), (u1d, DOOR_H), (u0d, DOOR_H)])
         try:
             cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
             cutter.apply_transform(np.array(
-                [[dvec[0], 0, nvec[0], p0[0] - nvec[0] * WALL_T * 2],
-                 [dvec[1], 0, nvec[1], p0[1] - nvec[1] * WALL_T * 2],
+                [[dv[0], 0, nv[0], p0[0] - nv[0] * WALL_T * 2],
+                 [dv[1], 0, nv[1], p0[1] - nv[1] * WALL_T * 2],
                  [0, 1, 0, 0], [0, 0, 0, 1]], float))
             negatives.append(cutter)
-            openings.append(dict(center=p0 + dvec * uc, dd=dvec.copy(), nn=nvec.copy(),
+            openings.append(dict(center=center, dd=dv.copy(), nn=nv.copy(),
                                  width=u1d - u0d, z0=zf + 0.02, z1=DOOR_H, walked=True))
             return True
         except Exception:
             return False
 
-    nforced = 0
-    if len(traj) > 1:
-        troom = [_roomlab(p) for p in traj]
-        for lab in R["room_labels"]:
-            if _room_has_opening(lab):
+    ndoor_gap = 0
+    _rmask = {A: (_mk == A) for A in _labs}
+    for ai, A in enumerate(_labs):
+        dA = ndimage.binary_dilation(_rmask[A], iterations=4)   # bridge thin ridge/leaf, not a full wall
+        for B in _labs[ai + 1:]:
+            contact = dA & _rmask[B]
+            if int(contact.sum()) < 2:
                 continue
-            for i in range(1, len(traj)):
-                if troom[i] == lab and troom[i - 1] != lab:
-                    mid = (traj[i] + traj[i - 1]) / 2.0
-                    best = None
-                    for p0, p1 in segs:
-                        d = p1 - p0; L = float(np.linalg.norm(d))
-                        if L < 0.6:
-                            continue
-                        dv = d / L; nv = np.array([-dv[1], dv[0]])
-                        uu = float((mid - p0) @ dv); pp = abs(float((mid - p0) @ nv))
-                        if 0.1 <= uu <= L - 0.1 and pp < 0.5 and (best is None or pp < best[0]):
-                            best = (pp, uu, p0, dv, nv, L)
-                    if best and _add_door(best[3], best[4], best[1], best[2], best[5]):
-                        nforced += 1
-                        break
-    log(f"forced {nforced} entrance doors for isolated rooms")
+            cl, nc = ndimage.label(contact, structure=np.ones((3, 3)))
+            for k in range(1, nc + 1):
+                ys, xs = np.where(cl == k)
+                width = (max(np.ptp(xs), np.ptp(ys)) + 1) * CELL
+                if not (0.45 < width < 1.5):            # a door-width neck (not an open-plan join)
+                    continue
+                cx = xmin + xs.mean() * CELL; cy = ymax - ys.mean() * CELL
+                if _snap_cut_door(cx, cy, width):
+                    ndoor_gap += 1
+    log(f"room-gap doors: {ndoor_gap}")
 
     # ---- OFFSET-PLANE reveals / shadow-gaps / soffit faces (Ikehata-style):
     # a wall side is NOT one flat face -- it is a PROUD face plus recessed
