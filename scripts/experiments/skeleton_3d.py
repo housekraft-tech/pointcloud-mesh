@@ -327,7 +327,7 @@ def main(las, out_dir):
     # each preserved at real depth and real height, not as a token sliver. ----
     UB = 0.04; ZB = 0.05                       # 4cm along-wall x 5cm height cells
     MIN_DEPTH = 0.018                          # ignore < ~2cm (paint/scan noise)
-    MAX_DEPTH = WALL_T * 0.72                  # never cut through the solid
+    MAX_DEPTH = WALL_T * 0.42                  # cap so a two-sided groove can't sever the wall
     nrev = 0
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -420,6 +420,26 @@ def main(las, out_dir):
                     continue
                 depth_cut = float(np.clip(np.median(rv), MIN_DEPTH, MAX_DEPTH))
                 box_th = depth_cut + 0.03
+                # PRECISE vertical extent: take the groove's exact top/bottom from the
+                # actual recessed POINTS in its u-band (not the 5cm cell grid), so the
+                # cut stops exactly where the recess ends -- and snap to ceiling/floor
+                # when it truly reaches them. Works for any span (top->bottom, mid->top,
+                # mid->bottom).
+                u0r = xs.min() * UB; u1r = (xs.max() + 1) * UB
+                inb = (su >= u0r) & (su <= u1r) & (sp >= face + thr)
+                rmin = float(ys.min()); rmax = float(ys.max()) + 1.0
+                if int(inb.sum()) >= 8:
+                    z0p = float(np.percentile(sz[inb], 2)); z1p = float(np.percentile(sz[inb], 98))
+                else:
+                    z0p = zf_band + rmin * ZB; z1p = zf_band + rmax * ZB
+                if z1p >= zc - 0.12:
+                    z1p = zc
+                if z0p <= zf + 0.16:
+                    z0p = zf + 0.02
+                zden = max(rmax - rmin, 1.0)
+
+                def _zmap(r, _r0=rmin, _z0=z0p, _z1=z1p, _d=zden):
+                    return _z0 + (r - _r0) / _d * (_z1 - _z0)
                 # cut the region's ACTUAL shape (contours in (u,z)) extruded along
                 # the wall normal -- so a frame recesses its casing, not the opening.
                 m8 = mask.astype(np.uint8)
@@ -433,7 +453,7 @@ def main(las, out_dir):
                     ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
                     if len(ap) < 3:
                         continue
-                    poly = _Poly2([(float(c) * UB, zf_band + float(r) * ZB) for c, r in ap])
+                    poly = _Poly2([(float(c) * UB, _zmap(float(r))) for c, r in ap])
                     if not poly.is_valid:
                         poly = poly.buffer(0)
                     if poly.is_empty or poly.area < 0.02:
