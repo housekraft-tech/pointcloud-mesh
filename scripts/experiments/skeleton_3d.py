@@ -483,8 +483,10 @@ def main(las, out_dir):
     # top 40% of a wall, a recessed door head+jamb frame, or a shadow-gap band --
     # each preserved at real depth and real height, not as a token sliver. ----
     UB = 0.04; ZB = 0.05                       # 4cm along-wall x 5cm height cells
-    MIN_DEPTH = 0.018                          # ignore < ~2cm (paint/scan noise)
+    MIN_DEPTH = 0.030                          # MAJOR grooves only: ignore < 3cm (minor reveals/noise)
     MAX_DEPTH = WALL_T * 0.42                  # cap so a two-sided groove can't sever the wall
+    MIN_AREA = 0.15                            # >= 1500 cm2 -- only prominent recesses
+    MIN_EXTENT = 0.30                          # at least 30cm in one direction
     nrev = 0
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -561,10 +563,10 @@ def main(las, out_dir):
                 mask = (lbl2 == cc)
                 ys, xs = np.where(mask)
                 area = ys.size * (UB * ZB)
-                if area < 0.05:                               # >= ~500 cm2 region
+                if area < MIN_AREA:                           # major grooves only
                     continue
                 du = (np.ptp(xs) + 1) * UB; dz = (np.ptp(ys) + 1) * ZB
-                if max(du, dz) < 0.15:
+                if max(du, dz) < MIN_EXTENT:
                     continue
                 # gate on depth COHERENCE, not bounding-box fill -- a recessed
                 # head+jamb casing is a FRAME/L (low fill) but has uniform depth;
