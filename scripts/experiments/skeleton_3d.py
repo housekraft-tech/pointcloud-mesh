@@ -194,9 +194,30 @@ def main(las, out_dir):
     t = max(3, int(round(WALL_T / CELL)) | 1)
     lines = cv2.HoughLinesP(skel * 255, 1, np.pi / 180, threshold=20,
                             minLineLength=int(0.4 * ppm), maxLineGap=int(0.3 * ppm))
+    def merge_parallel(sgs, gap_px, ov_px):
+        """Merge near-parallel, overlapping centrelines (the two FACES of one wall
+        that skeletonised into two lines) into a single averaged wall, so a shared
+        wall isn't emitted as two separate slabs."""
+        sgs = [list(s) for s in sgs]
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(sgs)):
+                for j in range(i + 1, len(sgs)):
+                    a0, a1, c = sgs[i]; b0, b1, cj = sgs[j]
+                    if abs(c - cj) <= gap_px and (min(a1, b1) - max(a0, b0)) >= ov_px:
+                        w1 = a1 - a0; w2 = b1 - b0
+                        sgs[i] = [min(a0, b0), max(a1, b1), (c * w1 + cj * w2) / (w1 + w2)]
+                        sgs.pop(j); changed = True; break
+                if changed:
+                    break
+        return sgs
+
     segs = []
     if lines is not None:
         hs, vs = snap_and_merge(lines.reshape(-1, 4), merge_gap_px=int(0.25 * ppm), coord_tol_px=int(0.1 * ppm))
+        hs = merge_parallel(hs, int(0.28 / CELL), int(0.5 * ppm))     # collapse doubled walls
+        vs = merge_parallel(vs, int(0.28 / CELL), int(0.5 * ppm))
         segs = [(np.array([xmin + a0 * CELL, ymax - yr * CELL]), np.array([xmin + a1 * CELL, ymax - yr * CELL]))
                 for a0, a1, yr in hs] + \
                [(np.array([xmin + xc * CELL, ymax - a0 * CELL]), np.array([xmin + xc * CELL, ymax - a1 * CELL]))
