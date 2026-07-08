@@ -413,24 +413,66 @@ def main(las, out_dir):
         except Exception:
             return False
 
-    ndoor_gap = 0
-    _rmask = {A: (_mk == A) for A in _labs}
-    for ai, A in enumerate(_labs):
-        dA = ndimage.binary_dilation(_rmask[A], iterations=4)   # bridge thin ridge/leaf, not a full wall
-        for B in _labs[ai + 1:]:
-            contact = dA & _rmask[B]
-            if int(contact.sum()) < 2:
+    # A DOORWAY is a 2-4ft GAP between two COLINEAR wall segments (the two jambs).
+    # Hough only bridges <=0.3m, so a wall with a door becomes two collinear
+    # segments with the doorway between their ends. Interior on both perpendicular
+    # sides = an interior door. (Room-adjacency hallucinated because the watershed
+    # is over-segmented; segment-gap keys off the walls themselves.)
+    _inside = ndimage.binary_fill_holes((R["free"] > 0) | (R["occ"] > 0))
+
+    def _interior(pt):
+        c = int((pt[0] - xmin) / CELL); r = int((ymax - pt[1]) / CELL)
+        return 0 <= r < H and 0 <= c < W and _inside[r, c]
+
+    _Sg = []
+    for p0, p1 in segs:
+        dd = p1 - p0; L = float(np.linalg.norm(dd))
+        if L < 0.35:
+            continue
+        if abs(dd[0]) >= abs(dd[1]):
+            _Sg.append((True, (p0[1] + p1[1]) / 2, min(p0[0], p1[0]), max(p0[0], p1[0])))
+        else:
+            _Sg.append((False, (p0[0] + p1[0]) / 2, min(p0[1], p1[1]), max(p0[1], p1[1])))
+    ndoor_gap = 0; _placed = []
+    for i in range(len(_Sg)):
+        for j in range(i + 1, len(_Sg)):
+            hi, ci, loi, hoi = _Sg[i]; hj, cj, loj, hoj = _Sg[j]
+            if hi != hj or abs(ci - cj) > 0.22:
                 continue
-            cl, nc = ndimage.label(contact, structure=np.ones((3, 3)))
-            for k in range(1, nc + 1):
-                ys, xs = np.where(cl == k)
-                width = (max(np.ptp(xs), np.ptp(ys)) + 1) * CELL
-                if not (0.45 < width < 1.5):            # a door-width neck (not an open-plan join)
-                    continue
-                cx = xmin + xs.mean() * CELL; cy = ymax - ys.mean() * CELL
-                if _snap_cut_door(cx, cy, width):
-                    ndoor_gap += 1
-    log(f"room-gap doors: {ndoor_gap}")
+            if hoi <= loj:
+                gap = loj - hoi; gc = (hoi + loj) / 2
+            elif hoj <= loi:
+                gap = loi - hoj; gc = (hoj + loi) / 2
+            else:
+                continue
+            if not (0.5 < gap < 1.2):
+                continue
+            cl = (ci + cj) / 2
+            cen = np.array([gc, cl]) if hi else np.array([cl, gc])
+            dv = np.array([1.0, 0.0]) if hi else np.array([0.0, 1.0])
+            nv = np.array([0.0, 1.0]) if hi else np.array([1.0, 0.0])
+            if not (_interior(cen + nv * 0.5) and _interior(cen - nv * 0.5)):
+                continue                                 # one side outside = entrance/balcony (handled elsewhere)
+            if any(float(np.linalg.norm(cen - pc)) < 0.4 for pc in _placed):
+                continue
+            if any(float(np.linalg.norm(cen - o["center"])) < 0.5 for o in openings):
+                continue                                 # already have a geometric opening here
+            _placed.append(cen)
+            dw = float(np.clip(gap, 0.6, 1.1))
+            poly = _Poly2([(-dw / 2, zf + 0.02), (dw / 2, zf + 0.02), (dw / 2, DOOR_H), (-dw / 2, DOOR_H)])
+            try:
+                cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
+                cutter.apply_transform(np.array(
+                    [[dv[0], 0, nv[0], cen[0] - nv[0] * WALL_T * 2],
+                     [dv[1], 0, nv[1], cen[1] - nv[1] * WALL_T * 2],
+                     [0, 1, 0, 0], [0, 0, 0, 1]], float))
+                negatives.append(cutter)
+                openings.append(dict(center=cen.copy(), dd=dv.copy(), nn=nv.copy(),
+                                     width=dw, z0=zf + 0.02, z1=DOOR_H, walked=True))
+                ndoor_gap += 1
+            except Exception:
+                pass
+    log(f"colinear-gap doors: {ndoor_gap}")
 
     # ---- OFFSET-PLANE reveals / shadow-gaps / soffit faces (Ikehata-style):
     # a wall side is NOT one flat face -- it is a PROUD face plus recessed
