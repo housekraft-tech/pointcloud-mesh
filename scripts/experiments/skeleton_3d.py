@@ -223,6 +223,38 @@ def main(las, out_dir):
                [(np.array([xmin + xc * CELL, ymax - a0 * CELL]), np.array([xmin + xc * CELL, ymax - a1 * CELL]))
                 for a0, a1, xc in vs]
 
+    # WALK-PATH doors: reconstruct the operator trajectory from gps_time and find
+    # where it CROSSES a wall centreline -- the person physically walked through
+    # there, so it is an entrance DOOR (works even for a shut door leaf the (u,z)
+    # empty test misses, and needs no colour/RF-DETR).
+    traj_hits = {}
+    try:
+        import laspy
+        _las = laspy.read(las)
+        if "gps_time" in _las.point_format.dimension_names:
+            from scripts.recon.trajectory import approx_trajectory
+            _xyz = np.column_stack([np.asarray(_las.x), np.asarray(_las.y), np.asarray(_las.z)])
+            traj = np.asarray(approx_trajectory(np.asarray(_las.gps_time), _xyz, dt_s=0.25))[:, :2]
+            for si, (p0, p1) in enumerate(segs):
+                d = p1 - p0; Ls = float(np.linalg.norm(d))
+                if Ls == 0:
+                    continue
+                hits = []
+                for a, b in zip(traj[:-1], traj[1:]):
+                    e = b - a; den = d[0] * e[1] - d[1] * e[0]
+                    if abs(den) < 1e-12:
+                        continue
+                    r = a - p0
+                    tt = (r[0] * e[1] - r[1] * e[0]) / den
+                    ss = (r[0] * d[1] - r[1] * d[0]) / den
+                    if 0.0 <= ss <= 1.0 and 0.15 <= tt * Ls <= Ls - 0.15:
+                        hits.append(tt * Ls)
+                if hits:
+                    traj_hits[si] = sorted(hits)
+            log(f"walk-path: {len(traj)} path vertices, crossings on {len(traj_hits)} walls")
+    except Exception as _e:
+        log(f"walk-path unavailable: {_e}")
+
     # 3. build CLEAN INDIVIDUAL WALLS: each straight segment -> one flat
     #    rectangular slab of uniform thickness, extended half a thickness into
     #    each junction so neighbours fuse. This removes the skeleton wobble and
@@ -337,6 +369,44 @@ def main(las, out_dir):
             except Exception:
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
+
+    # ---- WALK-PATH ENTRANCE DOORS: at every wall the trajectory crossed, cut a
+    # standard doorway (~0.9m wide, floor -> 2.05m head) unless a geometric opening
+    # already covers it. Catches shut interior doors the empty-silhouette test
+    # misses, and gives every room its real entrance. ----
+    DOOR_W = 0.9; DOOR_H = zf + 2.05; ndoor_traj = 0
+    for si, ulist in traj_hits.items():
+        p0, p1 = segs[si]; dvec = p1 - p0; Ls = float(np.linalg.norm(dvec))
+        if Ls < 0.6:
+            continue
+        dvec = dvec / Ls; nvec = np.array([-dvec[1], dvec[0]])
+        clusters = []
+        for u in ulist:
+            if clusters and u - clusters[-1][-1] < 0.6:
+                clusters[-1].append(u)
+            else:
+                clusters.append([u])
+        for cl in clusters:
+            uc = float(np.mean(cl)); center = p0 + dvec * uc
+            if any(float(np.linalg.norm(o["center"] - center)) < 0.6 for o in openings):
+                continue                                      # already have an opening here
+            u0d = max(uc - DOOR_W / 2, 0.05); u1d = min(uc + DOOR_W / 2, Ls - 0.05)
+            if u1d - u0d < 0.4:
+                continue
+            poly = _Poly2([(u0d, zf + 0.02), (u1d, zf + 0.02), (u1d, DOOR_H), (u0d, DOOR_H)])
+            try:
+                cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
+                cutter.apply_transform(np.array(
+                    [[dvec[0], 0, nvec[0], p0[0] - nvec[0] * WALL_T * 2],
+                     [dvec[1], 0, nvec[1], p0[1] - nvec[1] * WALL_T * 2],
+                     [0, 1, 0, 0], [0, 0, 0, 1]], float))
+                negatives.append(cutter)
+                openings.append(dict(center=center, dd=dvec.copy(), nn=nvec.copy(),
+                                     width=u1d - u0d, z0=zf + 0.02, z1=DOOR_H, walked=True))
+                ndoor_traj += 1
+            except Exception:
+                pass
+    log(f"walk-path entrance doors added: {ndoor_traj}")
 
     # ---- OFFSET-PLANE reveals / shadow-gaps / soffit faces (Ikehata-style):
     # a wall side is NOT one flat face -- it is a PROUD face plus recessed
@@ -573,7 +643,9 @@ def main(las, out_dir):
         ext = _outside(o["center"], o["nn"] * 0.7) or _outside(o["center"], -o["nn"] * 0.7)
         if h < 0.4 or w < 0.4:
             continue
-        if sill >= 0.35:                              # WINDOW -- sill above floor (glazed)
+        if o.get("walked") and sill < 0.35:           # WALK-PATH entrance DOOR -- leaf
+            elements.append((_elt_box(o, w * 0.95, 0.045, h * 0.98, zmid), LEAF)); ndoor += 1
+        elif sill >= 0.35:                            # WINDOW -- sill above floor (glazed)
             elements.append((_elt_box(o, w * 0.92, 0.03, h * 0.92, zmid), GLASS)); nwin += 1
         elif ext:                                     # BALCONY / exterior door -- floor-level to
             bz0 = zf + 0.02; bz1 = max(z1, zf + 2.0)  # outside; glazed, modelled full height even
