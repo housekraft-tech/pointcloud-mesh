@@ -70,14 +70,25 @@ def _difference(a, negs):
 
 
 def _clean(m):
-    """Weld coincident verts, drop degenerate/duplicate faces, fix winding so the
-    surface reads as one smooth solid (keeps 90-degree edges -- no rounding)."""
+    """Weld coincident verts, drop degenerate/duplicate faces, LOSSLESS-merge
+    coplanar faces (collapse only zero-error/collinear edges -> fewer triangles
+    while keeping watertightness and every 90-degree edge -- no rounding), fix
+    winding so the surface reads as one smooth solid."""
     if m is None:
         return None
     m.merge_vertices()
     m.update_faces(m.nondegenerate_faces())
     m.update_faces(m.unique_faces())
     m.remove_unreferenced_vertices()
+    try:
+        import fast_simplification as _fs
+        v, f = _fs.simplify(m.vertices, m.faces, target_reduction=0.99, lossless=True)
+        c = trimesh.Trimesh(v, f, process=True)
+        if c.is_watertight and len(c.faces):          # only accept if still watertight
+            m = c
+    except Exception:
+        pass
+    m.merge_vertices()
     try:
         m.fix_normals()
     except Exception:
