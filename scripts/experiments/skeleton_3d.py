@@ -372,6 +372,19 @@ def main(las, out_dir):
                 for g0, g1 in zip(idx[:-1], idx[1:]):
                     if 1 <= (g1 - g0 - 1) and (g1 - g0) <= MAXGAP:
                         depth[b, g0 + 1:g1] = filled[g0 + 1:g1]
+            # fill SHORT VERTICAL gaps (sparse height rows) per column, so a groove's
+            # true TOP->BOTTOM (or mid->bottom) extent is captured, not just the dense
+            # middle band; leave tall gaps alone.
+            MAXGZ = max(int(0.35 / ZB), 2)
+            for a in range(nu):
+                col = depth[:, a]; vcol = ~np.isnan(col)
+                if vcol.sum() < 2:
+                    continue
+                idz = np.where(vcol)[0]
+                fz = np.interp(np.arange(nz), idz, col[idz])
+                for g0, g1 in zip(idz[:-1], idz[1:]):
+                    if 1 <= (g1 - g0 - 1) and (g1 - g0) <= MAXGZ:
+                        depth[g0 + 1:g1, a] = fz[g0 + 1:g1]
             valid = ~np.isnan(depth)
             if valid.sum() < 20:
                 continue
@@ -382,7 +395,8 @@ def main(las, out_dir):
             groove = (recess >= thr) & valid
             # bridge intermittent detection ALONG the wall so the groove is captured
             # continuously across, not in broken chunks (u = axis 1).
-            groove = ndimage.binary_closing(groove, structure=np.ones((1, 7)))
+            groove = ndimage.binary_closing(groove, structure=np.ones((1, 7)))   # bridge along u
+            groove = ndimage.binary_closing(groove, structure=np.ones((7, 1)))   # bridge along z
             groove = ndimage.binary_closing(groove, structure=np.ones((3, 3)))
             zf_band = zf + 0.10
             lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
