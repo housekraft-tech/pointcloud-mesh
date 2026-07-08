@@ -411,24 +411,29 @@ def main(las, out_dir):
             if col.sum() >= 5:
                 lo.append(np.percentile(z[col], 5))
         soffit = float(np.clip(np.median(lo) if lo else zc - 0.4, zf + 0.3, zc - 0.12))
-        beam = cv2.dilate(comp, tkern)                        # thicken span to wall thickness
-        beam = (beam & (ws == 0)).astype(np.uint8)            # don't double the existing walls
-        beam = cv2.morphologyEx(beam, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-        for pg in footprint_polygons(beam, xmin, ymax):
-            ring = rectify_ring(pg.exterior.coords)
-            if len(ring) < 4:
-                continue
-            try:
-                g = _Poly(ring)
-                if not g.is_valid:
-                    g = g.buffer(0)
-                if g.area < 0.03:
-                    continue
-                pr = trimesh.creation.extrude_polygon(g, height=zc - soffit)
-                pr.apply_translation((0, 0, soffit))
-                beams.append(pr); nhead += 1
-            except Exception:
-                pass
+        # ---- build a CLEAN rectangular lintel: fit the span's principal axis,
+        # give it uniform wall thickness, and EXTEND both ends into the adjoining
+        # walls (by ~1.5x thickness) so the union fuses the beam to them -- a
+        # defined, wall-connected member instead of a ragged floating blob. ----
+        P = np.column_stack([xmin + xs * CELL, ymax - ys * CELL]).astype(float)
+        c = P.mean(0)
+        _, _, vt = np.linalg.svd(P - c, full_matrices=False)
+        dvec = vt[0] / (np.linalg.norm(vt[0]) + 1e-12)      # long axis (opening direction)
+        nvec = np.array([-dvec[1], dvec[0]])
+        proj = (P - c) @ dvec
+        half_len = (proj.max() - proj.min()) / 2 + WALL_T * 1.5   # bury ends in the walls
+        half_w = WALL_T / 2
+        corners = [c + a * half_len * dvec + b * half_w * nvec
+                   for a, b in [(-1, -1), (1, -1), (1, 1), (-1, 1)]]
+        try:
+            g = _Poly(corners)
+            if g.area < 0.03:
+                raise ValueError
+            pr = trimesh.creation.extrude_polygon(g, height=zc - soffit)
+            pr.apply_translation((0, 0, soffit))
+            beams.append(pr); nhead += 1
+        except Exception:
+            pass
     log(f"built {nhead} header/lintel beams (arches over openings)")
 
     # ---- ASSEMBLE ONE SOLID: union all positives (walls + beams merge into one
