@@ -148,6 +148,14 @@ def main(las, out_dir):
     hi = raster((z > zc - 0.75) & (z < zc - 0.25))
     dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.10 / CELL) | 1,) * 2)
     fh = cv2.morphologyEx((cv2.dilate(lo, dk) & cv2.dilate(hi, dk)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    # ---- drop COMPACT full-height BLOBS = bathroom/kitchen FIXTURES (WC, sink,
+    # pipes, tall cabinet, shower) that are also floor-to-ceiling. Real walls are
+    # thin (~WALL_T); fixtures are fat (>~30cm). Erosion deletes thin walls but
+    # keeps fat blobs -> subtract those so only wall-like single-sided lines
+    # survive, and the bathroom stops filling with clutter. ----
+    fat = cv2.erode(fh, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.28 / CELL) | 1,) * 2))
+    fat = cv2.dilate(fat, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.36 / CELL) | 1,) * 2))
+    fh = ((fh > 0) & (fat == 0)).astype(np.uint8)
     # ---- recover TOP-ONLY structure (arch heads / lintels / columns that exist
     # near the ceiling but NOT at chest height) the mid-footprint misses. Take
     # near-ceiling material that ATTACHES to a known wall line (within 12cm) so a
