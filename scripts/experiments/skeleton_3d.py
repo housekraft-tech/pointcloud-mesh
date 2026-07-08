@@ -228,6 +228,7 @@ def main(las, out_dir):
     # there, so it is an entrance DOOR (works even for a shut door leaf the (u,z)
     # empty test misses, and needs no colour/RF-DETR).
     traj_hits = {}
+    traj = np.zeros((0, 2))
     try:
         import laspy
         _las = laspy.read(las)
@@ -407,6 +408,68 @@ def main(las, out_dir):
             except Exception:
                 pass
     log(f"walk-path entrance doors added: {ndoor_traj}")
+
+    # ---- GUARANTEE EVERY VISITED ROOM HAS AN ENTRANCE: if a room the path entered
+    # still has no opening on its boundary (a crossing filtered out), force a door
+    # at the path's entry point into that room. No room left sealed. ----
+    _mk = R["mk"]
+
+    def _px(pt):
+        return int((ymax - pt[1]) / CELL), int((pt[0] - xmin) / CELL)
+
+    def _roomlab(pt):
+        r, c = _px(pt)
+        return int(_mk[r, c]) if 0 <= r < H and 0 <= c < W else 0
+
+    def _room_has_opening(lab):
+        rm = cv2.dilate((_mk == lab).astype(np.uint8),
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.35 / CELL) | 1,) * 2))
+        for o in openings:
+            r, c = _px(o["center"])
+            if 0 <= r < H and 0 <= c < W and rm[r, c]:
+                return True
+        return False
+
+    def _add_door(dvec, nvec, uc, p0, Ls):
+        u0d = max(uc - DOOR_W / 2, 0.05); u1d = min(uc + DOOR_W / 2, Ls - 0.05)
+        if u1d - u0d < 0.4:
+            return False
+        poly = _Poly2([(u0d, zf + 0.02), (u1d, zf + 0.02), (u1d, DOOR_H), (u0d, DOOR_H)])
+        try:
+            cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
+            cutter.apply_transform(np.array(
+                [[dvec[0], 0, nvec[0], p0[0] - nvec[0] * WALL_T * 2],
+                 [dvec[1], 0, nvec[1], p0[1] - nvec[1] * WALL_T * 2],
+                 [0, 1, 0, 0], [0, 0, 0, 1]], float))
+            negatives.append(cutter)
+            openings.append(dict(center=p0 + dvec * uc, dd=dvec.copy(), nn=nvec.copy(),
+                                 width=u1d - u0d, z0=zf + 0.02, z1=DOOR_H, walked=True))
+            return True
+        except Exception:
+            return False
+
+    nforced = 0
+    if len(traj) > 1:
+        troom = [_roomlab(p) for p in traj]
+        for lab in R["room_labels"]:
+            if _room_has_opening(lab):
+                continue
+            for i in range(1, len(traj)):
+                if troom[i] == lab and troom[i - 1] != lab:
+                    mid = (traj[i] + traj[i - 1]) / 2.0
+                    best = None
+                    for p0, p1 in segs:
+                        d = p1 - p0; L = float(np.linalg.norm(d))
+                        if L < 0.6:
+                            continue
+                        dv = d / L; nv = np.array([-dv[1], dv[0]])
+                        uu = float((mid - p0) @ dv); pp = abs(float((mid - p0) @ nv))
+                        if 0.1 <= uu <= L - 0.1 and pp < 0.5 and (best is None or pp < best[0]):
+                            best = (pp, uu, p0, dv, nv, L)
+                    if best and _add_door(best[3], best[4], best[1], best[2], best[5]):
+                        nforced += 1
+                        break
+    log(f"forced {nforced} entrance doors for isolated rooms")
 
     # ---- OFFSET-PLANE reveals / shadow-gaps / soffit faces (Ikehata-style):
     # a wall side is NOT one flat face -- it is a PROUD face plus recessed
