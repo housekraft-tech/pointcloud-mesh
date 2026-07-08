@@ -166,7 +166,28 @@ def main(las, out_dir):
     wall_halo = cv2.dilate(((ws > 0) | (fh > 0)).astype(np.uint8),
                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.12 / CELL) | 1,) * 2))
     top_attached = (top & wall_halo).astype(np.uint8)
-    wallmask = ((ws > 0) | (fh > 0) | (top_attached > 0)).astype(np.uint8)
+    # ---- strip OPEN DOOR LEAVES: the scan caught some doors open, so a door leaf
+    # (a thin ~0.8m panel that stops at ~2.0m, NOT the 2.52m ceiling) would stick
+    # to the wall as a spur near an entrance. A real wall is FULL-HEIGHT; a leaf
+    # has chest-height material but nothing near the ceiling. Detect thin door-
+    # sized half-height panels and remove them from the mask. ----
+    midb = raster((z > zf + 0.6) & (z < zf + 1.5))
+    ceilb = cv2.dilate(raster((z > zc - 0.6) & (z < zc - 0.1)),
+                       cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.15 / CELL) | 1,) * 2))
+    halfp = cv2.morphologyEx((midb & (ceilb == 0)).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    leaves = np.zeros_like(halfp); llbl, ln = _ndi.label(halfp, structure=np.ones((3, 3)))
+    nleaf = 0
+    for k in range(1, ln + 1):
+        cy, cx = np.where(llbl == k)
+        if cx.size < 3:
+            continue
+        du = (np.ptp(cx) + 1) * CELL; dv = (np.ptp(cy) + 1) * CELL
+        length = max(du, dv); thick = min(du, dv)
+        if 0.5 <= length <= 1.3 and thick <= 0.22 and length / max(thick, CELL) >= 2.2:
+            leaves |= (llbl == k).astype(np.uint8); nleaf += 1
+    if nleaf:
+        log(f"removed {nleaf} open-door-leaf panel(s) near entrances")
+    wallmask = (((ws > 0) | (fh > 0) | (top_attached > 0)) & (leaves == 0)).astype(np.uint8)
     # keep the wall network + long thin pieces; drop compact furniture blobs
     lbl, n = _ndi.label(wallmask, structure=np.ones((3, 3)))
     if n:
