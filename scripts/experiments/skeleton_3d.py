@@ -285,18 +285,53 @@ def main(las, out_dir):
     negatives = []          # opening + recess cutters (subtracted in one batch)
     beams = []              # header/lintel beams -- unioned AFTER cutting
     seg_mask = np.zeros((H, W), np.uint8)
+    xy = np.column_stack([x, y])
+
+    # ---- measure each wall's REAL thickness + center from the two face-planes in
+    # the cloud, instead of a uniform 11cm on the (off-centre) skeleton line. The
+    # scanner saw both faces (it walked both rooms), so the perp histogram has two
+    # peaks = the faces; their separation is the thickness and their midpoint is
+    # the true centre. This puts the wall FACES on the real surfaces. ----
+    seg_geom_cache = {}
+
+    def seg_geom(p0, p1):
+        key = (round(float(p0[0]), 3), round(float(p0[1]), 3), round(float(p1[0]), 3), round(float(p1[1]), 3))
+        if key in seg_geom_cache:
+            return seg_geom_cache[key]
+        d = p1 - p0; L = float(np.linalg.norm(d))
+        res = (WALL_T, 0.0)
+        if L >= 0.30:
+            d = d / L; nn = np.array([-d[1], d[0]])
+            rel = xy - p0; u = rel @ d; perp = rel @ nn
+            near = (np.abs(perp) <= 0.28) & (u >= 0) & (u <= L)
+            if near.sum() >= 200:
+                pp = perp[near]
+                h, edges = np.histogram(pp, bins=np.arange(-0.30, 0.301, 0.01))
+                c = (edges[:-1] + edges[1:]) / 2
+                neg = c < -0.005; pos = c > 0.005
+                if h[neg].sum() >= 15 and h[pos].sum() >= 15:
+                    fn = c[neg][int(np.argmax(h[neg]))]; ff = c[pos][int(np.argmax(h[pos]))]
+                    th = ff - fn; off = (ff + fn) / 2
+                    if 0.08 <= th <= 0.30:
+                        res = (float(np.clip(th, 0.09, 0.28)), float(np.clip(off, -0.10, 0.10)))
+        seg_geom_cache[key] = res
+        return res
+
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
         if L < 0.30:
             continue
-        box = trimesh.creation.box(extents=(L + 3 * WALL_T, WALL_T, storey))   # bury ends in junctions
+        th, off = seg_geom(p0, p1)
+        ud = dd / L; nn = np.array([-ud[1], ud[0]])
+        box = trimesh.creation.box(extents=(L + 3 * max(th, WALL_T), th, storey))   # bury ends in junctions
         box.apply_transform(trimesh.transformations.rotation_matrix(float(np.arctan2(dd[1], dd[0])), [0, 0, 1]))
-        mid = (p0 + p1) / 2.0
+        mid = (p0 + p1) / 2.0 + nn * off                                            # shift to the true centre
         box.apply_translation((mid[0], mid[1], zf + storey / 2.0))
         positives.append(box)
+        tk = max(3, int(round(th / CELL)) | 1)
         a = (int((p0[0] - xmin) / CELL), int((ymax - p0[1]) / CELL))
         b = (int((p1[0] - xmin) / CELL), int((ymax - p1[1]) / CELL))
-        cv2.line(seg_mask, a, b, 1, thickness=t)
+        cv2.line(seg_mask, a, b, 1, thickness=tk)
 
     # 4. fallback: sizeable footprint NOT covered by any segment = a real jog/pier
     #    Hough missed. Extrude those cleanly (small whisker spurs stay dropped).
@@ -514,6 +549,8 @@ def main(las, out_dir):
         if L < 0.5:
             continue
         dd = dd / L; nn = np.array([-dd[1], dd[0]])
+        seg_th, seg_off = seg_geom(p0, p1)         # this wall's measured thickness + centre
+        max_depth = seg_th * 0.42                  # cap relative to THIS wall's thickness
         rel = xy - p0; u = rel @ dd; perp = rel @ nn
         near = (np.abs(perp) <= 0.22) & (u >= 0) & (u <= L)
         if near.sum() < 200:
@@ -598,7 +635,7 @@ def main(las, out_dir):
                 cvv = float(np.std(rv) / (np.mean(rv) + 1e-6))
                 if fill < 0.4 and cvv > 0.55:
                     continue
-                depth_cut = float(np.clip(np.median(rv), MIN_DEPTH, MAX_DEPTH))
+                depth_cut = float(np.clip(np.median(rv), MIN_DEPTH, max_depth))
                 box_th = depth_cut + 0.03
                 # PRECISE vertical extent: take the groove's exact top/bottom from the
                 # actual recessed POINTS in its u-band (not the 5cm cell grid), so the
@@ -626,8 +663,8 @@ def main(las, out_dir):
                 cnts, _ = cv2.findContours(m8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 # local->world: x=u -> dd, y=height(z) -> world Z, z=depth -> nn*side
                 M = np.array([
-                    [dd[0], 0, nn[0] * side, p0[0] + nn[0] * side * (WALL_T / 2 - depth_cut)],
-                    [dd[1], 0, nn[1] * side, p0[1] + nn[1] * side * (WALL_T / 2 - depth_cut)],
+                    [dd[0], 0, nn[0] * side, p0[0] + nn[0] * (seg_off + side * (seg_th / 2 - depth_cut))],
+                    [dd[1], 0, nn[1] * side, p0[1] + nn[1] * (seg_off + side * (seg_th / 2 - depth_cut))],
                     [0, 1, 0, 0], [0, 0, 0, 1]], float)
                 for cnt in cnts:
                     ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
