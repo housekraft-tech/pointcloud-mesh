@@ -311,6 +311,61 @@ def main(las, out_dir):
                         pass
     log(f"cut {nrev} offset-plane reveals / soffit faces (true depth, height-mapped)")
 
+    # ---- HEADERS / LINTELS (the "arch" over an opening): material that exists
+    # only near the CEILING and BRIDGES a gap in the mid-height footprint (spans
+    # the top of a doorway/passage where there is no wall below). The extruded
+    # footprint can't create these -- there is no wall there to carry them. Detect
+    # the bridging top-band spans and rebuild each as a beam from its measured
+    # soffit up to the ceiling, so every opening gets its head/lintel. ----
+    top = raster((z > zc - 0.6) & (z < zc - 0.08))
+    top = cv2.morphologyEx(top, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    top = cv2.morphologyEx(top, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    halo = cv2.dilate(ws, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.14 / CELL) | 1,) * 2))
+    off = (top & (halo == 0)).astype(np.uint8)
+    lblH, nH = _ndi.label(off, structure=np.ones((3, 3)))
+    grow = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.20 / CELL) | 1,) * 2)
+    tkern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, int(WALL_T / CELL)) | 1,) * 2)
+    nhead = 0
+    for k in range(1, nH + 1):
+        comp = (lblH == k).astype(np.uint8)
+        ys, xs = np.where(comp)
+        if xs.size < 4:
+            continue
+        du = (np.ptp(xs) + 1) * CELL; dv = (np.ptp(ys) + 1) * CELL
+        if max(du, dv) < 0.5 or min(du, dv) > 1.2:            # must be a long thin span
+            continue
+        touch = cv2.dilate(comp, grow) & ws
+        _, tn = _ndi.label(touch, structure=np.ones((3, 3)))
+        if tn < 2:                                            # must bridge >=2 wall parts
+            continue
+        # soffit height = bottom of the lintel over this span
+        cxs = xmin + xs * CELL; cys = ymax - ys * CELL
+        lo = []
+        for cx, cy in zip(cxs[::7], cys[::7]):
+            col = (np.abs(x - cx) < 0.06) & (np.abs(y - cy) < 0.06) & (z > zf + 1.2)
+            if col.sum() >= 5:
+                lo.append(np.percentile(z[col], 5))
+        soffit = float(np.clip(np.median(lo) if lo else zc - 0.4, zf + 0.3, zc - 0.12))
+        beam = cv2.dilate(comp, tkern)                        # thicken span to wall thickness
+        beam = (beam & (ws == 0)).astype(np.uint8)            # don't double the existing walls
+        beam = cv2.morphologyEx(beam, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        for pg in footprint_polygons(beam, xmin, ymax):
+            ring = rectify_ring(pg.exterior.coords)
+            if len(ring) < 4:
+                continue
+            try:
+                g = _Poly(ring)
+                if not g.is_valid:
+                    g = g.buffer(0)
+                if g.area < 0.03:
+                    continue
+                pr = trimesh.creation.extrude_polygon(g, height=zc - soffit)
+                pr.apply_translation((0, 0, soffit))
+                wall_solid = trimesh.util.concatenate([wall_solid, pr]); nhead += 1
+            except Exception:
+                pass
+    log(f"built {nhead} header/lintel beams (arches over openings)")
+
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
     floor.apply_translation(((R["x"].min() + R["x"].max()) / 2, (R["y"].min() + R["y"].max()) / 2, zf - 0.05))
