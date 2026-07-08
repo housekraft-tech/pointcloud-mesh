@@ -691,32 +691,55 @@ def main(las, out_dir):
         px = int((cw[0] + off[0] - xmin) / CELL); py = int((ymax - (cw[1] + off[1])) / CELL)
         return not (0 <= py < H and 0 <= px < W and inside_bldg[py, px])
 
-    def _elt_box(o, lw, th, hh, zmid):
-        b = trimesh.creation.box(extents=(lw, th, hh))
+    GLASS = [150, 205, 230, 235]; LEAF = [150, 95, 55, 255]; FRAME = [236, 236, 240, 255]
+
+    def _place(o, lw, th, hh, u_off, z_center):
+        """A box in the opening frame: lw along the wall, th along the normal,
+        hh vertical; shifted u_off along the wall and centred at height z_center."""
+        b = trimesh.creation.box(extents=(max(lw, 1e-3), th, max(hh, 1e-3)))
         b.apply_transform(trimesh.transformations.rotation_matrix(float(np.arctan2(o["dd"][1], o["dd"][0])), [0, 0, 1]))
-        b.apply_translation((o["center"][0], o["center"][1], zmid))
+        off = o["center"] + o["dd"] * u_off
+        b.apply_translation((off[0], off[1], z_center))
         return b
+
+    def _framed(o, w, h, z0, z1, kind):
+        """Build a real element in the cutout: a frame (jambs+head+sill) with an
+        inset leaf (door) or glass pane + mullions (window/balcony)."""
+        parts = []
+        fw = 0.06; fd = 0.09; zmid = (z0 + z1) / 2.0
+        parts.append((_place(o, fw, fd, h, -(w / 2 - fw / 2), zmid), FRAME))     # left jamb
+        parts.append((_place(o, fw, fd, h, +(w / 2 - fw / 2), zmid), FRAME))     # right jamb
+        parts.append((_place(o, w, fd, fw, 0, z1 - fw / 2), FRAME))              # head
+        parts.append((_place(o, w, fd, fw, 0, z0 + fw / 2), FRAME))              # sill / threshold
+        pw = w - 2 * fw; ph = h - 2 * fw
+        if kind == "door":
+            parts.append((_place(o, pw, 0.05, ph, 0, zmid), LEAF))               # leaf
+            parts.append((_place(o, 0.05, 0.06, 0.05, pw / 2 - 0.12, zmid), FRAME))  # handle
+        else:                                                                    # window / balcony
+            parts.append((_place(o, pw, 0.02, ph, 0, zmid), GLASS))              # glass pane
+            parts.append((_place(o, 0.04, fd * 0.8, ph, 0, zmid), FRAME))        # vertical mullion
+            parts.append((_place(o, pw, fd * 0.8, 0.04, 0, zmid), FRAME))        # horizontal mullion
+        return parts
 
     elements = []          # (mesh, rgba)
     ndoor = nwin = nbal = 0
-    GLASS = [150, 205, 230, 255]; LEAF = [150, 95, 55, 255]
     for o in openings:
         w = o["width"]; z0 = o["z0"]; z1 = min(o["z1"], zc); h = z1 - z0
-        sill = z0 - zf; zmid = (z0 + z1) / 2
+        sill = z0 - zf
         ext = _outside(o["center"], o["nn"] * 0.7) or _outside(o["center"], -o["nn"] * 0.7)
         if h < 0.4 or w < 0.4:
             continue
-        if o.get("walked") and sill < 0.35:           # WALK-PATH entrance DOOR -- leaf
-            elements.append((_elt_box(o, w * 0.95, 0.045, h * 0.98, zmid), LEAF)); ndoor += 1
-        elif sill >= 0.35:                            # WINDOW -- sill above floor (glazed)
-            elements.append((_elt_box(o, w * 0.92, 0.03, h * 0.92, zmid), GLASS)); nwin += 1
-        elif ext:                                     # BALCONY / exterior door -- floor-level to
-            bz0 = zf + 0.02; bz1 = max(z1, zf + 2.0)  # outside; glazed, modelled full height even
-            elements.append((_elt_box(o, w * 0.95, 0.03, (bz1 - bz0) * 0.98, (bz0 + bz1) / 2), GLASS)); nbal += 1
+        if o.get("walked") and sill < 0.35:           # WALK-PATH entrance DOOR
+            elements.extend(_framed(o, w, h, z0, z1, "door")); ndoor += 1
+        elif sill >= 0.35:                            # WINDOW -- sill above floor
+            elements.extend(_framed(o, w, h, z0, z1, "window")); nwin += 1
+        elif ext:                                     # BALCONY / exterior door -- full height, glazed
+            bz1 = max(z1, zf + 2.0)
+            elements.extend(_framed(o, w, bz1 - (zf + 0.02), zf + 0.02, bz1, "balcony")); nbal += 1
         elif w <= 1.4 and h <= 2.45:                  # DOOR -- interior leaf
-            elements.append((_elt_box(o, w * 0.95, 0.045, h * 0.98, zmid), LEAF)); ndoor += 1
+            elements.extend(_framed(o, w, h, z0, z1, "door")); ndoor += 1
         # else: wide interior opening = open cased passage -> no element
-    log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors")
+    log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors ({len(elements)} parts)")
 
     # ---- ASSEMBLE ONE SOLID: union all positives (walls + beams merge into one
     # connected surface), then subtract every opening/recess in a single manifold
@@ -772,7 +795,8 @@ def main(las, out_dir):
     scene.add_geometry(floor, geom_name="floor")
     for ei, (em, ec) in enumerate(elements):
         em.visual.face_colors = ec
-        scene.add_geometry(em, geom_name=f"{'glass' if ec[2] > 150 else 'door'}_{ei:02d}")
+        _kind = "frame" if (ec[0] > 200 and ec[1] > 200 and ec[2] > 200) else ("glass" if ec[2] > ec[0] else "door")
+        scene.add_geometry(em, geom_name=f"{_kind}_{ei:02d}")
     scene.export(str(out_dir / "skeleton_model.glb"))
     scene.export(str(out_dir / "skeleton_model.obj"))
     log(f"skeleton_model: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f + {len(elements)} elements -> {out_dir}")
