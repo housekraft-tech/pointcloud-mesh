@@ -35,6 +35,56 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def _union(meshes):
+    """Robust manifold union -> ONE connected watertight solid (beams merge into
+    walls; no doubled faces). Falls back to concatenate if the engine is absent."""
+    meshes = [m for m in meshes if m is not None and len(getattr(m, "faces", []))]
+    if not meshes:
+        return None
+    if len(meshes) == 1:
+        return meshes[0]
+    try:
+        return trimesh.boolean.union(meshes, engine="manifold")
+    except Exception:
+        try:
+            return trimesh.boolean.union(meshes)
+        except Exception:
+            return trimesh.util.concatenate(meshes)
+
+
+def _difference(a, negs):
+    """Subtract all negatives in ONE manifold op so recesses/openings are true
+    intrusions of the SAME surface, not separate shells."""
+    negs = [m for m in negs if m is not None and len(getattr(m, "faces", []))]
+    if a is None or not negs:
+        return a
+    try:
+        return trimesh.boolean.difference([a] + negs, engine="manifold")
+    except Exception:
+        for n in negs:
+            try:
+                a = a.difference(n)
+            except Exception:
+                pass
+        return a
+
+
+def _clean(m):
+    """Weld coincident verts, drop degenerate/duplicate faces, fix winding so the
+    surface reads as one smooth solid (keeps 90-degree edges -- no rounding)."""
+    if m is None:
+        return None
+    m.merge_vertices()
+    m.update_faces(m.nondegenerate_faces())
+    m.update_faces(m.unique_faces())
+    m.remove_unreferenced_vertices()
+    try:
+        m.fix_normals()
+    except Exception:
+        pass
+    return m
+
+
 def _cluster(vals, tol):
     s = sorted(vals); g = [[s[0]]]
     for v in s[1:]:
@@ -142,15 +192,17 @@ def main(las, out_dir):
                 polys.append(p)
         except Exception:
             pass
-    wall_solid = None
+    positives = []          # wall prisms + header beams (unioned at the end)
+    negatives = []          # opening + recess cutters (subtracted in one batch)
     for pg in polys:
         for g in (pg.geoms if hasattr(pg, "geoms") else [pg]):
             try:
                 pr = trimesh.creation.extrude_polygon(g, height=storey)
                 pr.apply_translation((0, 0, zf))
-                wall_solid = pr if wall_solid is None else trimesh.util.concatenate([wall_solid, pr])
+                positives.append(pr)
             except Exception:
                 pass
+    wall_solid = _union(positives)          # provisional base for the cutter geometry math
     # ---- cut door/passage openings as their real (u,z) SILHOUETTE, so ARCHED
     # heads (material spanning the opening only near the top) are kept. The mid-
     # level skeleton has the gap; the arch lives in the top slices -> the
@@ -206,7 +258,7 @@ def main(las, out_dir):
                     [[dd[0], 0, nn[0], p0[0] - nn[0] * WALL_T * 2],
                      [dd[1], 0, nn[1], p0[1] - nn[1] * WALL_T * 2],
                      [0, 1, 0, 0], [0, 0, 0, 1]], float))
-                wall_solid = wall_solid.difference(cutter); ncut += 1
+                negatives.append(cutter); ncut += 1
             except Exception:
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
@@ -306,7 +358,7 @@ def main(las, out_dir):
                     try:
                         ch = trimesh.creation.extrude_polygon(poly, height=box_th)
                         ch.apply_transform(M)
-                        wall_solid = wall_solid.difference(ch); nrev += 1
+                        negatives.append(ch); nrev += 1
                     except Exception:
                         pass
     log(f"cut {nrev} offset-plane reveals / soffit faces (true depth, height-mapped)")
@@ -361,14 +413,57 @@ def main(las, out_dir):
                     continue
                 pr = trimesh.creation.extrude_polygon(g, height=zc - soffit)
                 pr.apply_translation((0, 0, soffit))
-                wall_solid = trimesh.util.concatenate([wall_solid, pr]); nhead += 1
+                positives.append(pr); nhead += 1
             except Exception:
                 pass
     log(f"built {nhead} header/lintel beams (arches over openings)")
 
+    # ---- ASSEMBLE ONE SOLID: union all positives (walls + beams merge into one
+    # connected surface), then subtract every opening/recess in a single manifold
+    # difference so the 90-degree cuts are true intrusions of the SAME wall, not
+    # separate shells. Weld + fix so it reads as one smooth solid. ----
+    log(f"union {len(positives)} solids, subtract {len(negatives)} cutters (manifold) ...")
+    wall_solid = _difference(_union(positives), negatives)
+    wall_solid = _clean(wall_solid)
+    log(f"unified wall solid: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f / {wall_solid.body_count} bodies")
+
+    # ---- SPLIT into ONE MESH PER ROOM (modular): intersect the unified solid
+    # with each room's free-space column (dilated by a wall thickness), so every
+    # room's enclosing walls -- with their recesses/beams -- come out as a single
+    # named mesh. Shared walls are carried by both adjoining rooms. ----
+    mk = R["mk"]
+    room_meshes = {}
+    sel_h = (zf - 0.1, zc + 0.1)
+    grow_r = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int((WALL_T + 0.10) / CELL) | 1,) * 2)
+    for ri, lab in enumerate(R["room_labels"]):
+        rm = (mk == lab).astype(np.uint8)
+        if rm.sum() * CELL * CELL < 1.0:                      # skip slivers < 1 m2
+            continue
+        band = cv2.dilate(rm, grow_r) & (rm == 0)             # the wall ring around the room
+        band = cv2.dilate(band, np.ones((3, 3), np.uint8))
+        sel = None
+        for pg in footprint_polygons(band, xmin, ymax):
+            try:
+                s = trimesh.creation.extrude_polygon(pg, height=sel_h[1] - sel_h[0])
+                s.apply_translation((0, 0, sel_h[0]))
+                sel = s if sel is None else trimesh.util.concatenate([sel, s])
+            except Exception:
+                pass
+        if sel is None:
+            continue
+        try:
+            piece = trimesh.boolean.intersection([wall_solid, _union([sel])], engine="manifold")
+        except Exception:
+            piece = None
+        if piece is not None and len(piece.faces):
+            room_meshes[f"room_{ri:02d}"] = _clean(piece)
+    log(f"split into {len(room_meshes)} per-room wall meshes")
+
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
     floor.apply_translation(((R["x"].min() + R["x"].max()) / 2, (R["y"].min() + R["y"].max()) / 2, zf - 0.05))
+
+    # whole unified model (one smooth solid)
     scene = trimesh.Scene()
     wall_solid.visual.face_colors = [205, 205, 210, 255]
     floor.visual.face_colors = [150, 130, 110, 255]
@@ -377,6 +472,19 @@ def main(las, out_dir):
     scene.export(str(out_dir / "skeleton_model.glb"))
     scene.export(str(out_dir / "skeleton_model.obj"))
     log(f"skeleton_model: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f -> {out_dir}")
+
+    # modular per-room model (each room's walls a distinct named mesh)
+    if room_meshes:
+        palette = [[210, 180, 140, 255], [150, 200, 210, 255], [200, 170, 200, 255],
+                   [180, 210, 170, 255], [210, 200, 150, 255], [190, 190, 210, 255]]
+        rs = trimesh.Scene()
+        for i, (name, m) in enumerate(room_meshes.items()):
+            m.visual.face_colors = palette[i % len(palette)]
+            rs.add_geometry(m, geom_name=name)
+        rs.add_geometry(floor, geom_name="floor")
+        rs.export(str(out_dir / "skeleton_rooms.glb"))
+        rs.export(str(out_dir / "skeleton_rooms.obj"))
+        log(f"skeleton_rooms: {len(room_meshes)} room meshes -> {out_dir}")
 
 
 if __name__ == "__main__":
