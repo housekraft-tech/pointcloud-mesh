@@ -177,52 +177,13 @@ def main(las, out_dir):
     skel = skeletonize(wallmask > 0).astype(np.uint8)
     cv2.imwrite(str(out_dir / "skeleton.png"), skel * 255)
 
-    # 2. thicken to uniform wall thickness, fill, clean
-    t = max(3, int(round(WALL_T / CELL)) | 1)
-    thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (t, t)))
-    thick = ndimage.binary_fill_holes(thick).astype(np.uint8)
-    thick = cv2.morphologyEx(thick, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    plan = np.full((*thick.shape, 3), 255, np.uint8)
-    plan[thick > 0] = (40, 40, 40)
-    cv2.imwrite(str(out_dir / "skeleton_walls_plan.png"), plan)
-
-    # 3. extrude the thickened skeleton footprint to ceiling -- rectified to
-    #    strict 90-degree (L) corners first.
+    # 2. vectorise the skeleton into straight, snapped wall SEGMENTS (clean
+    #    axis-aligned centrelines -- no wobble, no whisker spurs).
     from shapely.geometry import Polygon as _Poly
-    polys = []
-    for pg in footprint_polygons(thick, xmin, ymax):
-        ext = rectify_ring(pg.exterior.coords)
-        holes = [h for h in (rectify_ring(r.coords) for r in pg.interiors) if len(h) >= 4]
-        if len(ext) < 4:
-            continue
-        try:
-            p = _Poly(ext, holes)
-            if not p.is_valid:
-                p = p.buffer(0)
-            if p.area > 0.05:
-                polys.append(p)
-        except Exception:
-            pass
-    positives = []          # wall prisms (unioned, THEN cut)
-    negatives = []          # opening + recess cutters (subtracted in one batch)
-    beams = []              # header/lintel beams -- unioned AFTER cutting so the
-                            # opening/reveal cuts never slice them away
-    for pg in polys:
-        for g in (pg.geoms if hasattr(pg, "geoms") else [pg]):
-            try:
-                pr = trimesh.creation.extrude_polygon(g, height=storey)
-                pr.apply_translation((0, 0, zf))
-                positives.append(pr)
-            except Exception:
-                pass
-    wall_solid = _union(positives)          # provisional base for the cutter geometry math
-    # ---- cut door/passage openings as their real (u,z) SILHOUETTE, so ARCHED
-    # heads (material spanning the opening only near the top) are kept. The mid-
-    # level skeleton has the gap; the arch lives in the top slices -> the
-    # silhouette cutter stops at the arch soffit instead of going full height. ----
     from shapely.geometry import Polygon as _Poly2
     from scripts.experiments.hough_vectorize import snap_and_merge
     ppm = 1.0 / CELL
+    t = max(3, int(round(WALL_T / CELL)) | 1)
     lines = cv2.HoughLinesP(skel * 255, 1, np.pi / 180, threshold=20,
                             minLineLength=int(0.4 * ppm), maxLineGap=int(0.3 * ppm))
     segs = []
@@ -232,6 +193,61 @@ def main(las, out_dir):
                 for a0, a1, yr in hs] + \
                [(np.array([xmin + xc * CELL, ymax - a0 * CELL]), np.array([xmin + xc * CELL, ymax - a1 * CELL]))
                 for a0, a1, xc in vs]
+
+    # 3. build CLEAN INDIVIDUAL WALLS: each straight segment -> one flat
+    #    rectangular slab of uniform thickness, extended half a thickness into
+    #    each junction so neighbours fuse. This removes the skeleton wobble and
+    #    whisker spurs of the raw footprint.
+    positives = []          # wall slabs (unioned, THEN cut)
+    negatives = []          # opening + recess cutters (subtracted in one batch)
+    beams = []              # header/lintel beams -- unioned AFTER cutting
+    seg_mask = np.zeros((H, W), np.uint8)
+    for p0, p1 in segs:
+        dd = p1 - p0; L = float(np.linalg.norm(dd))
+        if L < 0.30:
+            continue
+        box = trimesh.creation.box(extents=(L + 3 * WALL_T, WALL_T, storey))   # bury ends in junctions
+        box.apply_transform(trimesh.transformations.rotation_matrix(float(np.arctan2(dd[1], dd[0])), [0, 0, 1]))
+        mid = (p0 + p1) / 2.0
+        box.apply_translation((mid[0], mid[1], zf + storey / 2.0))
+        positives.append(box)
+        a = (int((p0[0] - xmin) / CELL), int((ymax - p0[1]) / CELL))
+        b = (int((p1[0] - xmin) / CELL), int((ymax - p1[1]) / CELL))
+        cv2.line(seg_mask, a, b, 1, thickness=t)
+
+    # 4. fallback: sizeable footprint NOT covered by any segment = a real jog/pier
+    #    Hough missed. Extrude those cleanly (small whisker spurs stay dropped).
+    covered = cv2.dilate(seg_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (t, t)))
+    residual = cv2.morphologyEx(((wallmask > 0) & (covered == 0)).astype(np.uint8),
+                                cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    rlbl, rn = _ndi.label(residual, structure=np.ones((3, 3)))
+    for k in range(1, rn + 1):
+        comp = (rlbl == k).astype(np.uint8)
+        if comp.sum() * CELL * CELL < 0.10:          # drop small spurs / whiskers
+            continue
+        comp = cv2.dilate(comp, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (t, t)))
+        for pg in footprint_polygons(comp, xmin, ymax):
+            ext = rectify_ring(pg.exterior.coords)
+            if len(ext) < 4:
+                continue
+            try:
+                g = _Poly(ext)
+                g = g if g.is_valid else g.buffer(0)
+                if g.area < 0.05:
+                    continue
+                pr = trimesh.creation.extrude_polygon(g, height=storey)
+                pr.apply_translation((0, 0, zf))
+                positives.append(pr)
+            except Exception:
+                pass
+
+    plan = np.full((H, W, 3), 255, np.uint8)
+    plan[covered > 0] = (40, 40, 40)
+    cv2.imwrite(str(out_dir / "skeleton_walls_plan.png"), plan)
+
+    wall_solid = _union(positives)          # provisional base for the cutter geometry math
+    # ---- cut door/passage openings as their real (u,z) SILHOUETTE, so ARCHED
+    # heads (material spanning the opening only near the top) are kept. ----
     xy = np.column_stack([x, y]); ncut = 0
     UR = 0.02; z0w = zf - 0.05; z1w = zc + 0.05
     for p0, p1 in segs:
