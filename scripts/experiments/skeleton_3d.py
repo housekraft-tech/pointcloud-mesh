@@ -721,8 +721,28 @@ def main(las, out_dir):
             parts.append((_place(o, pw, fd * 0.8, 0.04, 0, zmid), FRAME))        # horizontal mullion
         return parts
 
+    def _arch_above(o, w, z_head):
+        """Recessed HEAD / transom 'arch' above a ~7ft door: a shallow recess
+        spanning the door width from the head up toward the ceiling, cut into both
+        faces of the wall -- reads as a cased-opening head above the door."""
+        z_top = min(z_head + 0.45, zc - 0.02)
+        if z_top - z_head < 0.15:
+            return 0
+        dc = 0.045; bt = dc + 0.03; aw = w * 0.9; n = 0
+        for side in (1.0, -1.0):
+            poly = _Poly2([(-aw / 2, z_head), (aw / 2, z_head), (aw / 2, z_top), (-aw / 2, z_top)])
+            M = np.array([[o["dd"][0], 0, o["nn"][0] * side, o["center"][0] + o["nn"][0] * side * (WALL_T / 2 - dc)],
+                          [o["dd"][1], 0, o["nn"][1] * side, o["center"][1] + o["nn"][1] * side * (WALL_T / 2 - dc)],
+                          [0, 1, 0, 0], [0, 0, 0, 1]], float)
+            try:
+                ch = trimesh.creation.extrude_polygon(poly, height=bt); ch.apply_transform(M)
+                negatives.append(ch); n += 1
+            except Exception:
+                pass
+        return n
+
     elements = []          # (mesh, rgba)
-    ndoor = nwin = nbal = 0
+    ndoor = nwin = nbal = narch = 0
     for o in openings:
         w = o["width"]; z0 = o["z0"]; z1 = min(o["z1"], zc); h = z1 - z0
         sill = z0 - zf
@@ -731,6 +751,7 @@ def main(las, out_dir):
             continue
         if o.get("walked") and sill < 0.35:           # WALK-PATH entrance DOOR
             elements.extend(_framed(o, w, h, z0, z1, "door")); ndoor += 1
+            narch += bool(_arch_above(o, w, z1))       # arch above the 7ft head
         elif sill >= 0.35:                            # WINDOW -- sill above floor
             elements.extend(_framed(o, w, h, z0, z1, "window")); nwin += 1
         elif ext:                                     # BALCONY / exterior door -- full height, glazed
@@ -738,8 +759,9 @@ def main(las, out_dir):
             elements.extend(_framed(o, w, bz1 - (zf + 0.02), zf + 0.02, bz1, "balcony")); nbal += 1
         elif w <= 1.4 and h <= 2.45:                  # DOOR -- interior leaf
             elements.extend(_framed(o, w, h, z0, z1, "door")); ndoor += 1
+            narch += bool(_arch_above(o, w, z1))       # arch above the 7ft head
         # else: wide interior opening = open cased passage -> no element
-    log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors ({len(elements)} parts)")
+    log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors, {narch} door-head arches ({len(elements)} parts)")
 
     # ---- ASSEMBLE ONE SOLID: union all positives (walls + beams merge into one
     # connected surface), then subtract every opening/recess in a single manifold
