@@ -87,7 +87,17 @@ def main(las, out_dir):
     hi = raster((z > zc - 0.75) & (z < zc - 0.25))
     dk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.10 / CELL) | 1,) * 2)
     fh = cv2.morphologyEx((cv2.dilate(lo, dk) & cv2.dilate(hi, dk)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    wallmask = ((ws > 0) | (fh > 0)).astype(np.uint8)
+    # ---- recover TOP-ONLY structure (arch heads / lintels / columns that exist
+    # near the ceiling but NOT at chest height) the mid-footprint misses. Take
+    # near-ceiling material that ATTACHES to a known wall line (within 12cm) so a
+    # top column enters the mask, while room-centre ceiling/soffit blobs (far from
+    # any wall) are excluded and don't get invented as walls. ----
+    top = raster((z > zc - 0.35) & (z < zc - 0.05))
+    top = cv2.morphologyEx(top, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    wall_halo = cv2.dilate(((ws > 0) | (fh > 0)).astype(np.uint8),
+                           cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.12 / CELL) | 1,) * 2))
+    top_attached = (top & wall_halo).astype(np.uint8)
+    wallmask = ((ws > 0) | (fh > 0) | (top_attached > 0)).astype(np.uint8)
     # keep the wall network + long thin pieces; drop compact furniture blobs
     lbl, n = _ndi.label(wallmask, structure=np.ones((3, 3)))
     if n:
@@ -175,7 +185,7 @@ def main(las, out_dir):
             np.clip((uu / UR).astype(int), 0, nu2 - 1)] = 1
         mat = cv2.morphologyEx(mat, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
         core = np.zeros_like(mat)
-        core[int((zf + 0.08 - z0w) / UR):int((zc - 0.12 - z0w) / UR), :] = 1
+        core[int((zf + 0.08 - z0w) / UR):int((zc - 0.03 - z0w) / UR), :] = 1
         empty = cv2.morphologyEx(((core > 0) & (mat == 0)).astype(np.uint8),
                                  cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         ncE, lblE, st, _ = cv2.connectedComponentsWithStats(empty, 8)
@@ -201,11 +211,17 @@ def main(las, out_dir):
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
 
-    # ---- shallow REVEALS / shadow-gaps: NOT openings -- a small-depth recess
-    # over a HEIGHT RANGE (starts at a certain z, runs partway). Map via the
-    # (u,z) recess silhouette: per (along-wall u, height z) cell measure how far
-    # the face sets back; cut a shallow shell of the measured depth over the
-    # recessed (u, z) region so the height extent is preserved. ----
+    # ---- OFFSET-PLANE reveals / shadow-gaps / soffit faces (Ikehata-style):
+    # a wall side is NOT one flat face -- it is a PROUD face plus recessed
+    # plane(s). Per side build a fine (u,z) depth map of the NEAREST material,
+    # take the proud face as the reference, and for every coherent recessed
+    # region cut the wall back to its TRUE measured depth (uncapped, up to the
+    # wall thickness) over its true (u,z) extent. This keeps a ~5cm step over the
+    # top 40% of a wall, a recessed door head+jamb frame, or a shadow-gap band --
+    # each preserved at real depth and real height, not as a token sliver. ----
+    UB = 0.04; ZB = 0.05                       # 4cm along-wall x 5cm height cells
+    MIN_DEPTH = 0.018                          # ignore < ~2cm (paint/scan noise)
+    MAX_DEPTH = WALL_T * 0.72                  # never cut through the solid
     nrev = 0
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -213,49 +229,57 @@ def main(las, out_dir):
             continue
         dd = dd / L; nn = np.array([-dd[1], dd[0]])
         rel = xy - p0; u = rel @ dd; perp = rel @ nn
-        near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
+        near = (np.abs(perp) <= 0.22) & (u >= 0) & (u <= L)
         if near.sum() < 200:
             continue
         uu, zz, pp = u[near], z[near], perp[near]
-        thick = float(np.clip(np.percentile(pp, 92) - np.percentile(pp, 8), 0.06, 0.35))
         Rz = trimesh.transformations.rotation_matrix(np.arctan2(dd[1], dd[0]), [0, 0, 1])
         for side in (+1.0, -1.0):
-            sel = (pp * side) > 0
+            sel = (pp * side) > 0.004
             if sel.sum() < 200:
                 continue
             sp = pp[sel] * side; sz = zz[sel]; su = uu[sel]
-            UB = 0.10; zb = np.arange(zf + 0.15, zc - 0.15, 0.1); nu = max(int(L / UB), 1)
-            surf = np.full((len(zb), nu), np.nan)
-            for iz, zl in enumerate(zb):
-                zm = (sz >= zl) & (sz < zl + 0.1)
-                if zm.sum() < 8:
+            zb = np.arange(zf + 0.10, zc - 0.02, ZB); nz = len(zb)
+            nu = max(int(L / UB), 2)
+            ui = np.clip((su / UB).astype(int), 0, nu - 1)
+            zi = np.clip(((sz - (zf + 0.10)) / ZB).astype(int), 0, nz - 1)
+            depth = np.full((nz, nu), np.nan)   # nearest-face setback per cell
+            for a in range(nu):
+                ma = ui == a
+                if not ma.any():
                     continue
-                ui = np.clip((su[zm] / UB).astype(int), 0, nu - 1); spz = sp[zm]
-                for iu in np.unique(ui):
-                    cm = ui == iu
-                    if cm.sum() >= 3:
-                        surf[iz, iu] = np.median(spz[cm])
-            valid = ~np.isnan(surf)
-            if valid.sum() < 6:
+                spa, zia = sp[ma], zi[ma]
+                for b in np.unique(zia):
+                    cm = zia == b
+                    if cm.sum() >= 2:
+                        depth[b, a] = np.percentile(spa[cm], 15)
+            valid = ~np.isnan(depth)
+            if valid.sum() < 20:
                 continue
-            face = float(np.nanmedian(surf))
-            noise = 1.4826 * float(np.nanmedian(np.abs(surf[valid] - face))) + 1e-6
-            thr = max(0.02, 3.0 * noise)
-            recess = np.where(valid, face - surf, 0.0)
+            face = float(np.nanpercentile(depth, 10))         # proud reference plane
+            noise = 1.4826 * float(np.nanmedian(np.abs(depth[valid] - np.nanmedian(depth[valid])))) + 1e-6
+            thr = max(MIN_DEPTH, 3.0 * noise)
+            recess = np.where(valid, depth - face, 0.0)
             groove = (recess >= thr) & valid
+            # close 1-cell gaps so a band split by a missing column stays one region
+            groove = ndimage.binary_closing(groove, structure=np.ones((3, 3)))
             lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
             for cc in range(1, nc2 + 1):
                 ys, xs = np.where(lbl2 == cc)
-                if ys.size < 3:
+                area = ys.size * (UB * ZB)
+                if area < 0.06:                               # >= ~600 cm2 region
                     continue
                 bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
-                if ys.size / bb < 0.5:
+                if ys.size / max(bb, 1) < 0.45:               # must be a coherent patch
                     continue
-                z0 = zb[ys.min()]; z1 = zb[ys.max()] + 0.1
+                du = (np.ptp(xs) + 1) * UB; dz = (np.ptp(ys) + 1) * ZB
+                if max(du, dz) < 0.15:
+                    continue
+                z0 = zb[ys.min()]; z1 = min(zb[ys.max()] + ZB, zc)
                 u0 = xs.min() * UB; u1 = (xs.max() + 1) * UB
-                depth = float(np.clip(np.median(recess[ys, xs]), 0.005, min(0.035, thick * 0.4)))
-                box_th = depth + 0.02; cn = thick / 2 - depth + box_th / 2
-                ch = trimesh.creation.box(extents=(max(u1 - u0, UB) * 0.98, box_th, z1 - z0))
+                depth_cut = float(np.clip(np.median(recess[ys, xs]), MIN_DEPTH, MAX_DEPTH))
+                box_th = depth_cut + 0.03; cn = WALL_T / 2 - depth_cut + box_th / 2
+                ch = trimesh.creation.box(extents=(max(u1 - u0, UB), box_th, z1 - z0))
                 ch.apply_transform(Rz)
                 off = (p0 + dd * (u0 + u1) / 2) + nn * side * cn
                 ch.apply_translation((off[0], off[1], (z0 + z1) / 2))
@@ -263,7 +287,7 @@ def main(las, out_dir):
                     wall_solid = wall_solid.difference(ch); nrev += 1
                 except Exception:
                     pass
-    log(f"cut {nrev} shallow reveals / shadow-gaps (height-mapped)")
+    log(f"cut {nrev} offset-plane reveals / soffit faces (true depth, height-mapped)")
 
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
