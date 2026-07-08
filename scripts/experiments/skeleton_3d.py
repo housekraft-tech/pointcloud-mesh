@@ -346,6 +346,19 @@ def main(las, out_dir):
                     cm = zia == b
                     if cm.sum() >= 2:
                         depth[b, a] = np.percentile(spa[cm], 15)
+            # fill SHORT along-wall gaps (sparse columns) in each height row by
+            # interpolation, so a continuous recess isn't broken into pieces; leave
+            # WIDE gaps (real openings) as NaN.
+            MAXGAP = max(int(0.30 / UB), 2)
+            for b in range(nz):
+                row = depth[b]; vrow = ~np.isnan(row)
+                if vrow.sum() < 2:
+                    continue
+                idx = np.where(vrow)[0]
+                filled = np.interp(np.arange(nu), idx, row[idx])
+                for g0, g1 in zip(idx[:-1], idx[1:]):
+                    if 1 <= (g1 - g0 - 1) and (g1 - g0) <= MAXGAP:
+                        depth[b, g0 + 1:g1] = filled[g0 + 1:g1]
             valid = ~np.isnan(depth)
             if valid.sum() < 20:
                 continue
@@ -354,7 +367,9 @@ def main(las, out_dir):
             thr = max(MIN_DEPTH, 3.0 * noise)
             recess = np.where(valid, depth - face, 0.0)
             groove = (recess >= thr) & valid
-            # close 1-cell gaps so a band split by a missing column stays one region
+            # bridge intermittent detection ALONG the wall so the groove is captured
+            # continuously across, not in broken chunks (u = axis 1).
+            groove = ndimage.binary_closing(groove, structure=np.ones((1, 7)))
             groove = ndimage.binary_closing(groove, structure=np.ones((3, 3)))
             zf_band = zf + 0.10
             lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
