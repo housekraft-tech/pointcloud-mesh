@@ -203,8 +203,10 @@ def main(las, out_dir):
                 polys.append(p)
         except Exception:
             pass
-    positives = []          # wall prisms + header beams (unioned at the end)
+    positives = []          # wall prisms (unioned, THEN cut)
     negatives = []          # opening + recess cutters (subtracted in one batch)
+    beams = []              # header/lintel beams -- unioned AFTER cutting so the
+                            # opening/reveal cuts never slice them away
     for pg in polys:
         for g in (pg.geoms if hasattr(pg, "geoms") else [pg]):
             try:
@@ -424,7 +426,7 @@ def main(las, out_dir):
                     continue
                 pr = trimesh.creation.extrude_polygon(g, height=zc - soffit)
                 pr.apply_translation((0, 0, soffit))
-                positives.append(pr); nhead += 1
+                beams.append(pr); nhead += 1
             except Exception:
                 pass
     log(f"built {nhead} header/lintel beams (arches over openings)")
@@ -433,8 +435,9 @@ def main(las, out_dir):
     # connected surface), then subtract every opening/recess in a single manifold
     # difference so the 90-degree cuts are true intrusions of the SAME wall, not
     # separate shells. Weld + fix so it reads as one smooth solid. ----
-    log(f"union {len(positives)} solids, subtract {len(negatives)} cutters (manifold) ...")
-    wall_solid = _difference(_union(positives), negatives)
+    log(f"union {len(positives)} walls, subtract {len(negatives)} cutters, add {len(beams)} beams (manifold) ...")
+    wall_solid = _difference(_union(positives), negatives)   # walls with openings + recesses
+    wall_solid = _union([wall_solid] + beams)                # beams merge on top, uncut
     wall_solid = _clean(wall_solid)
     log(f"unified wall solid: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f / {wall_solid.body_count} bodies")
 
