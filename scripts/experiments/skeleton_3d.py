@@ -244,6 +244,63 @@ def main(las, out_dir):
                [(np.array([xmin + xc * CELL, ymax - a0 * CELL]), np.array([xmin + xc * CELL, ymax - a1 * CELL]))
                 for a0, a1, xc in vs]
 
+    # ---- measure each wall's REAL thickness + centre from the two face-planes in
+    # the cloud (the scanner saw both faces, so the perp histogram has two peaks =
+    # the faces; separation = thickness, midpoint = true centre). ----
+    xy = np.column_stack([x, y])
+    seg_geom_cache = {}
+
+    def seg_geom(p0, p1):
+        key = (round(float(p0[0]), 3), round(float(p0[1]), 3), round(float(p1[0]), 3), round(float(p1[1]), 3))
+        if key in seg_geom_cache:
+            return seg_geom_cache[key]
+        d = p1 - p0; L = float(np.linalg.norm(d))
+        res = (WALL_T, 0.0)
+        if L >= 0.30:
+            d = d / L; nn = np.array([-d[1], d[0]])
+            rel = xy - p0; u = rel @ d; perp = rel @ nn
+            near = (np.abs(perp) <= 0.28) & (u >= 0) & (u <= L)
+            if near.sum() >= 200:
+                pp = perp[near]
+                h, edges = np.histogram(pp, bins=np.arange(-0.30, 0.301, 0.01))
+                c = (edges[:-1] + edges[1:]) / 2
+                neg = c < -0.005; pos = c > 0.005
+                if h[neg].sum() >= 15 and h[pos].sum() >= 15:
+                    fn = c[neg][int(np.argmax(h[neg]))]; ff = c[pos][int(np.argmax(h[pos]))]
+                    th = ff - fn; off = (ff + fn) / 2
+                    if 0.08 <= th <= 0.30:
+                        res = (float(np.clip(th, 0.09, 0.28)), float(np.clip(off, -0.10, 0.10)))
+        seg_geom_cache[key] = res
+        return res
+
+    # ---- REGULARISE: fold each wall's measured centre offset into its centreline,
+    # then snap near-collinear / parallel walls onto a SHARED gridline so faces are
+    # exactly flat & collinear (removes junction mis-alignment). Snap tolerance is
+    # well below the smallest real wall gap, so distinct walls stay separate. ----
+    def _regularise(segs_in):
+        Hs, Vs = [], []
+        for p0, p1 in segs_in:
+            d = p1 - p0; L = float(np.linalg.norm(d))
+            if L < 0.30:
+                continue
+            _, off = seg_geom(p0, p1)
+            ud = d / L; nn = np.array([-ud[1], ud[0]])
+            q0 = p0 + nn * off; q1 = p1 + nn * off          # shift onto measured centre
+            (Hs if abs(d[0]) >= abs(d[1]) else Vs).append((q0, q1))
+        hys = _cluster([(q0[1] + q1[1]) / 2 for q0, q1 in Hs], 0.08) if Hs else []
+        vxs = _cluster([(q0[0] + q1[0]) / 2 for q0, q1 in Vs], 0.08) if Vs else []
+        out = []
+        for q0, q1 in Hs:
+            sy = min(hys, key=lambda v: abs(v - (q0[1] + q1[1]) / 2))
+            out.append((np.array([q0[0], sy]), np.array([q1[0], sy])))
+        for q0, q1 in Vs:
+            sx = min(vxs, key=lambda v: abs(v - (q0[0] + q1[0]) / 2))
+            out.append((np.array([sx, q0[1]]), np.array([sx, q1[1]])))
+        return out
+
+    segs = _regularise(segs)
+    seg_geom_cache.clear()                                   # segs moved -> re-measure on new coords
+
     # WALK-PATH doors: reconstruct the operator trajectory from gps_time and find
     # where it CROSSES a wall centreline -- the person physically walked through
     # there, so it is an entrance DOOR (works even for a shut door leaf the (u,z)
@@ -285,38 +342,6 @@ def main(las, out_dir):
     negatives = []          # opening + recess cutters (subtracted in one batch)
     beams = []              # header/lintel beams -- unioned AFTER cutting
     seg_mask = np.zeros((H, W), np.uint8)
-    xy = np.column_stack([x, y])
-
-    # ---- measure each wall's REAL thickness + center from the two face-planes in
-    # the cloud, instead of a uniform 11cm on the (off-centre) skeleton line. The
-    # scanner saw both faces (it walked both rooms), so the perp histogram has two
-    # peaks = the faces; their separation is the thickness and their midpoint is
-    # the true centre. This puts the wall FACES on the real surfaces. ----
-    seg_geom_cache = {}
-
-    def seg_geom(p0, p1):
-        key = (round(float(p0[0]), 3), round(float(p0[1]), 3), round(float(p1[0]), 3), round(float(p1[1]), 3))
-        if key in seg_geom_cache:
-            return seg_geom_cache[key]
-        d = p1 - p0; L = float(np.linalg.norm(d))
-        res = (WALL_T, 0.0)
-        if L >= 0.30:
-            d = d / L; nn = np.array([-d[1], d[0]])
-            rel = xy - p0; u = rel @ d; perp = rel @ nn
-            near = (np.abs(perp) <= 0.28) & (u >= 0) & (u <= L)
-            if near.sum() >= 200:
-                pp = perp[near]
-                h, edges = np.histogram(pp, bins=np.arange(-0.30, 0.301, 0.01))
-                c = (edges[:-1] + edges[1:]) / 2
-                neg = c < -0.005; pos = c > 0.005
-                if h[neg].sum() >= 15 and h[pos].sum() >= 15:
-                    fn = c[neg][int(np.argmax(h[neg]))]; ff = c[pos][int(np.argmax(h[pos]))]
-                    th = ff - fn; off = (ff + fn) / 2
-                    if 0.08 <= th <= 0.30:
-                        res = (float(np.clip(th, 0.09, 0.28)), float(np.clip(off, -0.10, 0.10)))
-        seg_geom_cache[key] = res
-        return res
-
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
         if L < 0.30:
@@ -872,19 +897,25 @@ def main(las, out_dir):
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
     floor.apply_translation(((R["x"].min() + R["x"].max()) / 2, (R["y"].min() + R["y"].max()) / 2, zf - 0.05))
 
-    # whole unified model (one smooth solid)
+    # whole unified model. COLOUR CONVENTION so measured vs modelled is obvious:
+    #   neutral grey  = MEASURED shell (walls, openings, recesses, headers) from LiDAR
+    #   amber         = SYNTHESISED fittings (door leaf/frame/handle/mullion) -- placed
+    #                   by rule, not surveyed
+    #   translucent cyan = SYNTHESISED glass panes
+    SYNTH = [232, 150, 45, 255]; SYNTH_GLASS = [120, 200, 235, 130]
     scene = trimesh.Scene()
-    wall_solid.visual.face_colors = [205, 205, 210, 255]
+    wall_solid.visual.face_colors = [200, 202, 208, 255]
     floor.visual.face_colors = [150, 130, 110, 255]
-    scene.add_geometry(wall_solid, geom_name="walls")
+    scene.add_geometry(wall_solid, geom_name="walls_measured")
     scene.add_geometry(floor, geom_name="floor")
     for ei, (em, ec) in enumerate(elements):
-        em.visual.face_colors = ec
-        _kind = "frame" if (ec[0] > 200 and ec[1] > 200 and ec[2] > 200) else ("glass" if ec[2] > ec[0] else "door")
-        scene.add_geometry(em, geom_name=f"{_kind}_{ei:02d}")
+        is_glass = ec[2] > ec[0]
+        em.visual.face_colors = SYNTH_GLASS if is_glass else SYNTH
+        scene.add_geometry(em, geom_name=f"synth_{'glass' if is_glass else 'fitting'}_{ei:02d}")
     scene.export(str(out_dir / "skeleton_model.glb"))
     scene.export(str(out_dir / "skeleton_model.obj"))
     log(f"skeleton_model: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f + {len(elements)} elements -> {out_dir}")
+    log("colour: grey=measured shell, amber=synthesised fittings, cyan=glass")
 
     # modular per-room model (each room's walls a distinct named mesh)
     if room_meshes:
