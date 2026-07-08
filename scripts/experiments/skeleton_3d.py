@@ -266,7 +266,7 @@ def main(las, out_dir):
         dd = dd / L; nn = np.array([-dd[1], dd[0]])
         rel = xy - p0; u = rel @ dd; perp = rel @ nn
         near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
-        if near.sum() < 200:
+        if near.sum() < 140:
             continue
         uu, zz = u[near], z[near]
         nu2 = max(int(L / UR) + 1, 4); nz2 = max(int((z1w - z0w) / UR) + 1, 4)
@@ -279,16 +279,29 @@ def main(las, out_dir):
         empty = cv2.morphologyEx(((core > 0) & (mat == 0)).astype(np.uint8),
                                  cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         ncE, lblE, st, _ = cv2.connectedComponentsWithStats(empty, 8)
+        cbot = max(int((zf + 0.08 - z0w) / UR), 0); ctop = int((zc - 0.03 - z0w) / UR)
         for i in range(1, ncE):
             bx, by, bw, bh, _ = st[i]
-            if not (0.5 <= bw * UR <= 3.0) or bh * UR < 0.6 or bx <= 1 or bx + bw >= nu2 - 1:
+            wm = bw * UR; hm = bh * UR
+            if not (0.4 <= wm <= 3.5) or hm < 0.5:
+                continue
+            # a REAL opening (door/window/balcony) is walled on >=2 sides -- material
+            # below (sill), above (header) or on the flanks. This accepts windows &
+            # corner/balcony openings the old "must be flanked within this segment"
+            # test wrongly rejected, while dropping whole-empty (poorly scanned) walls.
+            below = float(mat[cbot:by, bx:bx + bw].mean()) if by > cbot else 0.0
+            above = float(mat[by + bh:ctop, bx:bx + bw].mean()) if by + bh < ctop else 0.0
+            left = float(mat[cbot:ctop, max(0, bx - 3):bx].mean()) if bx > 0 else 0.0
+            right = float(mat[cbot:ctop, bx + bw:min(nu2, bx + bw + 3)].mean()) if bx + bw < nu2 else 0.0
+            sides = int(below >= 0.30) + int(above >= 0.20) + int(left >= 0.40) + int(right >= 0.40)
+            if sides < 2:
                 continue
             cs, _ = cv2.findContours((lblE == i).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cnt = cv2.approxPolyDP(max(cs, key=cv2.contourArea), 0.02 / UR, True)
             if len(cnt) < 3:
                 continue
             poly = _Poly2([(c * UR, z0w + r * UR) for c, r in cnt[:, 0, :]])
-            if not poly.is_valid or poly.area < 0.3:
+            if not poly.is_valid or poly.area < 0.2:
                 continue
             try:
                 cutter = trimesh.creation.extrude_polygon(poly, height=WALL_T * 4)
@@ -484,11 +497,11 @@ def main(las, out_dir):
     # in it -- a door leaf, a glass pane, or a full-height glazed balcony panel.
     # LiDAR can't tell a fitted door from an empty passage, so this is geometric
     # best-effort; a wide interior opening stays an open cased passage. ----
-    mkH = R["mk"]
+    inside_bldg = ndimage.binary_fill_holes((R["free"] > 0) | (R["occ"] > 0))
 
-    def _is_room(cw, off):
+    def _outside(cw, off):
         px = int((cw[0] + off[0] - xmin) / CELL); py = int((ymax - (cw[1] + off[1])) / CELL)
-        return 0 <= py < H and 0 <= px < W and int(mkH[py, px]) > 1
+        return not (0 <= py < H and 0 <= px < W and inside_bldg[py, px])
 
     def _elt_box(o, lw, th, hh, zmid):
         b = trimesh.creation.box(extents=(lw, th, hh))
@@ -502,14 +515,15 @@ def main(las, out_dir):
     for o in openings:
         w = o["width"]; z0 = o["z0"]; z1 = min(o["z1"], zc); h = z1 - z0
         sill = z0 - zf; zmid = (z0 + z1) / 2
-        ext = _is_room(o["center"], o["nn"] * 0.55) != _is_room(o["center"], -o["nn"] * 0.55)
+        ext = _outside(o["center"], o["nn"] * 0.7) or _outside(o["center"], -o["nn"] * 0.7)
         if h < 0.4 or w < 0.4:
             continue
-        if sill >= 0.35:                              # WINDOW -- sill above floor
+        if sill >= 0.35:                              # WINDOW -- sill above floor (glazed)
             elements.append((_elt_box(o, w * 0.92, 0.03, h * 0.92, zmid), GLASS)); nwin += 1
-        elif ext and h >= 1.9:                        # BALCONY DOOR -- exterior, tall, glazed
-            elements.append((_elt_box(o, w * 0.95, 0.03, h * 0.97, zmid), GLASS)); nbal += 1
-        elif w <= 1.4 and h <= 2.45:                  # DOOR -- leaf
+        elif ext:                                     # BALCONY / exterior door -- floor-level to
+            bz0 = zf + 0.02; bz1 = max(z1, zf + 2.0)  # outside; glazed, modelled full height even
+            elements.append((_elt_box(o, w * 0.95, 0.03, (bz1 - bz0) * 0.98, (bz0 + bz1) / 2), GLASS)); nbal += 1
+        elif w <= 1.4 and h <= 2.45:                  # DOOR -- interior leaf
             elements.append((_elt_box(o, w * 0.95, 0.045, h * 0.98, zmid), LEAF)); ndoor += 1
         # else: wide interior opening = open cased passage -> no element
     log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors")
