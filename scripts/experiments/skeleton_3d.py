@@ -257,6 +257,7 @@ def main(las, out_dir):
     # ---- cut door/passage openings as their real (u,z) SILHOUETTE, so ARCHED
     # heads (material spanning the opening only near the top) are kept. ----
     xy = np.column_stack([x, y]); ncut = 0
+    openings = []           # (center, dd, nn, width, z0, z1) of each cut opening
     UR = 0.02; z0w = zf - 0.05; z1w = zc + 0.05
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -296,6 +297,9 @@ def main(las, out_dir):
                      [dd[1], 0, nn[1], p0[1] - nn[1] * WALL_T * 2],
                      [0, 1, 0, 0], [0, 0, 0, 1]], float))
                 negatives.append(cutter); ncut += 1
+                u0o = bx * UR; u1o = (bx + bw) * UR
+                openings.append(dict(center=p0 + dd * (u0o + u1o) / 2, dd=dd.copy(), nn=nn.copy(),
+                                     width=u1o - u0o, z0=z0w + by * UR, z1=z0w + (by + bh) * UR))
             except Exception:
                 pass
     log(f"cut {ncut} openings (arched heads kept)")
@@ -460,6 +464,41 @@ def main(las, out_dir):
             pass
     log(f"built {nhead} header/lintel beams (arches over openings)")
 
+    # ---- DOOR / WINDOW / BALCONY-DOOR elements: classify each detected opening
+    # by geometry (sill height, size, interior vs exterior) and model an element
+    # in it -- a door leaf, a glass pane, or a full-height glazed balcony panel.
+    # LiDAR can't tell a fitted door from an empty passage, so this is geometric
+    # best-effort; a wide interior opening stays an open cased passage. ----
+    mkH = R["mk"]
+
+    def _is_room(cw, off):
+        px = int((cw[0] + off[0] - xmin) / CELL); py = int((ymax - (cw[1] + off[1])) / CELL)
+        return 0 <= py < H and 0 <= px < W and int(mkH[py, px]) > 1
+
+    def _elt_box(o, lw, th, hh, zmid):
+        b = trimesh.creation.box(extents=(lw, th, hh))
+        b.apply_transform(trimesh.transformations.rotation_matrix(float(np.arctan2(o["dd"][1], o["dd"][0])), [0, 0, 1]))
+        b.apply_translation((o["center"][0], o["center"][1], zmid))
+        return b
+
+    elements = []          # (mesh, rgba)
+    ndoor = nwin = nbal = 0
+    GLASS = [150, 205, 230, 255]; LEAF = [150, 95, 55, 255]
+    for o in openings:
+        w = o["width"]; z0 = o["z0"]; z1 = min(o["z1"], zc); h = z1 - z0
+        sill = z0 - zf; zmid = (z0 + z1) / 2
+        ext = _is_room(o["center"], o["nn"] * 0.55) != _is_room(o["center"], -o["nn"] * 0.55)
+        if h < 0.4 or w < 0.4:
+            continue
+        if sill >= 0.35:                              # WINDOW -- sill above floor
+            elements.append((_elt_box(o, w * 0.92, 0.03, h * 0.92, zmid), GLASS)); nwin += 1
+        elif ext and h >= 1.9:                        # BALCONY DOOR -- exterior, tall, glazed
+            elements.append((_elt_box(o, w * 0.95, 0.03, h * 0.97, zmid), GLASS)); nbal += 1
+        elif w <= 1.4 and h <= 2.45:                  # DOOR -- leaf
+            elements.append((_elt_box(o, w * 0.95, 0.045, h * 0.98, zmid), LEAF)); ndoor += 1
+        # else: wide interior opening = open cased passage -> no element
+    log(f"elements: {ndoor} doors, {nwin} windows, {nbal} balcony doors")
+
     # ---- ASSEMBLE ONE SOLID: union all positives (walls + beams merge into one
     # connected surface), then subtract every opening/recess in a single manifold
     # difference so the 90-degree cuts are true intrusions of the SAME wall, not
@@ -512,9 +551,12 @@ def main(las, out_dir):
     floor.visual.face_colors = [150, 130, 110, 255]
     scene.add_geometry(wall_solid, geom_name="walls")
     scene.add_geometry(floor, geom_name="floor")
+    for ei, (em, ec) in enumerate(elements):
+        em.visual.face_colors = ec
+        scene.add_geometry(em, geom_name=f"{'glass' if ec[2] > 150 else 'door'}_{ei:02d}")
     scene.export(str(out_dir / "skeleton_model.glb"))
     scene.export(str(out_dir / "skeleton_model.obj"))
-    log(f"skeleton_model: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f -> {out_dir}")
+    log(f"skeleton_model: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f + {len(elements)} elements -> {out_dir}")
 
     # modular per-room model (each room's walls a distinct named mesh)
     if room_meshes:
