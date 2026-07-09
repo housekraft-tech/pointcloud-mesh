@@ -399,11 +399,17 @@ def main(las, out_dir):
         if L < 0.5:
             continue
         dd = dd / L; nn = np.array([-dd[1], dd[0]])
+        seg_th, _ = seg_geom(p0, p1)
         rel = xy - p0; u = rel @ dd; perp = rel @ nn
         near = (np.abs(perp) <= 0.20) & (u >= 0) & (u <= L)
         if near.sum() < 140:
             continue
         uu, zz = u[near], z[near]
+        # SEE-THROUGH points: scan hits BEYOND the wall's far face. A real opening
+        # lets the scanner see the next room / outside here; a poorly-scanned SOLID
+        # wall has nothing behind it. Used to reject false "holes" from scan gaps.
+        farm = (np.abs(perp) > seg_th / 2 + 0.10) & (np.abs(perp) < 0.90) & (u >= -0.1) & (u <= L + 0.1)
+        fu, fz = u[farm], z[farm]
         nu2 = max(int(L / UR) + 1, 4); nz2 = max(int((z1w - z0w) / UR) + 1, 4)
         mat = np.zeros((nz2, nu2), np.uint8)
         mat[np.clip(((zz - z0w) / UR).astype(int), 0, nz2 - 1),
@@ -430,6 +436,13 @@ def main(las, out_dir):
             right = float(mat[cbot:ctop, bx + bw:min(nu2, bx + bw + 3)].mean()) if bx + bw < nu2 else 0.0
             sides = int(below >= 0.30) + int(above >= 0.20) + int(left >= 0.40) + int(right >= 0.40)
             if sides < 2:
+                continue
+            # SEE-THROUGH gate: require scan points behind the wall in this window,
+            # else it's an unscanned solid wall, not a real hole -> skip.
+            u0o = bx * UR; u1o = (bx + bw) * UR
+            z0o = z0w + by * UR; z1o = z0w + (by + bh) * UR
+            seen = int(np.count_nonzero((fu >= u0o) & (fu <= u1o) & (fz >= z0o) & (fz <= z1o)))
+            if seen < 12:
                 continue
             cs, _ = cv2.findContours((lblE == i).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cnt = cv2.approxPolyDP(max(cs, key=cv2.contourArea), 0.02 / UR, True)
@@ -505,6 +518,19 @@ def main(las, out_dir):
         c = int((pt[0] - xmin) / CELL); r = int((ymax - pt[1]) / CELL)
         return 0 <= r < H and 0 <= c < W and _inside[r, c]
 
+    _free = R["free"]
+
+    def _walkable(pt, rad=2):
+        """Carved free-space (walkable air) present at pt -> a real passage. A
+        Hough-missed SOLID wall has wall (not free) here, so this rejects the
+        false 'gap doors' that create holes in walls that don't exist."""
+        c = int((pt[0] - xmin) / CELL); r = int((ymax - pt[1]) / CELL)
+        if not (0 <= r < H and 0 <= c < W):
+            return False
+        r0, r1 = max(0, r - rad), min(H, r + rad + 1)
+        c0, c1 = max(0, c - rad), min(W, c + rad + 1)
+        return bool((_free[r0:r1, c0:c1] > 0).sum() >= 3)
+
     _Sg = []
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -534,6 +560,8 @@ def main(las, out_dir):
             nv = np.array([0.0, 1.0]) if hi else np.array([1.0, 0.0])
             if not (_interior(cen + nv * 0.5) and _interior(cen - nv * 0.5)):
                 continue                                 # one side outside = entrance/balcony (handled elsewhere)
+            if not _walkable(cen):
+                continue                                 # gap is actually solid wall (Hough miss) -> not a real door
             if any(float(np.linalg.norm(cen - pc)) < 0.4 for pc in _placed):
                 continue
             if any(float(np.linalg.norm(cen - o["center"])) < 0.5 for o in openings):
