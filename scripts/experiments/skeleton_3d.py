@@ -341,6 +341,7 @@ def main(las, out_dir):
     positives = []          # wall slabs (unioned, THEN cut)
     negatives = []          # opening + recess cutters (subtracted in one batch)
     beams = []              # header/lintel beams -- unioned AFTER cutting
+    extrusions = []         # wall EXTRUSIONS (local thickenings) -- unioned AFTER cutting
     seg_mask = np.zeros((H, W), np.uint8)
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
@@ -596,7 +597,7 @@ def main(las, out_dir):
     MAX_DEPTH = WALL_T * 0.42                  # cap so a two-sided groove can't sever the wall
     MIN_AREA = 0.15                            # >= 1500 cm2 -- only prominent recesses
     MIN_EXTENT = 0.30                          # at least 30cm in one direction
-    nrev = 0
+    nrev = 0; next_ext = 0
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
         if L < 0.5:
@@ -658,83 +659,81 @@ def main(las, out_dir):
             valid = ~np.isnan(depth)
             if valid.sum() < 20:
                 continue
-            face = float(np.nanpercentile(depth, 10))         # proud reference plane
-            noise = 1.4826 * float(np.nanmedian(np.abs(depth[valid] - np.nanmedian(depth[valid])))) + 1e-6
+            # BASE = the dominant wall plane (median face), so a step can go EITHER
+            # way from it: an INTRUSION (recess, cut the wall back) OR an EXTRUSION
+            # (local thickening, add material out). Depth is whatever the scan
+            # measures per region, not a fixed value.
+            base = float(np.nanmedian(depth[valid]))
+            noise = 1.4826 * float(np.nanmedian(np.abs(depth[valid] - base))) + 1e-6
             thr = max(MIN_DEPTH, 3.0 * noise)
-            recess = np.where(valid, depth - face, 0.0)
-            groove = (recess >= thr) & valid
-            # bridge intermittent detection ALONG the wall so the groove is captured
-            # continuously across, not in broken chunks (u = axis 1).
-            groove = ndimage.binary_closing(groove, structure=np.ones((1, 7)))   # bridge along u
-            groove = ndimage.binary_closing(groove, structure=np.ones((7, 1)))   # bridge along z
-            groove = ndimage.binary_closing(groove, structure=np.ones((3, 3)))
+            delta = np.where(valid, depth - base, 0.0)         # + = further out, - = nearer in
             zf_band = zf + 0.10
-            lbl2, nc2 = ndimage.label(groove, structure=np.ones((3, 3)))
-            for cc in range(1, nc2 + 1):
-                mask = (lbl2 == cc)
-                ys, xs = np.where(mask)
-                area = ys.size * (UB * ZB)
-                if area < MIN_AREA:                           # major grooves only
-                    continue
-                du = (np.ptp(xs) + 1) * UB; dz = (np.ptp(ys) + 1) * ZB
-                if max(du, dz) < MIN_EXTENT:
-                    continue
-                # gate on depth COHERENCE, not bounding-box fill -- a recessed
-                # head+jamb casing is a FRAME/L (low fill) but has uniform depth;
-                # scattered noise has high depth variation. Keep coherent, drop noise.
-                rv = recess[ys, xs]
-                bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
-                fill = ys.size / max(bb, 1)
-                cvv = float(np.std(rv) / (np.mean(rv) + 1e-6))
-                if fill < 0.4 and cvv > 0.55:
-                    continue
-                depth_cut = float(np.clip(np.median(rv), MIN_DEPTH, max_depth))
-                box_th = depth_cut + 0.03
-                # PRECISE vertical extent: take the groove's exact top/bottom from the
-                # actual recessed POINTS in its u-band (not the 5cm cell grid), so the
-                # cut stops exactly where the recess ends -- and snap to ceiling/floor
-                # when it truly reaches them. Works for any span (top->bottom, mid->top,
-                # mid->bottom).
-                u0r = xs.min() * UB; u1r = (xs.max() + 1) * UB
-                inb = (su >= u0r) & (su <= u1r) & (sp >= face + thr)
-                rmin = float(ys.min()); rmax = float(ys.max()) + 1.0
-                if int(inb.sum()) >= 8:
-                    z0p = float(np.percentile(sz[inb], 2)); z1p = float(np.percentile(sz[inb], 98))
-                else:
-                    z0p = zf_band + rmin * ZB; z1p = zf_band + rmax * ZB
-                if z1p >= zc - 0.12:
-                    z1p = zc
-                if z0p <= zf + 0.16:
-                    z0p = zf + 0.02
-                zden = max(rmax - rmin, 1.0)
 
-                def _zmap(r, _r0=rmin, _z0=z0p, _z1=z1p, _d=zden):
-                    return _z0 + (r - _r0) / _d * (_z1 - _z0)
-                # cut the region's ACTUAL shape (contours in (u,z)) extruded along
-                # the wall normal -- so a frame recesses its casing, not the opening.
-                m8 = mask.astype(np.uint8)
-                cnts, _ = cv2.findContours(m8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                # local->world: x=u -> dd, y=height(z) -> world Z, z=depth -> nn*side
-                M = np.array([
-                    [dd[0], 0, nn[0] * side, p0[0] + nn[0] * (seg_off + side * (seg_th / 2 - depth_cut))],
-                    [dd[1], 0, nn[1] * side, p0[1] + nn[1] * (seg_off + side * (seg_th / 2 - depth_cut))],
-                    [0, 1, 0, 0], [0, 0, 0, 1]], float)
-                for cnt in cnts:
-                    ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
-                    if len(ap) < 3:
+            # sign +1 -> INTRUSION (cut) ; sign -1 -> EXTRUSION (add). Verified by render.
+            for sign, mode in ((+1.0, "cut"), (-1.0, "add")):
+                m = ((delta * sign) >= thr) & valid
+                m = ndimage.binary_closing(m, structure=np.ones((1, 7)))
+                m = ndimage.binary_closing(m, structure=np.ones((7, 1)))
+                m = ndimage.binary_closing(m, structure=np.ones((3, 3)))
+                lbl2, nc2 = ndimage.label(m, structure=np.ones((3, 3)))
+                for cc in range(1, nc2 + 1):
+                    mask = (lbl2 == cc)
+                    ys, xs = np.where(mask)
+                    if ys.size * (UB * ZB) < MIN_AREA:                 # major only
                         continue
-                    poly = _Poly2([(float(c) * UB, _zmap(float(r))) for c, r in ap])
-                    if not poly.is_valid:
-                        poly = poly.buffer(0)
-                    if poly.is_empty or poly.area < 0.02:
+                    du = (np.ptp(xs) + 1) * UB; dz = (np.ptp(ys) + 1) * ZB
+                    if max(du, dz) < MIN_EXTENT:
                         continue
-                    try:
-                        ch = trimesh.creation.extrude_polygon(poly, height=box_th)
-                        ch.apply_transform(M)
-                        negatives.append(ch); nrev += 1
-                    except Exception:
-                        pass
-    log(f"cut {nrev} offset-plane reveals / soffit faces (true depth, height-mapped)")
+                    rv = np.abs(delta[ys, xs])                         # magnitude of the step
+                    bb = (np.ptp(ys) + 1) * (np.ptp(xs) + 1)
+                    if (ys.size / max(bb, 1)) < 0.4 and float(np.std(rv) / (np.mean(rv) + 1e-6)) > 0.55:
+                        continue                                      # incoherent = noise
+                    mag = float(np.clip(np.median(rv), MIN_DEPTH, max_depth))
+                    # precise vertical extent from the actual stepped POINTS in the u-band
+                    u0r = xs.min() * UB; u1r = (xs.max() + 1) * UB
+                    inb = (su >= u0r) & (su <= u1r) & (((sp - base) * sign) >= thr)
+                    rmin = float(ys.min()); rmax = float(ys.max()) + 1.0
+                    if int(inb.sum()) >= 8:
+                        z0p = float(np.percentile(sz[inb], 2)); z1p = float(np.percentile(sz[inb], 98))
+                    else:
+                        z0p = zf_band + rmin * ZB; z1p = zf_band + rmax * ZB
+                    if z1p >= zc - 0.12:
+                        z1p = zc
+                    if z0p <= zf + 0.16:
+                        z0p = zf + 0.02
+                    zden = max(rmax - rmin, 1.0)
+
+                    def _zmap(r, _r0=rmin, _z0=z0p, _z1=z1p, _d=zden):
+                        return _z0 + (r - _r0) / _d * (_z1 - _z0)
+                    # CUT: remove the outer `mag` of the wall. ADD: protrude `mag` past
+                    # the face (both overlap 3cm into the wall so the boolean fuses).
+                    box_th = mag + 0.03
+                    inner = (seg_th / 2 - mag) if mode == "cut" else (seg_th / 2 - 0.03)
+                    m8 = mask.astype(np.uint8)
+                    cnts, _ = cv2.findContours(m8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    M = np.array([
+                        [dd[0], 0, nn[0] * side, p0[0] + nn[0] * (seg_off + side * inner)],
+                        [dd[1], 0, nn[1] * side, p0[1] + nn[1] * (seg_off + side * inner)],
+                        [0, 1, 0, 0], [0, 0, 0, 1]], float)
+                    for cnt in cnts:
+                        ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
+                        if len(ap) < 3:
+                            continue
+                        poly = _Poly2([(float(c) * UB, _zmap(float(r))) for c, r in ap])
+                        if not poly.is_valid:
+                            poly = poly.buffer(0)
+                        if poly.is_empty or poly.area < 0.02:
+                            continue
+                        try:
+                            g3 = trimesh.creation.extrude_polygon(poly, height=box_th)
+                            g3.apply_transform(M)
+                            if mode == "cut":
+                                negatives.append(g3); nrev += 1
+                            else:
+                                extrusions.append(g3); next_ext += 1
+                        except Exception:
+                            pass
+    log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add)")
 
     # ---- HEADERS / LINTELS (the "arch" over an opening): material that exists
     # only near the CEILING and BRIDGES a gap in the mid-height footprint (spans
@@ -884,8 +883,8 @@ def main(las, out_dir):
     # difference so the 90-degree cuts are true intrusions of the SAME wall, not
     # separate shells. Weld + fix so it reads as one smooth solid. ----
     log(f"union {len(positives)} walls, subtract {len(negatives)} cutters, add {len(beams)} beams (manifold) ...")
-    wall_solid = _difference(_union(positives), negatives)   # walls with openings + recesses
-    wall_solid = _union([wall_solid] + beams)                # beams merge on top, uncut
+    wall_solid = _difference(_union(positives), negatives)   # walls with openings + intrusions
+    wall_solid = _union([wall_solid] + beams + extrusions)   # beams + extrusions merge on top
     wall_solid = _clean(wall_solid)
     log(f"unified wall solid: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f / {wall_solid.body_count} bodies")
 
