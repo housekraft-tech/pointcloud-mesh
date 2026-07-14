@@ -721,30 +721,26 @@ def main(las, out_dir):
                     # the face (both overlap 3cm into the wall so the boolean fuses).
                     box_th = mag + 0.03
                     inner = (seg_th / 2 - mag) if mode == "cut" else (seg_th / 2 - 0.03)
-                    m8 = mask.astype(np.uint8)
-                    cnts, _ = cv2.findContours(m8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     M = np.array([
                         [dd[0], 0, nn[0] * side, p0[0] + nn[0] * (seg_off + side * inner)],
                         [dd[1], 0, nn[1] * side, p0[1] + nn[1] * (seg_off + side * inner)],
                         [0, 1, 0, 0], [0, 0, 0, 1]], float)
-                    for cnt in cnts:
-                        ap = cv2.approxPolyDP(cnt, 0.6, True)[:, 0, :]
-                        if len(ap) < 3:
-                            continue
-                        poly = _Poly2([(float(c) * UB, _zmap(float(r))) for c, r in ap])
-                        if not poly.is_valid:
-                            poly = poly.buffer(0)
-                        if poly.is_empty or poly.area < 0.02:
-                            continue
-                        try:
-                            g3 = trimesh.creation.extrude_polygon(poly, height=box_th)
-                            g3.apply_transform(M)
-                            if mode == "cut":
-                                negatives.append(g3); nrev += 1
-                            else:
-                                extrusions.append(g3); next_ext += 1
-                        except Exception:
-                            pass
+                    # CLEAN RECTANGLE: snap the region to one axis-aligned (u,z) box with
+                    # 90-deg edges (not the wobbly point contour) so the wall stays flat
+                    # and crisp like a CAD model, feature present but regular.
+                    _ = _zmap  # (kept for signature; rectangle uses exact z extent)
+                    poly = _Poly2([(u0r, z0p), (u1r, z0p), (u1r, z1p), (u0r, z1p)])
+                    if poly.area < 0.02:
+                        continue
+                    try:
+                        g3 = trimesh.creation.extrude_polygon(poly, height=box_th)
+                        g3.apply_transform(M)
+                        if mode == "cut":
+                            negatives.append(g3); nrev += 1
+                        else:
+                            extrusions.append(g3); next_ext += 1
+                    except Exception:
+                        pass
     log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add)")
 
     # ---- HEADERS / LINTELS (the "arch" over an opening): material that exists
@@ -900,37 +896,45 @@ def main(las, out_dir):
     wall_solid = _clean(wall_solid)
     log(f"unified wall solid: {len(wall_solid.vertices):,}v / {len(wall_solid.faces):,}f / {wall_solid.body_count} bodies")
 
-    # ---- SPLIT into ONE MESH PER ROOM (modular): intersect the unified solid
-    # with each room's free-space column (dilated by a wall thickness), so every
-    # room's enclosing walls -- with their recesses/beams -- come out as a single
-    # named mesh. Shared walls are carried by both adjoining rooms. ----
-    mk = R["mk"]
+    # ---- SPLIT: each WALL is ONE clean object (NO duplication), tagged by the room
+    # it primarily faces. Intersect the unified solid with each wall segment's own
+    # slab box -> that wall's geometry with its clean-rectangle grooves. A shared
+    # wall belongs to a single object (its primary room), not duplicated. ----
+    mk = R["mk"]; lab2idx = {int(l): i for i, l in enumerate(R["room_labels"])}
     room_meshes = {}
-    sel_h = (zf - 0.1, zc + 0.1)
-    grow_r = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int((WALL_T + 0.10) / CELL) | 1,) * 2)
-    for ri, lab in enumerate(R["room_labels"]):
-        rm = (mk == lab).astype(np.uint8)
-        if rm.sum() * CELL * CELL < 1.0:                      # skip slivers < 1 m2
+    sel_h = (zf - 0.1, zc + 0.1); hgt = sel_h[1] - sel_h[0]; zc_mid = (sel_h[0] + sel_h[1]) / 2
+    ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(0.22 / CELL) | 1,) * 2)
+    room_wi = {}
+    for p0, p1 in segs:
+        dd = p1 - p0; L = float(np.linalg.norm(dd))
+        if L < 0.30:
             continue
-        band = cv2.dilate(rm, grow_r) & (rm == 0)             # the wall ring around the room
-        band = cv2.dilate(band, np.ones((3, 3), np.uint8))
-        sel = None
-        for pg in footprint_polygons(band, xmin, ymax):
-            try:
-                s = trimesh.creation.extrude_polygon(pg, height=sel_h[1] - sel_h[0])
-                s.apply_translation((0, 0, sel_h[0]))
-                sel = s if sel is None else trimesh.util.concatenate([sel, s])
-            except Exception:
-                pass
-        if sel is None:
-            continue
+        th, off = seg_geom(p0, p1)
+        ud = dd / L; nn = np.array([-ud[1], ud[0]])
+        box = trimesh.creation.box(extents=(L + 0.24, th + 0.18, hgt))
+        box.apply_transform(trimesh.transformations.rotation_matrix(float(np.arctan2(dd[1], dd[0])), [0, 0, 1]))
+        mid = (p0 + p1) / 2 + nn * off
+        box.apply_translation((mid[0], mid[1], zc_mid))
+        # primary room = commonest room label in the ring beside the wall
+        sm = np.zeros((H, W), np.uint8)
+        a = (int((p0[0] - xmin) / CELL), int((ymax - p0[1]) / CELL))
+        b = (int((p1[0] - xmin) / CELL), int((ymax - p1[1]) / CELL))
+        cv2.line(sm, a, b, 1, thickness=max(3, int((th + 0.05) / CELL) | 1))
+        ring = cv2.dilate(sm, ring_k) & (sm == 0)
+        labs = mk[ring > 0]; labs = labs[np.isin(labs, list(lab2idx.keys()))]
+        ri = lab2idx.get(int(np.bincount(labs).argmax()), -1) if labs.size else -1
         try:
-            piece = trimesh.boolean.intersection([wall_solid, _union([sel])], engine="manifold")
+            piece = trimesh.boolean.intersection([wall_solid, box], engine="manifold")
         except Exception:
             piece = None
-        if piece is not None and len(piece.faces):
-            room_meshes[f"room_{ri:02d}"] = _clean(piece)
-    log(f"split into {len(room_meshes)} per-room wall meshes")
+        if piece is None or not len(piece.faces):
+            continue
+        pc = _clean(piece)
+        if pc is None or not len(pc.faces):
+            continue
+        wi = room_wi.get(ri, 0); room_wi[ri] = wi + 1
+        room_meshes[(f"room_{ri:02d}_wall_{wi:02d}" if ri >= 0 else f"wall_{len(room_meshes):02d}")] = pc
+    log(f"split into {len(room_meshes)} individual wall meshes (no duplication)")
 
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
