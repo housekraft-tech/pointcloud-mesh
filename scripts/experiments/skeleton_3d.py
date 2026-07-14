@@ -934,7 +934,32 @@ def main(las, out_dir):
             continue
         wi = room_wi.get(ri, 0); room_wi[ri] = wi + 1
         room_meshes[(f"room_{ri:02d}_wall_{wi:02d}" if ri >= 0 else f"wall_{len(room_meshes):02d}")] = pc
-    log(f"split into {len(room_meshes)} individual wall meshes (no duplication)")
+
+    # add BEAMS (lintels/arches over openings) + EXTRUSIONS as their OWN named
+    # objects -- a wall segment's slab box misses a beam that BRIDGES an opening,
+    # so without this the modular output loses every lintel and the openings read
+    # as full-height holes.
+    def _assign_room(m):
+        c = m.centroid
+        cc = int((c[0] - xmin) / CELL); rr = int((ymax - c[1]) / CELL)
+        r0, r1 = max(0, rr - 6), min(H, rr + 7); c0, c1 = max(0, cc - 6), min(W, cc + 7)
+        sub = mk[r0:r1, c0:c1].ravel(); sub = sub[np.isin(sub, list(lab2idx.keys()))]
+        return lab2idx.get(int(np.bincount(sub).argmax()), -1) if sub.size else -1
+    nbeam_m = next_m = 0
+    for tag, meshes in (("beam", beams), ("ext", extrusions)):
+        for m in meshes:
+            pc = _clean(m.copy())
+            if pc is None or not len(pc.faces):
+                continue
+            ri = _assign_room(pc)
+            wi = room_wi.get((ri, tag), 0); room_wi[(ri, tag)] = wi + 1
+            nm = f"room_{ri:02d}_{tag}_{wi:02d}" if ri >= 0 else f"{tag}_{len(room_meshes):02d}"
+            room_meshes[nm] = pc
+            if tag == "beam":
+                nbeam_m += 1
+            else:
+                next_m += 1
+    log(f"split into {len(room_meshes)} objects: walls + {nbeam_m} beams + {next_m} extrusions (no duplication)")
 
     fx = R["x"].max() - R["x"].min(); fy = R["y"].max() - R["y"].min()
     floor = trimesh.creation.box(extents=(fx, fy, 0.08))
