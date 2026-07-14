@@ -89,6 +89,18 @@ def _clean(m):
     except Exception:
         pass
     m.merge_vertices()
+    # drop STRAY tiny fragments -- an isolated ~box that never fused to a wall
+    # (floating junk). Real severed walls + real beams/extrusions are far bigger,
+    # so keep every body above a small volume/face floor.
+    try:
+        comps = m.split(only_watertight=False)
+        if len(comps) > 1:
+            keep = [c for c in comps
+                    if len(c.faces) >= 24 or (c.is_volume and abs(c.volume) >= 0.004)]
+            if keep:
+                m = trimesh.util.concatenate(keep)
+    except Exception:
+        pass
     try:
         m.fix_normals()
     except Exception:
