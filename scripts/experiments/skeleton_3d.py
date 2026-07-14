@@ -609,7 +609,7 @@ def main(las, out_dir):
     MAX_DEPTH = WALL_T * 0.42                  # cap so a two-sided groove can't sever the wall
     MIN_AREA = 0.15                            # >= 1500 cm2 -- only prominent recesses
     MIN_EXTENT = 0.30                          # at least 30cm in one direction
-    nrev = 0; next_ext = 0
+    nrev = 0; next_ext = 0; _feat_z = []
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
         if L < 0.5:
@@ -628,7 +628,15 @@ def main(las, out_dir):
             if sel.sum() < 200:
                 continue
             sp = pp[sel] * side; sz = zz[sel]; su = uu[sel]
-            zb = np.arange(zf + 0.10, zc - 0.02, ZB); nz = len(zb)
+            # detect within the wall BODY only -- exclude the top ~25cm, where the
+            # wall-to-ceiling junction gives a systematic near-ceiling band that is
+            # NOT a real intrusion (door-head casings at ~2.0m still fall inside).
+            Z_TOP = zc - 0.25
+            inband = (sz >= zf + 0.10) & (sz <= Z_TOP)
+            sp = sp[inband]; sz = sz[inband]; su = su[inband]
+            if sp.size < 200:
+                continue
+            zb = np.arange(zf + 0.10, Z_TOP, ZB); nz = len(zb)
             nu = max(int(L / UB), 2)
             ui = np.clip((su / UB).astype(int), 0, nu - 1)
             zi = np.clip(((sz - (zf + 0.10)) / ZB).astype(int), 0, nz - 1)
@@ -709,10 +717,10 @@ def main(las, out_dir):
                         z0p = float(np.percentile(sz[inb], 2)); z1p = float(np.percentile(sz[inb], 98))
                     else:
                         z0p = zf_band + rmin * ZB; z1p = zf_band + rmax * ZB
-                    if z1p >= zc - 0.12:
-                        z1p = zc
-                    if z0p <= zf + 0.16:
-                        z0p = zf + 0.02
+                    # keep the TRUE measured height band -- only clamp to the storey,
+                    # do NOT snap to ceiling/floor (most steps do not reach either).
+                    z1p = min(z1p, zc); z0p = max(z0p, zf + 0.02)
+                    _feat_z.append((mode, round(z0p - zf, 2), round(z1p - zf, 2)))
                     zden = max(rmax - rmin, 1.0)
 
                     def _zmap(r, _r0=rmin, _z0=z0p, _z1=z1p, _d=zden):
@@ -741,7 +749,8 @@ def main(las, out_dir):
                             extrusions.append(g3); next_ext += 1
                     except Exception:
                         pass
-    log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add)")
+    _rc = sum(1 for _, _, t in _feat_z if t >= (zc - zf) - 0.02)
+    log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add); {_rc} reach ceiling")
 
     # ---- HEADERS / LINTELS (the "arch" over an opening): material that exists
     # only near the CEILING and BRIDGES a gap in the mid-height footprint (spans
