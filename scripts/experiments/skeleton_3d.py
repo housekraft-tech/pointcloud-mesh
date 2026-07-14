@@ -609,7 +609,7 @@ def main(las, out_dir):
     MAX_DEPTH = WALL_T * 0.42                  # cap so a two-sided groove can't sever the wall
     MIN_AREA = 0.15                            # >= 1500 cm2 -- only prominent recesses
     MIN_EXTENT = 0.30                          # at least 30cm in one direction
-    nrev = 0; next_ext = 0; _feat_z = []
+    nrev = 0; next_ext = 0; n_leaf = 0; _feat_z = []
     for p0, p1 in segs:
         dd = p1 - p0; L = float(np.linalg.norm(dd))
         if L < 0.5:
@@ -720,6 +720,17 @@ def main(las, out_dir):
                     # keep the TRUE measured height band -- only clamp to the storey,
                     # do NOT snap to ceiling/floor (most steps do not reach either).
                     z1p = min(z1p, zc); z0p = max(z0p, zf + 0.02)
+                    # OPEN DOOR LEAF cleanup: the scan caught some doors open, and a
+                    # leaf butting the jamb reads as a thin door-width extrusion beside
+                    # an opening that stops at door height. Drop it -- a CLOSED door is
+                    # placed in the opening instead.
+                    if mode == "add":
+                        ext_w = u1r - u0r
+                        ecen = p0 + dd * (u0r + u1r) / 2.0
+                        if (0.5 <= ext_w <= 1.05 and mag <= 0.06 and (z1p - zf) <= 2.25
+                                and any(float(np.linalg.norm(o["center"] - ecen)) < 0.7 for o in openings)):
+                            n_leaf += 1
+                            continue
                     _feat_z.append((mode, round(z0p - zf, 2), round(z1p - zf, 2)))
                     zden = max(rmax - rmin, 1.0)
 
@@ -750,7 +761,7 @@ def main(las, out_dir):
                     except Exception:
                         pass
     _rc = sum(1 for _, _, t in _feat_z if t >= (zc - zf) - 0.02)
-    log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add); {_rc} reach ceiling")
+    log(f"wall steps: {nrev} intrusions (cut), {next_ext} extrusions (add); {_rc} reach ceiling; {n_leaf} open-door leaves removed")
 
     # ---- HEADERS / LINTELS (the "arch" over an opening): material that exists
     # only near the CEILING and BRIDGES a gap in the mid-height footprint (spans
