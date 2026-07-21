@@ -32,24 +32,37 @@ def parse(obj_path):
 
 def color_for(name, i):
     if name == "floor":   return [0.55, 0.55, 0.58]
-    if name == "ceiling": return [0.70, 0.72, 0.75]
+    if name.startswith("ceiling"):
+        # each ceiling plateau is its own object now -- vary the grey slightly so
+        # the separate parts (main / dropped / beam soffits) read apart
+        g = 0.62 + 0.10 * ((i * 0.61803) % 1.0)
+        return [g, g + 0.02, g + 0.04]
     if name.startswith("column"): return [0.95, 0.35, 0.1]
     h = (i * 0.61803) % 1.0
     return list(colorsys.hsv_to_rgb(h, 0.55, 0.95))
 
 
-def build(V, groups, drop_ceiling=False, zcut=None):
+def build(V, groups, drop_ceiling=False, zcut=None, ceiling_only=False):
     mesh = o3d.geometry.TriangleMesh()
     allv = o3d.utility.Vector3dVector(V)
     vc = np.tile([0.5, 0.5, 0.5], (len(V), 1))
     tris = []
+    zc = [np.median(V[np.unique(np.array(f)), 2]) for n, _, f in groups
+          if f and n.startswith("ceiling")]
+    zlo_c, zhi_c = (min(zc), max(zc)) if zc else (0.0, 1.0)
     for i, (name, _, f) in enumerate(groups):
         if not f:
             continue
-        if drop_ceiling and name == "ceiling":
+        if drop_ceiling and name.startswith("ceiling"):
+            continue
+        if ceiling_only and not name.startswith("ceiling"):
             continue
         f = np.array(f)
         col = color_for(name, i)
+        if ceiling_only:
+            z = V[np.unique(f), 2]
+            t = np.clip((np.median(z) - zlo_c) / max(zhi_c - zlo_c, 1e-6), 0, 1)
+            col = list(colorsys.hsv_to_rgb(0.75 * (1 - t), 0.75, 0.95))
         vc[np.unique(f)] = col
         tris.append(f)
     if not tris:
@@ -89,6 +102,11 @@ def main(obj_path, out_dir):
     zcut = V[:, 2].max() - 0.6
     m2 = build(V, groups, drop_ceiling=True, zcut=zcut)
     render(m2, [0.35, 0.45, 0.82], out / "modular_cutaway.png")
+    # looking UP at the underside: the only view where the beams and dropped
+    # ceilings actually show, since the cutaway removes the ceiling
+    m3 = build(V, groups, ceiling_only=True)
+    if m3 is not None:
+        render(m3, [0.25, 0.35, -0.90], out / "modular_soffit.png")
     log("done")
 
 
