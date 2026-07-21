@@ -139,51 +139,31 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         ax.scatter(P[::40, 0], P[::40, 1], s=2.0, marker=".", linewidths=0,
                    color=plt.cm.YlGnBu(0.25 + 0.55 * (1 - t)), zorder=0)
 
-    # ---- walls (LiDAR) -- the geometry of record
-    for P in walls.values():
-        s = P[::35]
-        ax.scatter(s[:, 0], s[:, 1], s=1.0, c="#1c2226", marker=".",
-                   linewidths=0, zorder=2)
-
-    # ---- wall dimensions, measured off the merged planes.
-    # Length is the extent of actual geometry on the plane. Thickness is the
-    # 5-95 percentile perpendicular spread, which is robust to the stray
-    # returns that make a min-max thickness meaningless.
-    # Dimension the wall RUNS as built, not merged planes. Merging puts every
-    # run that shares an infinite plane into one object, so a "wall" came out
-    # 12048 mm long with its dimension line cutting diagonally across the flat.
-    # A wall run is a thing you can stand in front of and measure.
-    from scripts.experiments.walk_path_openings import plane_of
-    dims = []
+    # ---- walls (LiDAR) -- the geometry of record, drawn as SOLID RECTANGLES.
+    # The old plan scattered raw points, which reads as fuzz and makes square
+    # walls look ragged and tilted. rect_of() fits each run's plane and returns
+    # a clean length x thickness rectangle; a run whose fit cannot be trusted
+    # (blobby, or two runs sharing one object) is shown as faint points instead
+    # of an invented diagonal bar. NO per-wall dimension labels here -- 69 of
+    # them buried the deviations this plan exists to show; wall dimensions live
+    # on the as-built plan and the elevations.
+    from matplotlib.patches import Polygon
+    from scripts.experiments.viz_asbuilt_plan import rect_of, MAX_SKEW
+    n_rect = n_pts = 0
     for name, P in walls.items():
-        if len(P) < 2000:
+        if len(P) < 800:
             continue
-        c, n, dv = plane_of(P)
-        rel = P[:, :2] - c
-        a = rel @ dv
-        perp = rel @ n
-        length = float(a.max() - a.min())
-        if length < MIN_DIM_LEN:
-            continue
-        thick = float(np.percentile(perp, 95) - np.percentile(perp, 5))
-        mid = c + dv * float((a.max() + a.min()) / 2)
-        p0 = c + dv * float(a.min()); p1 = c + dv * float(a.max())
-        off = n * DIM_OFFSET
-        ax.plot([p0[0] + off[0], p1[0] + off[0]],
-                [p0[1] + off[1], p1[1] + off[1]],
-                color="#455a64", lw=0.9, alpha=0.85, zorder=3)
-        for e in (p0, p1):
-            ax.plot([e[0], e[0] + off[0]], [e[1], e[1] + off[1]],
-                    color="#455a64", lw=0.7, alpha=0.7, zorder=3)
-        ang = np.degrees(np.arctan2(dv[1], dv[0]))
-        if ang > 90: ang -= 180
-        if ang < -90: ang += 180
-        ax.text(mid[0] + off[0], mid[1] + off[1],
-                f"{length*1000:.0f} × {thick*1000:.0f}t",
-                fontsize=6.0, ha="center", va="center", rotation=ang,
-                rotation_mode="anchor", color="#263238", zorder=4,
-                bbox=dict(fc="white", alpha=0.72, pad=0.8, lw=0))
-        dims.append((name, length, thick))
+        corners, mid, dv, L, t, trusted = rect_of(P)
+        ang0 = np.degrees(np.arctan2(dv[1], dv[0])) % 90
+        skew = ang0 - 90 if ang0 > 45 else ang0
+        if trusted and abs(skew) <= MAX_SKEW:
+            ax.add_patch(Polygon(corners, closed=True, fc="#1c2226",
+                                 ec="#1c2226", lw=0.3, zorder=2))
+            n_rect += 1
+        else:
+            ax.scatter(P[::35, 0], P[::35, 1], s=1.0, c="#90a4ae", marker=".",
+                       linewidths=0, zorder=2)
+            n_pts += 1
 
     # ---- columns (LiDAR)
     for n, P in cols.items():
@@ -290,9 +270,10 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         Line2D([], [], marker="P", ls="", c="#bbb", mec="k", ms=11, label="tagged in drawing, not found in scan"),
     ]
     ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.96)
-    ax.set_title("As-built plan — geometry and position from LiDAR, tags from the drawing\n"
+    ax.set_title("Deviation plan — geometry and position from LiDAR, tags from the drawing\n"
                  f"arrows show where an opening sits vs where the drawing put it   |   "
-                 f"{len(dims)} walls dimensioned  |  wall relief: {nfeat} features ({sub})",
+                 f"{n_rect} walls drawn true, {n_pts} left as points  |  "
+                 f"wall relief: {nfeat} features ({sub})",
                  fontsize=11)
     ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)"); ax.set_aspect("equal")
     fig.tight_layout(); fig.savefig(out_png, dpi=130)
