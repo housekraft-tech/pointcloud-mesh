@@ -33,12 +33,14 @@ from matplotlib.patches import Rectangle
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.experiments.wall_elevations import (
-    parse_obj, merge_coplanar, grids, find_openings, CELL)
+    parse_obj, merge_coplanar, grids, find_openings, CELL, DOOR_STD, DOOR_TOL)
 
 MAX_STEP   = 1.20    # m: ignore a sign change across a jump this long (SLAM skip)
 MATCH_TOL  = 0.60    # m: crossing within this of a hole's span = same opening
 CLUSTER    = 0.50    # m: crossings this close are the same doorway walked twice
 EDGE_MARG  = 0.25    # m: crossing must be this far inside the wall's extent
+MAX_OPEN_W = 3.00    # m: a clear span wider than this is a gap BETWEEN wall
+                     #    runs, not an opening in a wall
 
 
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
@@ -131,6 +133,79 @@ def column_state(occ, a0, z0, ac, z_floor, z_ceil):
     return "solid", f_high, f_walk
 
 
+def measure_at(occ, a0, z0, ac, z_floor, z_ceil):
+    """Measure an opening the detector missed, using the crossing as a seed.
+
+    Blind hole detection needs a fully enclosed void, which fails whenever the
+    reveal is ragged or the Poisson bridged part of the head. Here we already
+    KNOW an opening is at `ac` because someone walked through it, so we do not
+    have to find it -- only measure it. Grow left and right from the seed while
+    the column stays clear at walking height, then read the head off the lintel
+    underside above that span.
+
+    Returns None if the seed column is not actually clear (bad crossing).
+    """
+    nz, na = occ.shape
+    zs = z0 + (np.arange(nz) + 0.5) * CELL
+    walk = (zs > z_floor + 0.30) & (zs < z_floor + 1.60)
+    if not walk.any():
+        return None
+    clear = occ[walk, :].mean(axis=0) < 0.35          # per-column, clear at waist
+
+    c0 = int(round((ac - a0) / CELL))
+    if not (0 <= c0 < na):
+        return None
+    if not clear[c0]:                                  # nudge onto the void
+        near = [c for c in range(max(0, c0 - 6), min(na, c0 + 7)) if clear[c]]
+        if not near:
+            return None
+        c0 = min(near, key=lambda c: abs(c - c0))
+    cl = c0
+    while cl - 1 >= 0 and clear[cl - 1]:
+        cl -= 1
+    cr = c0
+    while cr + 1 < na and clear[cr + 1]:
+        cr += 1
+    width = (cr - cl + 1) * CELL
+    if width > MAX_OPEN_W:
+        # the clear span ran straight through a gap BETWEEN two wall runs on
+        # this plane -- that is open space, not an opening in a wall
+        return None
+
+    # head = underside of the lintel: lowest occupied row above the walk band,
+    # taken per column and medianed so one ragged column cannot set the height
+    above = np.flatnonzero(zs > z_floor + 1.60)
+    heads = []
+    for c in range(cl, cr + 1):
+        rows = above[occ[above, c]]
+        if rows.size:
+            heads.append(zs[rows.min()])
+    open_to_ceiling = len(heads) < 0.3 * (cr - cl + 1)
+    head = float(np.median(heads)) - z_floor if heads else float(z_ceil - z_floor)
+
+    below = np.flatnonzero(zs < z_floor + 0.30)
+    sills = []
+    for c in range(cl, cr + 1):
+        rows = below[occ[below, c]]
+        if rows.size:
+            sills.append(zs[rows.max()])
+    sill = float(np.median(sills)) - z_floor if sills else 0.0
+
+    if open_to_ceiling:
+        kind = "archway / open passage"
+    elif abs(head - DOOR_STD) <= DOOR_TOL:
+        kind = "balcony / sliding door" if width >= 1.30 else "door"
+    elif width >= 1.30:
+        kind = "wide opening (non-standard head)"
+    else:
+        kind = "opening (non-standard head)"
+    return dict(kind=kind, width_mm=round(width * 1000),
+                head_mm=round(head * 1000, 1), sill_mm=round(sill * 1000, 1),
+                vs_7ft_mm=(round((head - DOOR_STD) * 1000, 1)
+                           if "door" in kind else None),
+                along_span=[round(a0 + cl * CELL, 2), round(a0 + (cr + 1) * CELL, 2)])
+
+
 def main(las_path, obj_path, mj, out_dir):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     d = json.load(open(mj))
@@ -178,13 +253,25 @@ def main(las_path, obj_path, mj, out_dir):
             if state == "no wall":
                 n_noplane += 1
                 continue
-            rows.append(dict(wall=name,
-                             kind="(opening, no hole detected)" if state == "opening"
-                                  else "(path crossed solid wall)",
-                             width_mm=None, head_mm=None, sill_mm=None,
-                             along_m=round(ac, 2), walk_crossings=cnt,
-                             wall_fill_walk=round(f_walk, 2),
-                             verdict="MISSED" if state == "opening" else "path-error"))
+            if state != "opening":
+                rows.append(dict(wall=name, kind="(path crossed solid wall)",
+                                 width_mm=None, head_mm=None, sill_mm=None,
+                                 along_m=round(ac, 2), walk_crossings=cnt,
+                                 wall_fill_walk=round(f_walk, 2),
+                                 verdict="path-error"))
+                continue
+            m = measure_at(occ, a0, z0, ac, z_floor, z_ceil)
+            if m is None:
+                rows.append(dict(wall=name, kind="(opening, could not measure)",
+                                 width_mm=None, head_mm=None, sill_mm=None,
+                                 along_m=round(ac, 2), walk_crossings=cnt,
+                                 verdict="RECOVERED-FAILED"))
+                continue
+            rows.append(dict(wall=name, kind=m["kind"], width_mm=m["width_mm"],
+                             head_mm=m["head_mm"], sill_mm=m["sill_mm"],
+                             vs_7ft_mm=m["vs_7ft_mm"], along_m=round(ac, 2),
+                             along_span=m["along_span"], walk_crossings=cnt,
+                             source="walk-seeded", verdict="RECOVERED"))
 
     json.dump(dict(path_samples=len(path),
                    crossings_ignored_no_wall=n_noplane, openings=rows),
@@ -192,17 +279,20 @@ def main(las_path, obj_path, mj, out_dir):
 
     perr = [r for r in rows if r["verdict"] == "path-error"]
     conf = [r for r in rows if r["verdict"] == "CONFIRMED"]
-    miss = [r for r in rows if r["verdict"] == "MISSED"]
+    miss = [r for r in rows if r["verdict"] == "RECOVERED"]
+    fail = [r for r in rows if r["verdict"] == "RECOVERED-FAILED"]
     unw = [r for r in rows if r["verdict"] == "unwalked"]
-    log(f"CONFIRMED {len(conf)}   MISSED {len(miss)}   unwalked {len(unw)}   "
-        f"path-error {len(perr)}   (ignored {n_noplane} crossings of a plane "
+    log(f"CONFIRMED {len(conf)}   RECOVERED {len(miss)}   unwalked {len(unw)}   "
+        f"unmeasurable {len(fail)}   path-error {len(perr)}   "
+        f"(ignored {n_noplane} crossings of a plane "
         f"with no wall standing there)")
     for r in conf:
         log(f"  CONFIRMED {r['wall']:12} {r['kind']:34} "
             f"{r['width_mm']} mm wide, head {r['head_mm']}, walked {r['walk_crossings']}x")
     for r in miss:
-        log(f"  MISSED    {r['wall']:12} at along {r['along_m']:+.2f} m, "
-            f"walked {r['walk_crossings']}x -- opening exists, not detected")
+        v7 = f"  ({r['vs_7ft_mm']:+.0f} vs 7ft)" if r.get("vs_7ft_mm") is not None else ""
+        log(f"  RECOVERED {r['wall']:12} {r['kind']:34} {r['width_mm']:5} mm wide, "
+            f"head {r['head_mm']:.0f}, walked {r['walk_crossings']}x{v7}")
 
     # ---- plan view
     fig, ax = plt.subplots(figsize=(15, 14))
@@ -222,10 +312,10 @@ def main(las_path, obj_path, mj, out_dir):
     for r in rows:
         c, dv = look[r["wall"]]
         p = c + dv * r["along_m"]
-        if r["verdict"] == "CONFIRMED":
+        if r["verdict"] in ("CONFIRMED", "RECOVERED"):
             ax.scatter(*p, s=150, marker="o", facecolors="none",
                        edgecolors="#00e5ff", lw=2.4, zorder=6)
-        elif r["verdict"] == "MISSED":
+        elif r["verdict"] in ("path-error", "RECOVERED-FAILED"):
             ax.scatter(*p, s=190, marker="X", c="#ff1744", zorder=7)
         else:
             ax.scatter(*p, s=110, marker="^", c="#ffd400", zorder=6)
@@ -233,7 +323,7 @@ def main(las_path, obj_path, mj, out_dir):
     ax.legend(handles=[
         Line2D([], [], color="#1f77b4", lw=2, label="walk path"),
         Line2D([], [], marker="o", ls="", mfc="none", mec="#00e5ff", mew=2,
-               ms=11, label=f"CONFIRMED opening ({len(conf)})"),
+               ms=11, label=f"opening confirmed by walk ({len(conf)+len(miss)})"),
         Line2D([], [], marker="X", ls="", color="#ff1744", ms=11,
                label=f"MISSED — walked through, not detected ({len(miss)})"),
         Line2D([], [], marker="^", ls="", color="#ffd400", ms=10,

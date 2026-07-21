@@ -38,6 +38,12 @@ def color_for(name, i):
         g = 0.62 + 0.10 * ((i * 0.61803) % 1.0)
         return [g, g + 0.02, g + 0.04]
     if name.startswith("column"): return [0.95, 0.35, 0.1]
+    # measured openings get fixed, meaningful colours (see build_annotated_model)
+    if name.startswith("balcony_door"): return [0.00, 1.00, 0.55]
+    if name.startswith("door"):         return [0.00, 0.90, 1.00]
+    if name.startswith("window"):       return [1.00, 0.85, 0.00]
+    if name.startswith("archway"):      return [1.00, 0.55, 0.00]
+    if name.startswith("opening"):      return [1.00, 0.30, 0.55]
     h = (i * 0.61803) % 1.0
     return list(colorsys.hsv_to_rgb(h, 0.55, 0.95))
 
