@@ -51,9 +51,15 @@ MAX_SKEW = 6.0          # deg: past this it is a segmentation artefact, not a
 THICK_MIN, THICK_MAX = 0.06, 0.35   # m: plausible wall thickness
 MIN_ELONG = 3.0         # length/spread below this: not a clean single run
 MIN_ON_PLANE = 0.60     # fraction of points that must lie on the fitted plane
+RESOLVE_K = 1.5         # a tilt must beat the fit's own angular resolution by
+                        # this margin before it is believed. atan(t/L) is a
+                        # 1-sigma-ish bound, and wall_07 clearing it by 1.1x
+                        # (5.9 deg vs 5.3) is not evidence of a leaning wall --
+                        # it is one noisy stub. Long runs resolve far finer, so
+                        # genuine out-of-square walls still survive this.
 
 
-def rect_of(P):
+def rect_of(P, snap_unresolved=True):
     """Wall run -> (corners, centre, dir, length, thickness, trusted).
 
     `trusted` is the important part. A wall object that is blobby, or that
@@ -61,13 +67,41 @@ def rect_of(P):
     not the wall's length -- drawing that as a rectangle invents a diagonal
     stick that is not in the building, and measuring its angle produced
     "walls" 14-16 deg out of square. A rectangle is only honest when the run is
-    clearly elongated AND its points actually lie on the plane."""
+    clearly elongated AND its points actually lie on the plane.
+
+    `snap_unresolved` fixes the leftover tilt. A run can only fix its own
+    direction to about atan(thickness/length): a 1.5 m stub that is 220 mm
+    thick cannot tell 0 deg from 8 deg. Drawing its measured 5.9 deg leaned the
+    wall 158 mm across the plan and read as sloppy alignment, when in truth the
+    scan never resolved that angle. So a tilt SMALLER than the fit's own
+    resolution is not evidence of a tilt -- the run goes on the grid. A tilt
+    LARGER than it survives, which is what keeps real out-of-square walls
+    visible: a 6 m wall 107 mm thick resolves to 1.0 deg, so its 2 deg lean is
+    still drawn and still reported.
+
+    P must already be in the grid frame (callers rotate first), so the grid
+    directions are the coordinate axes."""
     c, n, dv = plane_of(P)
     rel = P[:, :2] - c
     a = rel @ dv
     perp = rel @ n
     length = float(a.max() - a.min())
     spread = float(np.percentile(perp, 95) - np.percentile(perp, 5))
+
+    if snap_unresolved and length > 1e-6:
+        res = np.degrees(np.arctan2(max(spread, THICK_MIN), length))
+        ang = np.degrees(np.arctan2(dv[1], dv[0]))
+        m = ang % 90
+        skew = m - 90 if m > 45 else m
+        if abs(skew) <= RESOLVE_K * res:
+            base = np.radians(round(ang / 90.0) * 90.0)
+            dv = np.array([np.cos(base), np.sin(base)])
+            n = np.array([-dv[1], dv[0]])
+            a = rel @ dv
+            perp = rel @ n
+            length = float(a.max() - a.min())
+            spread = float(np.percentile(perp, 95) - np.percentile(perp, 5))
+
     t = min(max(spread, THICK_MIN), THICK_MAX)
     mid = c + dv * float((a.max() + a.min()) / 2)
     corners = np.array([mid + dv * length / 2 + n * t / 2,
