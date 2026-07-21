@@ -41,6 +41,9 @@ COL_MAXFOOT= 0.80     # m: max column footprint dimension (tighter -> less furni
 COL_TOUCH  = 0.25     # m: column must reach within this of BOTH floor and ceiling
 COL_ASPECT = 3.0      # max footprint aspect ratio (a column is near-square)
 MIN_TRIS   = 300      # below this a wall is flagged 'low'
+CEIL_CELL  = 0.05     # ceiling height-map cell
+CEIL_STEP  = 0.030    # m: cell-to-cell height step that breaks a ceiling plateau
+CEIL_MINCELL = 60     # minimum cells for a ceiling part (0.15 m2)
 # --- unmeasured-wall recovery (rev3): plane-detect the residual vertical tris ---
 EX_ANG     = 5.0      # deg: heading bin (seeding only)
 EX_ANGW    = 35.0     # deg: membership heading tolerance -- Poisson surface noise
@@ -228,6 +231,73 @@ def extra_walls(tn, tc, label, vertical, z_floor, z_ceil):
     return out
 
 
+def split_ceiling(tc, label, z_floor):
+    """Break the single ceiling slab into clean, separately-measurable parts.
+
+    One merged ceiling object gives no usable height reading -- this flat has a
+    2.70 m main ceiling and 2.16 m dropped wet-room ceilings, plus down-stand
+    beams, all averaged together. Here the slab is gridded in (x,y), the cell
+    heights are clustered into discrete LEVELS, and each connected region of a
+    level becomes its own object carrying one height number.
+    """
+    ci = np.where(label == "ceiling")[0]
+    if ci.size == 0:
+        return []
+    p = tc[ci]
+    gx = np.floor(p[:, 0] / CEIL_CELL).astype(int)
+    gy = np.floor(p[:, 1] / CEIL_CELL).astype(int)
+    key = gx.astype(np.int64) * 100000 + gy
+    order = np.argsort(key)
+    k_s = key[order]
+    bounds = np.r_[0, np.flatnonzero(np.diff(k_s)) + 1, len(k_s)]
+    cell_ij, cell_z, cell_tris = [], [], []
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        sl = order[s:e]
+        cell_ij.append((int(k_s[s] // 100000), int(k_s[s] % 100000)))
+        cell_z.append(float(np.max(p[sl, 2])))          # underside of the slab
+        cell_tris.append(ci[sl])
+    cell_ij = np.array(cell_ij); cell_z = np.array(cell_z)
+
+    # Grow FLAT PLATEAUS: a neighbouring cell joins only if it is at essentially
+    # the same height. Global height clustering does not work here -- beams and
+    # slopes make the height histogram continuous, with no gaps to cut on -- but
+    # plateaus are separated by sharp vertical steps, which region growing finds.
+    lut = {tuple(c): i for i, c in enumerate(cell_ij)}
+    seen = set()
+    out = []
+    for c0 in lut:
+        if c0 in seen:
+            continue
+        seen.add(c0)
+        stack = [c0]; comp = [c0]
+        while stack:
+            x = stack.pop()
+            zx = cell_z[lut[x]]
+            i, j = x
+            for nb in ((i+1, j), (i-1, j), (i, j+1), (i, j-1)):
+                if nb in seen or nb not in lut:
+                    continue
+                if abs(cell_z[lut[nb]] - zx) < CEIL_STEP:
+                    seen.add(nb); stack.append(nb); comp.append(nb)
+        if len(comp) < CEIL_MINCELL:
+            continue
+        ii = np.array([lut[c] for c in comp])
+        tris = np.concatenate([cell_tris[i] for i in ii])
+        zc = float(np.median(cell_z[ii]))
+        name = f"ceiling_{len(out):02d}"
+        label[tris] = name
+        out.append(dict(name=name, tris=tris, ntris=int(tris.size),
+                        z=round(zc, 4),
+                        height_mm=round((zc - z_floor) * 1000, 1),
+                        area_m2=round(len(comp) * CEIL_CELL ** 2, 2),
+                        flatness_mm=round(float(np.std(cell_z[ii]) * 1000), 1)))
+    out.sort(key=lambda c: -c["area_m2"])
+    for c in out:
+        log(f"{c['name']}: h={c['height_mm']:.0f} mm  area={c['area_m2']:.1f} m2  "
+            f"flat±{c['flatness_mm']:.0f} mm  {c['ntris']:,} tris")
+    return out
+
+
 def columns(V, tri, tc, label, z_floor, z_ceil):
     room_h = z_ceil - z_floor
     free = np.where((label == "") & (tc[:, 2] > z_floor + 0.1) & (tc[:, 2] < z_ceil - 0.1))[0]
@@ -283,6 +353,7 @@ def main(poisson, mj, out_dir):
     log(f"{len(walls)} ok walls -> {len(groups)} physical walls (deduped)")
     label, wall_of, reps, vertical = segment(V, tri, tn, tc, groups, z_floor, z_ceil)
     extras = extra_walls(tn, tc, label, vertical, z_floor, z_ceil)
+    ceilparts = split_ceiling(tc, label, z_floor)
     cols = columns(V, tri, tc, label, z_floor, z_ceil)
 
     # build pieces
@@ -301,9 +372,16 @@ def main(poisson, mj, out_dir):
         wall_meta.append(dict(name=ex["name"], rooms=[], members=[], source="recovered",
                               length_m=ex["length_m"], ntris=ex["ntris"],
                               conf="low" if ex["ntris"] < MIN_TRIS else "ok"))
-    fi = np.where(label == "floor")[0]; ci = np.where(label == "ceiling")[0]
-    pieces.append(("floor", fi)); pieces.append(("ceiling", ci))
-    log(f"floor {fi.size:,} tris   ceiling {ci.size:,} tris")
+    fi = np.where(label == "floor")[0]
+    pieces.append(("floor", fi))
+    for cp in ceilparts:
+        pieces.append((cp["name"], cp["tris"]))
+    ci = np.where(label == "ceiling")[0]          # unclustered remainder
+    if ci.size:
+        pieces.append(("ceiling_misc", ci))
+    ceil_t = sum(c["ntris"] for c in ceilparts) + int(ci.size)
+    log(f"floor {fi.size:,} tris   ceiling {ceil_t:,} tris in "
+        f"{len(ceilparts)} parts (+{ci.size:,} unclustered)")
     for cdef in cols:
         pieces.append((cdef["name"], cdef["tris"]))
 
@@ -347,19 +425,21 @@ def main(poisson, mj, out_dir):
     disc = int((label == "").sum())
     manifest = dict(
         objects=wall_meta +
-                [dict(name="floor", ntris=int(fi.size)), dict(name="ceiling", ntris=int(ci.size))] +
+                [dict(name="floor", ntris=int(fi.size))] +
+                [{k: c[k] for k in ("name", "ntris", "z", "height_mm", "area_m2",
+                                    "flatness_mm")} for c in ceilparts] +
                 [{k: c[k] for k in ("name", "footprint", "ntris")} for c in cols],
         rooms={r: [w["name"] for w in wall_meta if r in w["rooms"]]
                for r in sorted({r for w in wall_meta for r in w["rooms"]})},
         coverage=dict(total_tris=tot, wall_tris=wall_t, recovered_wall_tris=extra_t,
                       n_recovered_walls=len(extras), floor_tris=int(fi.size),
-                      ceiling_tris=int(ci.size), column_tris=col_t, discarded_tris=disc,
+                      ceiling_tris=ceil_t, n_ceiling_parts=len(ceilparts), column_tris=col_t, discarded_tris=disc,
                       structural_frac=round((tot - disc) / tot, 3)))
     json.dump(manifest, open(out / "modular_manifest.json", "w"), indent=1)
     c = manifest["coverage"]
     log(f"COVERAGE structural={c['structural_frac']*100:.1f}%  walls={wall_t:,} "
         f"+recovered={extra_t:,} ({len(extras)} walls) floor={fi.size:,} "
-        f"ceil={ci.size:,} col={col_t:,} discarded(furniture)={disc:,}")
+        f"ceil={ceil_t:,}({len(ceilparts)} parts) col={col_t:,} discarded(furniture)={disc:,}")
     log("done")
 
 
