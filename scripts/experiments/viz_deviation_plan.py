@@ -36,6 +36,8 @@ TYPE_COLOR = {
 }
 MATCH_MAX = 1.00       # m: beyond this a drawing tag matches no scan opening
 FLAG_MM = 150          # offsets above this are a readjustment to report
+MIN_DIM_LEN = 0.90     # m: shorter wall runs are not worth dimensioning
+DIM_OFFSET = 0.16      # m: dimension line offset from the wall face
 UNCERTAIN_MM = 600     # above this the "offset" is more likely a wrong pairing
                        # than a built error -- a door is not 1.8 m out of place
 
@@ -83,6 +85,46 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         s = P[::35]
         ax.scatter(s[:, 0], s[:, 1], s=1.0, c="#1c2226", marker=".",
                    linewidths=0, zorder=2)
+
+    # ---- wall dimensions, measured off the merged planes.
+    # Length is the extent of actual geometry on the plane. Thickness is the
+    # 5-95 percentile perpendicular spread, which is robust to the stray
+    # returns that make a min-max thickness meaningless.
+    # Dimension the wall RUNS as built, not merged planes. Merging puts every
+    # run that shares an infinite plane into one object, so a "wall" came out
+    # 12048 mm long with its dimension line cutting diagonally across the flat.
+    # A wall run is a thing you can stand in front of and measure.
+    from scripts.experiments.walk_path_openings import plane_of
+    dims = []
+    for name, P in walls.items():
+        if len(P) < 2000:
+            continue
+        c, n, dv = plane_of(P)
+        rel = P[:, :2] - c
+        a = rel @ dv
+        perp = rel @ n
+        length = float(a.max() - a.min())
+        if length < MIN_DIM_LEN:
+            continue
+        thick = float(np.percentile(perp, 95) - np.percentile(perp, 5))
+        mid = c + dv * float((a.max() + a.min()) / 2)
+        p0 = c + dv * float(a.min()); p1 = c + dv * float(a.max())
+        off = n * DIM_OFFSET
+        ax.plot([p0[0] + off[0], p1[0] + off[0]],
+                [p0[1] + off[1], p1[1] + off[1]],
+                color="#455a64", lw=0.9, alpha=0.85, zorder=3)
+        for e in (p0, p1):
+            ax.plot([e[0], e[0] + off[0]], [e[1], e[1] + off[1]],
+                    color="#455a64", lw=0.7, alpha=0.7, zorder=3)
+        ang = np.degrees(np.arctan2(dv[1], dv[0]))
+        if ang > 90: ang -= 180
+        if ang < -90: ang += 180
+        ax.text(mid[0] + off[0], mid[1] + off[1],
+                f"{length*1000:.0f} × {thick*1000:.0f}t",
+                fontsize=6.0, ha="center", va="center", rotation=ang,
+                rotation_mode="anchor", color="#263238", zorder=4,
+                bbox=dict(fc="white", alpha=0.72, pad=0.8, lw=0))
+        dims.append((name, length, thick))
 
     # ---- columns (LiDAR)
     for n, P in cols.items():
@@ -187,7 +229,8 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
     ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.95)
     ax.set_title("As-built plan — geometry and position from LiDAR, tags from the drawing\n"
                  f"arrows show where an opening sits vs where the drawing put it   |   "
-                 f"wall relief: {nfeat} features ({sub})", fontsize=11)
+                 f"{len(dims)} walls dimensioned  |  wall relief: {nfeat} features ({sub})",
+                 fontsize=11)
     ax.set_xlabel("x (m)"); ax.set_ylabel("y (m)"); ax.set_aspect("equal")
     fig.tight_layout(); fig.savefig(out_png, dpi=130)
     print(f"wrote {out_png}  ({flagged} openings offset >{FLAG_MM} mm)")

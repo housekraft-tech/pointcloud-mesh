@@ -40,20 +40,85 @@ from scripts.experiments import walk_path_openings as W
 from scripts.experiments.openings_from_drawing import measure_bounded
 
 ROOM_CLASSES = {"Bedroom", "Bathroom", "Kitchen", "Utility", "Walkin",
-                "Dining Room", "Balcony", "Living Room", "Foyer"}
+                "Dining Room", "Balcony", "Living Room", "Foyer",
+                "Living / Dining"}
 OPENING_CLASSES = {"window", "balcony door", "Door"}
 PLANE_TOL = 0.50      # m
 DEFAULT_CAP = {"window": 2.0, "balcony door": 3.0, "Door": 1.6}
+ROOM_CONF = 0.30      # rooms score lower than furniture in this model
 GLAZED_FILL = 0.45    # occupancy across the drawing's span above this = glazed
 
 
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
 
 
+def dedupe_rooms(rooms, iou_thr=0.55):
+    """One space can fire as two room classes on the same box. Keep the
+    stronger. Living Room 0.47 and Dining Room 0.40 share a box exactly here."""
+    out = []
+    for r in sorted(rooms, key=lambda d: -d["score"]):
+        x0, y0, x1, y1 = r["box"]
+        dup = False
+        for k in out:
+            a0, b0, a1, b1 = k["box"]
+            ix = max(0, min(x1, a1) - max(x0, a0))
+            iy = max(0, min(y1, b1) - max(y0, b0))
+            inter = ix * iy
+            ua = (x1 - x0) * (y1 - y0) + (a1 - a0) * (b1 - b0) - inter
+            if ua > 0 and inter / ua > iou_thr:
+                dup = True
+                break
+        if not dup:
+            out.append(r)
+    return out
+
+
+def merge_open_plan(rooms, gap_px=80):
+    """Join Living Room and Dining Room when they abut.
+
+    They are not two rooms here. The detector splits the open plan into a left
+    half (Living, x 455-701) and a right half (Dining, x 709-924); the drawing
+    itself labels the single space "LIVING/DINING". Left separate, the shared
+    ceiling plateaus all fall to whichever box covers more of them and the
+    Living Room ends up with no geometry at all."""
+    liv = [r for r in rooms if r["name"] == "Living Room"]
+    din = [r for r in rooms if r["name"] == "Dining Room"]
+    rest = [r for r in rooms if r["name"] not in ("Living Room", "Dining Room")]
+    if not liv or not din:
+        return rooms
+    out = list(rest)
+    used = set()
+    for a in liv:
+        for j, b in enumerate(din):
+            if j in used:
+                continue
+            ax0, ay0, ax1, ay1 = a["box"]; bx0, by0, bx1, by1 = b["box"]
+            gap_x = max(0, max(ax0, bx0) - min(ax1, bx1))
+            gap_y = max(0, max(ay0, by0) - min(ay1, by1))
+            if gap_x < gap_px and gap_y < gap_px:
+                used.add(j)
+                out.append(dict(name="Living / Dining",
+                                score=max(a["score"], b["score"]),
+                                cls=a.get("cls"), src=a.get("src"),
+                                box=[min(ax0, bx0), min(ay0, by0),
+                                     max(ax1, bx1), max(ay1, by1)]))
+                break
+        else:
+            out.append(a)
+    out += [b for j, b in enumerate(din) if j not in used]
+    return out
+
+
 def detect(img_path):
     bgr = cv2.imread(str(img_path))
-    e = run_model(load("elements"), bgr, ELEMENTS_CLASSES, ELEMENTS_CONFIDENCE,
-                  ELEMENTS_CLASS_THRESHOLDS)
+    # Rooms are scored lower than furniture by this model, and the default 0.65
+    # silently dropped the LIVING ROOM (0.47) and the fourth BALCONY (0.34) --
+    # which is why an earlier pass reported 3 balconies against the plan's 4.
+    # Run rooms at ROOM_CONF and dedupe; keep the default for everything else.
+    e = run_model(load("elements"), bgr, ELEMENTS_CLASSES, ROOM_CONF, {})
+    e = ([d for d in e if d["name"] not in ROOM_CLASSES
+          and d["score"] >= ELEMENTS_CONFIDENCE]
+         + dedupe_rooms([d for d in e if d["name"] in ROOM_CLASSES]))
     w = run_model(load("walls"), bgr, WALLS_WINDOWS_CLASSES,
                   WALLS_WINDOWS_CONFIDENCE, WALLS_WINDOWS_CLASS_THRESHOLDS)
     for d in e:
@@ -110,25 +175,39 @@ def main(img_path, tf_path, ann_obj, mod_obj, mj, out_dir):
     z_ceil = float(np.median([r["z_ceiling"] for r in d["rooms"]]))
 
     dets, bgr = detect(img_path)
-    rooms = [x for x in dets if x["name"] in ROOM_CLASSES]
+    rooms = merge_open_plan([x for x in dets if x["name"] in ROOM_CLASSES])
     opens = [x for x in dets if x["name"] in OPENING_CLASSES]
 
     # ---- rooms: name the ceiling plateaus
     parts = ceiling_parts(ann_obj)
     cents = {n: P[:, :2].mean(0) for n, P in parts.items()}
     areas = {n: len(P) for n, P in parts.items()}
+    # Assign PLATEAU -> best room, not room -> plateaus whose centroid falls
+    # inside. Centroid-in-box left the Living Room with nothing (its box covers
+    # only part of the open plan, and the big plateau's centroid sits outside)
+    # and starved the Kitchen. Scoring each plateau by the fraction of its
+    # points inside each room box gives every plateau exactly one owner.
+    quads = [box_to_model(r["box"], tf).astype(np.float32) for r in rooms]
+    owner = {}
+    for n, P in parts.items():
+        s = P[::20, :2]
+        best, bi = 0.0, None
+        for i, q in enumerate(quads):
+            inside = sum(1 for pt in s
+                         if cv2.pointPolygonTest(q, (float(pt[0]), float(pt[1])),
+                                                 False) >= 0)
+            f = inside / max(len(s), 1)
+            if f > best:
+                best, bi = f, i
+        if bi is not None and best > 0.25:
+            owner.setdefault(bi, []).append(n)
+
     named = []
     for i, r in enumerate(rooms):
-        quad = box_to_model(r["box"], tf)
-        poly = quad.astype(np.float32)
-        inside = []
-        for n, c in cents.items():
-            if cv2.pointPolygonTest(poly, (float(c[0]), float(c[1],)), False) >= 0:
-                inside.append(n)
-        inside.sort(key=lambda n: -areas[n])
+        mine = sorted(owner.get(i, []), key=lambda n: -areas[n])
         named.append(dict(room=r["name"], conf=round(float(r["score"]), 3),
-                          centre_xy=[round(float(v), 3) for v in quad.mean(0)],
-                          ceiling_parts=inside[:4], n_parts=len(inside)))
+                          centre_xy=[round(float(v), 3) for v in quads[i].mean(0)],
+                          ceiling_parts=mine, n_parts=len(mine)))
     log("")
     log("ROOMS named from the drawing:")
     for r in named:
