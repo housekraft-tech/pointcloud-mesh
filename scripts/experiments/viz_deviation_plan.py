@@ -56,6 +56,37 @@ def parse_groups(path, prefix):
     return {n: V[a:b] for n, a, b in g if n.startswith(prefix) and b > a}
 
 
+def wall_grid_angle(walls):
+    """The building's own orthogonal grid direction, from the wall runs.
+
+    Averaged on 4*angle so that walls 90 deg apart reinforce rather than cancel
+    -- a plain mean of headings on an orthogonal plan returns nothing useful.
+    Weighted by run length so the long structural walls set the grid and short
+    stubs do not."""
+    from scripts.experiments.walk_path_openings import plane_of
+    vx = vy = 0.0
+    for P in walls.values():
+        if len(P) < 2000:
+            continue
+        c, n, dv = plane_of(P)
+        a = (P[:, :2] - c) @ dv
+        L = float(a.max() - a.min())
+        if L < 0.9:
+            continue
+        ang = np.arctan2(dv[1], dv[0])
+        vx += L * np.cos(4 * ang)
+        vy += L * np.sin(4 * ang)
+    if vx == 0 and vy == 0:
+        return 0.0
+    theta = np.arctan2(vy, vx) / 4.0
+    # bring into (-45, 45] deg: any multiple of 90 is the same grid
+    while theta > np.pi / 4:
+        theta -= np.pi / 2
+    while theta <= -np.pi / 4:
+        theta += np.pi / 2
+    return float(theta)
+
+
 def main(obj_path, fused_path, manifest_path, features_path, out_png):
     fused = json.load(open(fused_path))
     man = json.load(open(manifest_path))
@@ -67,6 +98,34 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
     boxes = parse_named_boxes(obj_path, ("door", "balcony_door", "window",
                                          "archway", "opening"))
     cinfo = {o["name"]: o for o in man["objects"] if o["name"].startswith("ceiling")}
+
+    # ---- straighten the DISPLAY to the building's own wall grid.
+    # The flat sits ~5 deg off the scan axes, which tilts every dimension line
+    # and label and makes the drawing hard to read against. This rotates the
+    # view only -- no measurement changes, because length, thickness and offset
+    # are all computed from the geometry, and rotation preserves distance.
+    theta = wall_grid_angle(walls)
+    R = np.array([[np.cos(-theta), -np.sin(-theta)],
+                  [np.sin(-theta), np.cos(-theta)]])
+    pivot = np.vstack(list(walls.values()))[:, :2].mean(0)
+
+    def rot(P):
+        P = np.asarray(P, float)
+        flat = P.ndim == 1
+        Q = np.atleast_2d(P).copy()
+        Q[:, :2] = (Q[:, :2] - pivot) @ R.T + pivot
+        return Q[0] if flat else Q
+
+    for dd in (walls, ceil, cols):
+        for k in list(dd):
+            dd[k] = rot(dd[k])
+    boxes = [(n, rot(b)) for n, b in boxes]
+    for r in fused["rooms"]:
+        r["centre_xy"] = list(rot(np.array(r["centre_xy"]))[:2])
+    for o in fused["openings"]:
+        o["model_xy"] = list(rot(np.array(o["model_xy"]))[:2])
+    print(f"straightened display by {np.degrees(-theta):+.2f} deg "
+          "(wall grid -> axes); measurements unchanged")
 
     fig, ax = plt.subplots(figsize=(19, 17))
 
@@ -226,7 +285,7 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         Line2D([], [], color="#d50000", lw=2, marker=">", label=f"design → as-built offset >{FLAG_MM} mm ({flagged})"),
         Line2D([], [], marker="P", ls="", c="#bbb", mec="k", ms=11, label="tagged in drawing, not found in scan"),
     ]
-    ax.legend(handles=handles, loc="upper right", fontsize=9, framealpha=0.95)
+    ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.96)
     ax.set_title("As-built plan — geometry and position from LiDAR, tags from the drawing\n"
                  f"arrows show where an opening sits vs where the drawing put it   |   "
                  f"{len(dims)} walls dimensioned  |  wall relief: {nfeat} features ({sub})",
