@@ -36,6 +36,11 @@ RELIEF_LIM= 0.06     # m: colour scale limit for the relief map
 GROOVE_W  = 0.25     # m: a recess narrower than this is a groove, not a niche
 ARCH_RISE = 0.06     # m: head rise above the springing that means "arched"
 SILL_MIN  = 0.25     # m: an opening whose base is above this has a sill
+DOOR_STD  = 2.134    # m: standard door head height (7 ft) -- used to CLASSIFY
+DOOR_TOL  = 0.15     # m: head within this of 7 ft counts as a door head
+MIN_OPEN_H= 1.70     # m: shorter than this at floor level is an occlusion void,
+                     #    not an opening -- furniture blocking the scan leaves a
+                     #    hole in the wall that looks identical to a doorway
 
 
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
@@ -186,27 +191,35 @@ def find_openings(occ, a0, z0, z_floor, z_ceil):
             rise = 0.0
         arched = rise > ARCH_RISE
 
+        head = zt - z_floor
+        vs7 = None
         if sill < SILL_MIN:                                  # reaches the floor
-            if zt > z_ceil - 0.30:
+            if h < MIN_OPEN_H:
+                kind = "occlusion void (not an opening)"
+            elif zt > z_ceil - 0.30:
                 kind = "archway / open passage"
+            elif abs(head - DOOR_STD) <= DOOR_TOL:
+                kind = "balcony / sliding door" if w >= 1.30 else "door"
+                vs7 = round((head - DOOR_STD) * 1000, 1)
             elif w >= 1.30:
-                kind = "balcony / sliding door"
-            elif 0.55 <= w <= 1.30 and 1.70 <= h <= 2.40:
-                kind = "door"
+                kind = "balcony / sliding door (non-standard head)"
             else:
-                kind = "floor-level opening"
+                kind = "floor-level opening (non-standard head)"
         else:
             kind = "window" if 0.35 <= sill <= 1.60 else "high-level opening"
-        if arched and "window" not in kind:
+        if arched and "window" not in kind and "void" not in kind:
             kind = "arched " + kind
 
-        out.append(dict(type=kind, width_m=round(w, 3), height_m=round(h, 3),
-                        sill_mm=round(sill * 1000, 1),
-                        head_mm=round((zt - z_floor) * 1000, 1),
-                        head_rise_mm=round(rise * 1000, 1),
-                        area_m2=round(area, 2),
-                        along_m=round(ab, 3),
-                        _box=(ab, zb, w, h)))
+        rec = dict(type=kind, width_m=round(w, 3), height_m=round(h, 3),
+                   sill_mm=round(sill * 1000, 1),
+                   head_mm=round(head * 1000, 1),
+                   head_rise_mm=round(rise * 1000, 1),
+                   area_m2=round(area, 2),
+                   along_m=round(ab, 3),
+                   _box=(ab, zb, w, h))
+        if vs7 is not None:
+            rec["vs_7ft_mm"] = vs7        # + = head above 7 ft, - = below
+        out.append(rec)
     out.sort(key=lambda o: -o["area_m2"])
     return out
 
@@ -250,6 +263,7 @@ def find_relief(rel, a0, z0, z_ceil):
 
 
 STYLE = {                      # label -> (edge colour, text colour)
+    "occlusion void": ("#888888", "#888888"),
     "door": ("#00e5ff", "#00e5ff"),
     "balcony / sliding door": ("#00ff90", "#00ff90"),
     "window": ("#ffd400", "#ffd400"),
