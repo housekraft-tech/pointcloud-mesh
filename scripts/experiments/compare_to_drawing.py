@@ -53,10 +53,11 @@ WET_MAX_H_MM = 2300          # dropped ceilings = the wet rooms
 def area(w, l): return w * l / 1e6
 
 
-def main(manifest, cls_path, out_dir):
+def main(manifest, cls_path, out_dir, fused_path=None):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     man = json.load(open(manifest))
     cls = json.load(open(cls_path))
+    fused = json.load(open(fused_path)) if fused_path else None
 
     ceil = [o for o in man["objects"] if o["name"].startswith("ceiling")
             and "height_mm" in o]
@@ -87,6 +88,41 @@ def main(manifest, cls_path, out_dir):
       f"{m_total - PANEL['carpet_balcony_sqft']*SQFT_M2:+10.1f}")
     P(f"{'  vs built-up panel':34} {PANEL['builtup_sqft']*SQFT_M2:10.1f} "
       f"{m_total:10.1f} {m_total - PANEL['builtup_sqft']*SQFT_M2:+10.1f}")
+
+    if fused and any("area_m2" in r for r in fused.get("rooms", [])):
+        rooms = [r for r in fused["rooms"] if "area_m2" in r]
+        balc = sum(r["area_m2"] for r in rooms if r["room"] == "Balcony")
+        inside = sum(r["area_m2"] for r in rooms) - balc
+        untag = sum(u["area_m2"] for u in fused.get("untagged_spaces", []))
+        P("")
+        P("=" * 78)
+        P("CLEAR FLOOR AREA  (walls cut the footprint; rooms named by the")
+        P("                  drawing, measured by the LiDAR)")
+        P("=" * 78)
+        P("The drawing's ROOM DIMENSIONS are to centre lines -- they run a")
+        P("median 185 mm larger per axis, one wall thickness -- so they are not")
+        P("the right thing to check a clear-area measurement against. The")
+        P("drawing's own carpet-area PANEL is, and that is the comparison made")
+        P("here. Per-room numbers are listed without a drawing delta for the")
+        P("same reason.")
+        P("")
+        for r in sorted(rooms, key=lambda r: -r["area_m2"]):
+            P(f"  {r['room']:16} {r['area_m2']:6.1f} m2")
+        P(f"  {'named rooms':16} {inside + balc:6.1f} m2 "
+          f"(of which balconies {balc:.1f})")
+        if untag:
+            P(f"  {'unnamed spaces':16} {untag:6.1f} m2  -- the LiDAR sees "
+              f"them, the")
+            P(f"  {'':16}         drawing detector returned no room box "
+              f"(foyer, corridor)")
+        P("")
+        got = inside + untag
+        P(f"{'vs carpet panel':34} {carpet_panel:10.1f} {got:10.1f} "
+          f"{got - carpet_panel:+10.1f}")
+        gotb = got + balc
+        cb = PANEL["carpet_balcony_sqft"] * SQFT_M2
+        P(f"{'vs carpet+balcony panel':34} {cb:10.1f} {gotb:10.1f} "
+          f"{gotb - cb:+10.1f}")
 
     P("")
     P("=" * 78)
@@ -161,4 +197,4 @@ def main(manifest, cls_path, out_dir):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:5])

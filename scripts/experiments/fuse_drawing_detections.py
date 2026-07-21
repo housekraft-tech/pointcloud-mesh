@@ -38,6 +38,7 @@ from scripts.experiments.transfer_drawing_marks import px_to_model
 from scripts.experiments.wall_elevations import parse_obj, merge_coplanar, grids
 from scripts.experiments import walk_path_openings as W
 from scripts.experiments.openings_from_drawing import measure_bounded
+from scripts.experiments.room_areas import room_regions
 
 ROOM_CLASSES = {"Bedroom", "Bathroom", "Kitchen", "Utility", "Walkin",
                 "Dining Room", "Balcony", "Living Room", "Foyer",
@@ -202,17 +203,31 @@ def main(img_path, tf_path, ann_obj, mod_obj, mj, out_dir):
         if bi is not None and best > 0.25:
             owner.setdefault(bi, []).append(n)
 
+    # Ceiling parts still carry the HEIGHTS, but they cannot carry the AREA: a
+    # plateau is a height level and one slab spans several same-height rooms,
+    # so whichever room won the shared slab took all of it. Area comes from
+    # cutting the footprint with the walls instead (see room_areas.py).
+    room_area, untagged, outlines, _ = room_regions(ann_obj, quads)
+
     named = []
     for i, r in enumerate(rooms):
         mine = sorted(owner.get(i, []), key=lambda n: -areas[n])
         named.append(dict(room=r["name"], conf=round(float(r["score"]), 3),
                           centre_xy=[round(float(v), 3) for v in quads[i].mean(0)],
+                          quad=[[round(float(v), 3) for v in p]
+                                for p in quads[i][:, :2]],
+                          area_m2=room_area[i], outline=outlines[i],
                           ceiling_parts=mine, n_parts=len(mine)))
     log("")
-    log("ROOMS named from the drawing:")
+    log("ROOMS named from the drawing, measured by the LiDAR:")
     for r in named:
-        log(f"  {r['room']:12} conf {r['conf']:.2f}  -> "
+        log(f"  {r['room']:12} conf {r['conf']:.2f}  {r['area_m2']:6.1f} m2  -> "
             f"{r['n_parts']} ceiling part(s) {r['ceiling_parts'][:2]}")
+    log(f"  {'TOTAL':12}            {sum(room_area):6.1f} m2 clear internal")
+    for u in untagged:
+        log(f"  UNNAMED SPACE      {u['area_m2']:6.1f} m2 at "
+            f"({u['centre_xy'][0]:.2f},{u['centre_xy'][1]:.2f}) -- LiDAR sees "
+            f"it, the drawing detector gave it no room box")
 
     # ---- openings: measure with the LiDAR
     G = merge_coplanar({n: P for n, P in parse_obj(mod_obj).items()
@@ -294,7 +309,7 @@ def main(img_path, tf_path, ann_obj, mod_obj, mj, out_dir):
         log("")
         log(f"{len(ok)}/{len(rows)} drawing openings measured in the LiDAR; "
             f"width diff mean {dif.mean():+.0f} mm, median {np.median(dif):+.0f} mm")
-    json.dump(dict(rooms=named, openings=rows),
+    json.dump(dict(rooms=named, openings=rows, untagged_spaces=untagged),
               open(out / "fused_detections.json", "w"), indent=1)
     log(f"wrote {out/'fused_detections.json'}")
 

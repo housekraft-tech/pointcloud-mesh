@@ -211,8 +211,12 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         big = max(parts, key=lambda p: cinfo[p]["area_m2"])
         P = ceil[big]
         c = P[:, :2].mean(0)
-        area = sum(cinfo[p]["area_m2"] for p in parts)
-        ax.text(c[0], c[1], f"{r['room']}\n{area:.1f} m²  h {cinfo[big]['height_mm']:.0f}",
+        # area is the wall-bounded floor region, NOT the sum of ceiling
+        # plateaus -- one slab spans several rooms, so that sum was wrong
+        area = r.get("area_m2")
+        ax.text(c[0], c[1],
+                f"{r['room']}\n{area:.1f} m²  h {cinfo[big]['height_mm']:.0f}"
+                if area else f"{r['room']}\nh {cinfo[big]['height_mm']:.0f}",
                 ha="center", va="center", fontsize=9, weight="bold", color="#0d1b2a",
                 bbox=dict(fc="white", alpha=0.82, pad=2.4, lw=0), zorder=9)
 

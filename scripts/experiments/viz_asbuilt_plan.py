@@ -153,6 +153,15 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         shade = "#eceff1" if n not in room_of else "#e3f2fd"
         ax.scatter(P[::30, 0], P[::30, 1], s=3.0, marker="s", linewidths=0,
                    color=shade, zorder=0)
+    # the rooms themselves, as the measured wall-bounded regions. Alternating
+    # tints: one shared colour makes neighbouring rooms read as a single space,
+    # which is exactly what this plan exists to disprove.
+    TINTS = ["#d6e9fb", "#e6f4ea", "#fdf0d5", "#f3e5f5", "#e0f7fa", "#fce4ec"]
+    for i, r in enumerate(fused["rooms"]):
+        if r.get("outline"):
+            ax.add_patch(Polygon(rot(np.asarray(r["outline"], float))[:, :2],
+                                 closed=True, fc=TINTS[i % len(TINTS)],
+                                 ec="#b0bec5", lw=0.5, zorder=1))
 
     # ---- walls as solid rectangles
     squint = []
@@ -192,21 +201,43 @@ def main(obj_path, fused_path, manifest_path, features_path, out_png):
         parts = [p for p in r["ceiling_parts"] if p in cinfo and p in ceil]
         if not parts:
             continue
-        Q = np.vstack([ceil[p] for p in parts])[:, :2]
-        x0, y0 = np.percentile(Q, 1, axis=0)
-        x1, y1 = np.percentile(Q, 99, axis=0)
-        area = sum(cinfo[p]["area_m2"] for p in parts)
+        # Extents come from the wall-bounded room region. Taking them from the
+        # ceiling plateaus put the living room's box over the kitchen, because
+        # they share one slab.
+        if r.get("outline"):
+            Q = rot(np.asarray(r["outline"], float))[:, :2]
+            x0, y0 = Q.min(0)
+            x1, y1 = Q.max(0)
+        else:
+            Q = np.vstack([ceil[p] for p in parts])[:, :2]
+            x0, y0 = np.percentile(Q, 1, axis=0)
+            x1, y1 = np.percentile(Q, 99, axis=0)
+        # Clear floor area from the wall-bounded region. Summing the ceiling
+        # plateaus here was wrong by construction: a plateau is a height level,
+        # and one slab covers the kitchen and the living room together.
+        area = r.get("area_m2")
         big = max(parts, key=lambda p: cinfo[p]["area_m2"])
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
-                               ec="#90a4ae", lw=0.7, ls=(0, (4, 3)), zorder=3))
-        ax.text(cx, cy + 0.16,
-                f"{r['room'].upper()}\n{area:.1f} m²   h {cinfo[big]['height_mm']:.0f}",
+        # Only a near-rectangular room can honestly carry a width x depth. The
+        # living room wraps round the kitchen wall, so its bounding box is far
+        # bigger than the room -- quoting that box would overstate it by metres.
+        boxed = (x1 - x0) * (y1 - y0)
+        rectish = area is not None and boxed > 0 and area / boxed >= 0.85
+        label = (f"{r['room'].upper()}\n{area:.1f} m²   "
+                 f"h {cinfo[big]['height_mm']:.0f}" if area else
+                 f"{r['room'].upper()}\nh {cinfo[big]['height_mm']:.0f}")
+        if not rectish and area:
+            label += "\n(not rectangular)"
+        ax.text(cx, cy + 0.16, label,
                 ha="center", va="center", fontsize=9.5, weight="bold",
                 color="#0d1b2a", zorder=10,
                 bbox=dict(fc="white", alpha=0.9, pad=2.5, lw=0))
-        dim_line(ax, (x0, y0), (x1, y0), f"{(x1-x0)*1000:.0f}", -0.20, 7.0)
-        dim_line(ax, (x1, y0), (x1, y1), f"{(y1-y0)*1000:.0f}", -0.20, 7.0)
+        if rectish:
+            ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False,
+                                   ec="#90a4ae", lw=0.7, ls=(0, (4, 3)),
+                                   zorder=3))
+            dim_line(ax, (x0, y0), (x1, y0), f"{(x1-x0)*1000:.0f}", -0.20, 7.0)
+            dim_line(ax, (x1, y0), (x1, y1), f"{(y1-y0)*1000:.0f}", -0.20, 7.0)
 
     # ---- openings: LiDAR position and width, drawing type
     centres = [(n,) + frame_of(b)[:1] + (frame_of(b)[2], frame_of(b)[4],
