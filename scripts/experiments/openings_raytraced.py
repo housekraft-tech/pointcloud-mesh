@@ -59,7 +59,16 @@ def load(path):
                 idx = [int(t.split("/")[0]) - 1 for t in ln.split()[1:]]
                 for k in range(1, len(idx) - 1):
                     F.append((idx[0], idx[k], idx[k + 1]))
-    return np.asarray(V, np.float64), np.asarray(F, np.int64)
+    V = np.asarray(V, np.float64)
+    # Same convention check as walls_from_poisson: a storey is the shortest
+    # axis of a flat, so exports that are Y-up rather than Z-up get rotated
+    # here too, or the wall runs and the mesh sit in different frames.
+    ext = V.max(0) - V.min(0)
+    up = int(np.argmin(ext))
+    if up != 2:
+        log(f"vertical axis is {'xyz'[up]}, not z -- rotating to Z-up")
+        V = V[:, [a for a in (0, 1, 2) if a != up] + [up]]
+    return V, np.asarray(F, np.int64)
 
 
 def visible(targets, poses, occ, org, dims):

@@ -71,7 +71,19 @@ def load(path):
                 idx = [int(t.split("/")[0]) - 1 for t in ln.split()[1:]]
                 for k in range(1, len(idx) - 1):
                     F.append((idx[0], idx[k], idx[k + 1]))
-    return np.asarray(V, np.float64), np.asarray(F, np.int64)
+    V = np.asarray(V, np.float64)
+    # Not every export is Z-up. The koushik Poisson is; the mujammel one is
+    # Y-up, and read as-is it reported a storey 13.42 m tall and found two
+    # walls. A storey is the SHORTEST axis of a flat, so use that to detect
+    # the convention rather than trusting the file.
+    ext = V.max(0) - V.min(0)
+    up = int(np.argmin(ext))
+    if up != 2:
+        log(f"vertical axis is {'xyz'[up]}, not z -- rotating to Z-up "
+            f"(extent {ext.round(2)})")
+        order = [a for a in (0, 1, 2) if a != up] + [up]
+        V = V[:, order]
+    return V, np.asarray(F, np.int64)
 
 
 def grid_angle(az, w):
