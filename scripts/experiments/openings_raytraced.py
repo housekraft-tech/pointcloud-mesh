@@ -132,7 +132,7 @@ def main(obj_path, walls_path, path_json, out_dir):
     walls = [s for s in W["walls"] if s.get("kind") == "wall"
              and s.get("length_m", 0) >= 0.6]
 
-    rows, n_open, n_shadow = [], 0, 0
+    rows, n_open, n_shadow, elevs = [], 0, 0, []
     for wi, s in enumerate(walls):
         p0, p1 = np.array(s["p0"], float), np.array(s["p1"], float)
         d = p1 - p0
@@ -153,6 +153,7 @@ def main(obj_path, walls_path, path_json, out_dir):
         void = cv2.morphologyEx((g == 0).astype(np.uint8), cv2.MORPH_OPEN,
                                 np.ones((3, 3), np.uint8))
         cover = float((g > 0).mean())
+        hits = []
         ncc, lab, st, _ = cv2.connectedComponentsWithStats(void, 8)
         for c in range(1, ncc):
             w = st[c, cv2.CC_STAT_WIDTH] * CELL
@@ -193,9 +194,16 @@ def main(obj_path, walls_path, path_json, out_dir):
                              wall_coverage=round(cover, 2),
                              void_share=round(float(share), 2),
                              seen_frac=round(frac, 2), real=bool(real)))
+            hits.append((st[c, cv2.CC_STAT_LEFT],
+                         nz_ - st[c, cv2.CC_STAT_TOP] - st[c, cv2.CC_STAT_HEIGHT],
+                         st[c, cv2.CC_STAT_WIDTH], st[c, cv2.CC_STAT_HEIGHT],
+                         kind,
+                         (f"{kind.split(' (')[0]} {w:.2f}x{h:.2f}"
+                          + (f" sill {sill-z0:.2f}" if sill - z0 >= 0.25 else ""))))
             log(f"  wall {wi:02d}  {w:4.2f} x {h:4.2f} sill {sill-z0:4.2f} "
                 f"head {head:4.2f}  seen {100*frac:3.0f}%  cover {100*cover:3.0f}%"
                 f"  -> {kind}")
+        elevs.append((wi, g, cover, hits))
 
     log(f"VERDICT: {n_open} real openings, {n_shadow} occlusion shadows")
     for k in ("door", "archway", "wide opening", "window"):
@@ -208,7 +216,72 @@ def main(obj_path, walls_path, path_json, out_dir):
     json.dump(dict(openings=rows, seen_frac_threshold=SEEN_FRAC,
                    n_poses=len(poses)),
               open(out / "openings_raytraced.json", "w"), indent=1)
+    draw(elevs, out / "openings_elevations.png")
     log(f"wrote {out/'openings_raytraced.json'} in {time.time()-t0:.0f}s")
+
+
+KIND_BGR = {"door": (60, 190, 60), "archway": (230, 150, 40),
+            "wide opening": (200, 90, 200), "window": (220, 200, 40),
+            "occlusion shadow": (60, 60, 220),
+            "no wall (run is not a wall)": (60, 60, 220)}
+
+
+def draw(elevs, path, scale=5, width=1900):
+    """One labelled elevation per wall: what was found and what was rejected."""
+    tiles = []
+    for wi, g, cover, hits in elevs:
+        # drafting convention: wall solid, opening blank. g is 255 where the
+        # scan found surface, so invert it -- black is fabric, white is a void.
+        img = cv2.cvtColor(255 - g, cv2.COLOR_GRAY2BGR)
+        img = cv2.resize(img, (g.shape[1] * scale, g.shape[0] * scale),
+                         interpolation=cv2.INTER_NEAREST)
+        H = img.shape[0]
+        for (x, y, w, h, kind, txt) in hits:
+            col = KIND_BGR.get(kind, (120, 120, 120))
+            # y is measured from the floor, the image from the top
+            y0 = H - (y + h) * scale
+            cv2.rectangle(img, (x * scale, int(y0)),
+                          ((x + w) * scale, int(y0) + h * scale), col, 2)
+            cv2.putText(img, txt, (x * scale + 3, int(y0) + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, col, 1, cv2.LINE_AA)
+        img = cv2.copyMakeBorder(img, 26, 6, 6, 6, cv2.BORDER_CONSTANT,
+                                 value=(255, 255, 255))
+        cv2.putText(img, f"wall {wi:02d}   {100*cover:.0f}% surface",
+                    (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (30, 30, 30), 1,
+                    cv2.LINE_AA)
+        tiles.append(cv2.copyMakeBorder(img, 2, 2, 2, 2, cv2.BORDER_CONSTANT,
+                                        value=(190, 190, 190)))
+    rows_, cur, cw = [], [], 0
+    for t in tiles:
+        if cur and cw + t.shape[1] > width:
+            rows_.append(cur); cur, cw = [], 0
+        cur.append(t); cw += t.shape[1]
+    if cur:
+        rows_.append(cur)
+    bands = []
+    for r in rows_:
+        h = max(t.shape[0] for t in r)
+        r = [cv2.copyMakeBorder(t, 0, h - t.shape[0], 0, 0,
+                                cv2.BORDER_CONSTANT, value=(255, 255, 255))
+             for t in r]
+        bands.append(np.hstack(r))
+    w = max(b.shape[1] for b in bands)
+    bands = [cv2.copyMakeBorder(b, 0, 0, 0, w - b.shape[1],
+                                cv2.BORDER_CONSTANT, value=(255, 255, 255))
+             for b in bands]
+    sheet = np.vstack(bands)
+    key = np.full((34, w, 3), 255, np.uint8)
+    x = 10
+    for k, col in (("door", KIND_BGR["door"]), ("archway", KIND_BGR["archway"]),
+                   ("wide opening", KIND_BGR["wide opening"]),
+                   ("window", KIND_BGR["window"]),
+                   ("rejected", KIND_BGR["occlusion shadow"])):
+        cv2.rectangle(key, (x, 10), (x + 22, 26), col, -1)
+        cv2.putText(key, k, (x + 28, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (30, 30, 30), 1, cv2.LINE_AA)
+        x += 40 + 11 * len(k)
+    cv2.imwrite(str(path), np.vstack([key, sheet]))
+    log(f"wrote {path.name}")
 
 
 if __name__ == "__main__":
