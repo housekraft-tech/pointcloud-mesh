@@ -36,6 +36,9 @@ MIN_TRIS_CELL = 30    # below this a cell is Poisson speckle floating in air
 TOUCH = 0.50          # m, "reaches the ceiling" (the junction curves away)
 SPAN = 1.20           # m, a ceiling-reaching cell running down this far is wall
 PARA_TOP = 0.50       # m, a parapet must rise at least this high
+PARA_THICK = 0.35     # m, a rail is thin in plan; a wardrobe is not
+PARA_TOP_RANGE = (0.70, 1.40)   # m above floor: plausible rail height
+PARA_TOP_STD = 0.18   # m, a rail is level along its length; furniture is not
 PARA_BASE = 0.55      # m, ...from within this of the floor
 MIN_LEN = 0.55        # m, shortest run worth calling a wall
 BRIDGE = 1.20         # m, close gaps along a run up to a wide doorway
@@ -80,11 +83,19 @@ def grid_angle(az, w):
     return ba, best / float(w.sum())
 
 
-def runs_from(mask, nx, ny, lo, R, pivot, kind):
-    """Elongated components of a rotated mask, returned as world-frame runs."""
+def runs_from(mask, nx, ny, lo, R, pivot, kind, bridge=None, zmax=None,
+              thick_max=None, top_range=None, top_std_max=None):
+    """Elongated components of a rotated mask, returned as world-frame runs.
+
+    The optional tests exist for parapets. "Dense, floor-anchored, stops below
+    the ceiling" is also an exact description of a wardrobe, so a balustrade has
+    to be identified by what makes it a balustrade: it is THIN in plan, its top
+    sits at a plausible rail height, and that top is LEVEL along its length.
+    Furniture is deep, and a row of it has a ragged top.
+    """
     out = []
     n_px = max(3, int(round(MIN_LEN / CELL)))
-    b_px = max(3, int(round(BRIDGE / CELL)))
+    b_px = max(3, int(round((BRIDGE if bridge is None else bridge) / CELL)))
     for axis, k, kb in (("x", np.ones((1, n_px), np.uint8),
                          np.ones((1, b_px), np.uint8)),
                         ("y", np.ones((n_px, 1), np.uint8),
@@ -119,6 +130,18 @@ def runs_from(mask, nx, ny, lo, R, pivot, kind):
             if cov < RUN_COVER:
                 continue
             thick = min(w, h) * CELL
+            if thick_max is not None and thick > thick_max:
+                continue                       # too deep in plan to be a rail
+            top = None
+            if zmax is not None:
+                zt = zmax[y:y + h, x:x + w][sub]
+                if zt.size == 0:
+                    continue
+                top = float(np.median(zt))
+                if top_range and not (top_range[0] <= top <= top_range[1]):
+                    continue                   # not at rail height
+                if top_std_max is not None and float(np.std(zt)) > top_std_max:
+                    continue                   # ragged top: furniture, not a rail
             if axis == "x":
                 a = np.array([lo[0] + x * CELL, lo[1] + (y + h / 2.0) * CELL])
                 b = np.array([lo[0] + (x + w) * CELL, a[1]])
@@ -128,11 +151,14 @@ def runs_from(mask, nx, ny, lo, R, pivot, kind):
             # back out of the grid frame
             p0 = R @ a + pivot
             p1 = R @ b + pivot
-            out.append(dict(p0=[round(float(v), 3) for v in p0],
-                            p1=[round(float(v), 3) for v in p1],
-                            axis=axis, length_m=round(float(L), 3),
-                            thickness_m=round(float(thick), 3),
-                            coverage=round(cov, 3), kind=kind))
+            rec = dict(p0=[round(float(v), 3) for v in p0],
+                       p1=[round(float(v), 3) for v in p1],
+                       axis=axis, length_m=round(float(L), 3),
+                       thickness_m=round(float(thick), 3),
+                       coverage=round(cov, 3), kind=kind)
+            if top is not None:
+                rec["top_z"] = round(top, 3)
+            out.append(rec)
     return out
 
 
@@ -200,7 +226,17 @@ def main(obj_path, out_dir, ref=None):
     # out is X = R @ Q + pivot. Passing R.T here rotated every run by twice
     # the grid angle and laid the lines across their own evidence.
     walls = runs_from(wm, nx, ny, lo, R, pivot, "wall")
-    paras = runs_from(pm, nx, ny, lo, R, pivot, "parapet")
+    # A balustrade has no doorways, so it needs almost no bridging -- and a
+    # long bridge is exactly what strung isolated furniture tops into 8-10 m
+    # "parapets" running through the middle of the flat.
+    zg = np.where(np.isfinite(zmax), zmax, np.nan).reshape(ny, nx)
+    paras = runs_from(pm, nx, ny, lo, R, pivot, "parapet", bridge=0.35,
+                      zmax=zg, thick_max=PARA_THICK,
+                      # PARA_TOP_RANGE is a height ABOVE THE FLOOR, and this
+                      # floor sits at z=-0.25, so it has to be lifted into
+                      # absolute z before it can be compared to one
+                      top_range=(z0 + PARA_TOP_RANGE[0], z0 + PARA_TOP_RANGE[1]),
+                      top_std_max=PARA_TOP_STD)
     # a parapet lying on top of a detected wall is that wall's lower band
     keep = []
     for p in paras:
