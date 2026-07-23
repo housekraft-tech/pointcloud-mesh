@@ -31,6 +31,8 @@ CELL = 0.04        # m, elevation raster (matches the earlier void scan)
 BAND = 0.22        # m, half-slab of faces taken per wall
 VERT_COS = 0.34
 MIN_W, MIN_H = 0.55, 0.90    # m, smaller voids are noise or piers
+DOOR_MIN_HEAD = 1.70         # m, a floor-anchored void shorter than this is
+                             # not something you walk through
 VOX = 0.06         # m, occupancy voxel for ray marching
 NEAR_SKIP = 0.25   # m, ignore occupancy this close to the sensor
 FAR_SKIP = 0.20    # m, ...and this close to the target, so the wall's own
@@ -181,6 +183,11 @@ def main(obj_path, walls_path, path_json, out_dir):
                 kind, real = "occlusion shadow", False
             elif sill - z0 >= 0.25:
                 kind, real = "window", True
+            elif head < DOOR_MIN_HEAD:
+                # floor-anchored but far too short to walk through: a recess,
+                # a skirting shadow, or the gap behind a low unit. Better
+                # runs surfaced several of these as 0.96-1.08 m "doors".
+                kind, real = "low void (not an opening)", False
             elif z1 - (z0 + head) < 0.15:
                 # nothing above it: no lintel was captured, so this is an
                 # archway / cased opening, not a door in a wall
@@ -221,6 +228,7 @@ def main(obj_path, walls_path, path_json, out_dir):
 
 
 KIND_BGR = {"door": (60, 190, 60), "archway": (230, 150, 40),
+            "low void (not an opening)": (60, 60, 220),
             "wide opening": (200, 90, 200), "window": (220, 200, 40),
             "occlusion shadow": (60, 60, 220),
             "no wall (run is not a wall)": (60, 60, 220)}
