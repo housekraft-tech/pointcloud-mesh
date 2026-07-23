@@ -23,9 +23,12 @@ KIND_COLOR = {
     "wall":           [0.86, 0.86, 0.84],   # plaster
     "parapet":        [0.72, 0.66, 0.55],   # balustrade
     "pillar":         [0.95, 0.42, 0.12],   # structural column
-    "beam":           [0.85, 0.20, 0.25],   # beam
-    "beamsoffit":     [0.85, 0.20, 0.25],
+        "beamsoffit":     [0.85, 0.20, 0.25],
     "droppedceiling": [0.55, 0.35, 0.75],   # dropped slab (wet rooms)
+    "overhead":       [0.85, 0.20, 0.25],
+    "beam":           [0.85, 0.20, 0.25],
+    "arch":           [0.20, 0.55, 0.95],
+    "furniture":      [0.45, 0.75, 0.35],
     "pilaster":       [0.98, 0.72, 0.10],
     "niche":          [0.20, 0.55, 0.95],
     "duct":           [0.35, 0.75, 0.85],
@@ -61,7 +64,10 @@ def parse(obj_path):
 
 
 def kind_of(name):
-    return name.split("_")[0]
+    # CAD hierarchy: "wall_11__beam_07" is a beam, not a wall. Take the last
+    # component of a parented name, otherwise the child inherits its parent's
+    # colour and every beam disappears into the wall it hangs on.
+    return name.split("__")[-1].split("_")[0]
 
 
 def build(V, groups, keep=None):
@@ -117,8 +123,8 @@ def main(obj_path, out_dir):
 
     # structure only: what holds the building up, without the relief clutter
     hard = build(V, groups, keep={"wall", "parapet", "pillar", "beam",
-                                  "beamsoffit", "droppedceiling", "floor",
-                                  "ENTRANCE"})
+                                  "beamsoffit", "droppedceiling", "overhead", "arch",
+                                  "floor", "ENTRANCE"})
     if hard is not None:
         render(hard, [0.55, 0.62, 0.58], 0.62, out / "house_shell_only.png")
         render(hard, [0.02, 0.05, 0.999], 0.70, out / "house_shell_plan.png")
