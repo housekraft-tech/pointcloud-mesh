@@ -42,11 +42,19 @@ PARA_TOP_STD = 0.18   # m, a rail is level along its length; furniture is not
 PARA_BASE = 0.55      # m, ...from within this of the floor
 MIN_LEN = 0.55        # m, shortest run worth calling a wall
 BRIDGE = 1.20         # m, close gaps along a run up to a wide doorway
+CORE_COVER = 0.40     # fraction of a run that must stand on vertical-face
+                      # evidence, not on slice evidence alone
 RUN_COVER = 0.55      # fraction of a run's length that must carry real
                       # evidence, measured ALONG the run, not over its box
 OPEN_PX = None        # set from MIN_LEN
 MIN_CELLS = 10
 GRID_TOL = 6.0        # deg, half-width of the on-grid acceptance band
+SLICES = 8            # top-view horizontal bands through the mesh
+SLICE_MARGIN = 0.35   # m, start above the skirting
+SLICE_TOP_MARGIN = 0.20  # m, stop below the ceiling coving
+SLICE_CLOSE = 3       # px, a slice of a surface mesh is a dotted line
+PERSIST = 0.62        # fraction of bands a wall cell must appear in
+TOP_BANDS = 2         # ...and it must appear in this many of the highest
 
 
 def log(m): print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
@@ -84,7 +92,8 @@ def grid_angle(az, w):
 
 
 def runs_from(mask, nx, ny, lo, R, pivot, kind, bridge=None, zmax=None,
-              thick_max=None, top_range=None, top_std_max=None):
+              thick_max=None, top_range=None, top_std_max=None,
+              thick_mask=None):
     """Elongated components of a rotated mask, returned as world-frame runs.
 
     The optional tests exist for parapets. "Dense, floor-anchored, stops below
@@ -125,11 +134,66 @@ def runs_from(mask, nx, ny, lo, R, pivot, kind, bridge=None, zmax=None,
             # the run -- the same test that rescued the perimeter walls in the
             # slice detector, where area density over the bounding box failed.
             sub = mask[y:y + h, x:x + w] > 0
+            prof = sub.any(axis=0) if axis == "x" else sub.any(axis=1)
+            if not prof.any():
+                continue
+            # Trim to the evidence. Bridging is meant to close gaps INSIDE a
+            # run, but it also pads both ends, so runs shot out past the
+            # building envelope with nothing under them. Clip back to the
+            # first and last position that carries real surface.
+            f_, l_ = int(np.argmax(prof)), int(len(prof) - 1 - np.argmax(prof[::-1]))
+            if axis == "x":
+                x, w = x + f_, l_ - f_ + 1
+            else:
+                y, h = y + f_, l_ - f_ + 1
+            if max(w, h) * CELL < MIN_LEN:
+                continue
+            sub = mask[y:y + h, x:x + w] > 0
+            L = max(w, h) * CELL
             cov = float((sub.any(axis=0) if axis == "x"
                          else sub.any(axis=1)).mean())
             if cov < RUN_COVER:
                 continue
+            core_cov = None
+            if thick_mask is not None:
+                # The slice channel may EXTEND a run, never invent one. Slices
+                # plus a 1.2 m bridge could otherwise chain unrelated cells
+                # sharing an x into a single line crossing the whole flat --
+                # total wall length went from 75.6 m to 94.9 m in a flat whose
+                # real figure is nearer 80 m. Demand that the run also stands
+                # on genuine vertical-face evidence along its length.
+                csub = thick_mask[y:y + h, x:x + w] > 0
+                core_cov = float((csub.any(axis=0) if axis == "x"
+                                  else csub.any(axis=1)).mean())
+                if core_cov < CORE_COVER:
+                    continue
             thick = min(w, h) * CELL
+            two_sided = False
+            if thick_mask is not None:
+                # The slice channel is closed to repair its dotted lines, and
+                # that closing welds a wall's two faces into one fat band --
+                # median thickness read 300 mm against a real 107 mm. Slices
+                # are good evidence of WHERE a wall is, not how thick it is,
+                # so measure the thickness back on the unclosed faces.
+                tsub = thick_mask[y:y + h, x:x + w] > 0
+                if tsub.any():
+                    # Per-column, then pooled. Taking the total perpendicular
+                    # extent of the whole run instead reads the run's DRIFT:
+                    # a 9.2 m wall off-grid by even 1 deg wanders three cells
+                    # sideways, and the sum came out at 300 mm.
+                    cols = (tsub.T if axis == "x" else tsub)
+                    # Thickness is the span from the near face to the far one,
+                    # so it can only be read where BOTH were captured. Counting
+                    # occupied cells instead gave 50 mm -- one cell -- because
+                    # a perimeter wall scanned from inside has a single face.
+                    sp = []
+                    for col in cols:
+                        w_ = np.where(col)[0]
+                        if w_.size >= 2 and (w_[-1] - w_[0] + 1) <= 8:
+                            sp.append(w_[-1] - w_[0] + 1)
+                    if sp:
+                        thick = float(np.median(sp)) * CELL
+                        two_sided = True
             if thick_max is not None and thick > thick_max:
                 continue                       # too deep in plan to be a rail
             top = None
@@ -155,7 +219,10 @@ def runs_from(mask, nx, ny, lo, R, pivot, kind, bridge=None, zmax=None,
                        p1=[round(float(v), 3) for v in p1],
                        axis=axis, length_m=round(float(L), 3),
                        thickness_m=round(float(thick), 3),
-                       coverage=round(cov, 3), kind=kind)
+                       coverage=round(cov, 3),
+                       thickness_two_sided=bool(two_sided),
+                       core_coverage=(None if core_cov is None
+                                      else round(core_cov, 3)), kind=kind)
             if top is not None:
                 rec["top_z"] = round(top, 3)
             out.append(rec)
@@ -212,6 +279,42 @@ def main(obj_path, out_dir, ref=None):
     np.add.at(cnt, flat, 1)
     dense = np.isfinite(zmin) & (cnt >= MIN_TRIS_CELL)
     wall_c = dense & (zmax >= z1 - TOUCH) & ((zmax - zmin) >= SPAN)
+    core = wall_c.copy()
+
+    # ---- second channel: top-view slices ---------------------------------
+    # Looking down through a band near the ceiling gives the cleanest wall
+    # plan available, because nothing else in the flat reaches that high --
+    # no wardrobe, no counter, no person. Slicing at several heights also
+    # gives per-cell PERSISTENCE, which separates a wall (present in every
+    # band) from furniture (present only in the low ones) without reference
+    # to the ceiling-contact test at all.
+    # Each band must be morphologically closed first: a slice of a SURFACE
+    # mesh is a dotted line, because vertices do not repeat in (x,y) from one
+    # height to the next.
+    zb = np.linspace(z0 + SLICE_MARGIN, z1 - SLICE_TOP_MARGIN, SLICES + 1)
+    zc_v = cen[iv, 2]
+    hits = np.zeros(nx * ny, np.int32)
+    top_hit = np.zeros(nx * ny, bool)
+    for b in range(SLICES):
+        sel = (zc_v >= zb[b]) & (zc_v < zb[b + 1])
+        if sel.sum() < 50:
+            continue
+        gb = np.zeros((ny, nx), np.uint8)
+        gb[ij[sel, 1], ij[sel, 0]] = 1
+        gb = cv2.morphologyEx(gb, cv2.MORPH_CLOSE,
+                              np.ones((SLICE_CLOSE,) * 2, np.uint8))
+        hits += gb.ravel().astype(np.int32)
+        if b >= SLICES - TOP_BANDS:
+            top_hit |= gb.ravel().astype(bool)
+    persist = hits / float(SLICES)
+    sliced = (persist >= PERSIST) & top_hit
+    log(f"top-view slices: {SLICES} bands, {int(sliced.sum()):,} cells persist "
+        f">= {PERSIST:.0%} and appear in the top {TOP_BANDS}")
+    added = sliced & ~wall_c
+    lost = wall_c & ~sliced
+    wall_c = wall_c | sliced
+    log(f"  fusing: +{int(added.sum()):,} cells the vertical-face test missed, "
+        f"{int(lost.sum()):,} it had that the slices do not confirm")
     para_c = (dense & (zmax < z1 - TOUCH) & (zmin <= z0 + PARA_BASE)
               & (zmax >= z0 + PARA_TOP))
     log(f"plan cells: {int(dense.sum()):,} dense -> {int(wall_c.sum()):,} wall, "
@@ -225,7 +328,8 @@ def main(obj_path, out_dir, ref=None):
     # forward was Q = (X - pivot) @ R, i.e. R.T @ (X - pivot), so coming back
     # out is X = R @ Q + pivot. Passing R.T here rotated every run by twice
     # the grid angle and laid the lines across their own evidence.
-    walls = runs_from(wm, nx, ny, lo, R, pivot, "wall")
+    walls = runs_from(wm, nx, ny, lo, R, pivot, "wall",
+                      thick_mask=core.reshape(ny, nx).astype(np.uint8))
     # A balustrade has no doorways, so it needs almost no bridging -- and a
     # long bridge is exactly what strung isolated furniture tops into 8-10 m
     # "parapets" running through the middle of the flat.
