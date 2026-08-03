@@ -632,3 +632,56 @@ def snap_endpoints_to_lines(walls, reach_m: float = 0.7, dangling_tol_m: float =
         p1 = np.asarray(w["p1"], dtype=float)
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# merge_collinear_runs
+# ---------------------------------------------------------------------------
+
+# Floor on a segment's weight so a zero-length segment cannot divide by zero
+# while still counting for essentially nothing.
+_MIN_WEIGHT = 1e-9
+
+
+def merge_collinear_runs(segs, tol: float = 0.16):
+    """Merge overlapping near-collinear runs, positioning each group by the
+    LENGTH-WEIGHTED mean of its members.
+
+    Each seg is ``(a0, a1, c)``: extent along the wall and offset across it.
+    Returns the merged groups in the same form, sorted by ``(c, a0)``.
+
+    The previous form was a running pairwise mean, ``c = (c + c_new) / 2``.
+    It sorted its input first, so it was deterministic -- but it weighted by
+    merge ORDER rather than by evidence: merging c1, c2, c3 yields
+    ``c1/4 + c2/4 + c3/2``. The last member processed carries half the answer,
+    and since the sort was by offset that member is always the one furthest
+    out, so the group centre was biased consistently away from the wall. A
+    0.3m stub also moved a 6m wall exactly as much as another 6m wall would.
+
+    Both follow from using the weighted centroid instead: each member counts
+    in proportion to its length, and the result no longer depends on the order
+    members are merged in.
+
+    Groups are seeded longest-first so a long wall anchors its group and a
+    short stub attaches to it, never the reverse. This also limits chaining:
+    a stub bridging two distinct walls joins the dominant one instead of
+    pulling both into one group.
+    """
+    items = [(float(a0), float(a1), float(c)) for a0, a1, c in segs]
+    items.sort(key=lambda s: -(s[1] - s[0]))
+
+    groups = []                      # [lo, hi, centre, weight]
+    for a0, a1, c in items:
+        w = max(a1 - a0, _MIN_WEIGHT)
+        for g in groups:
+            if abs(g[2] - c) <= tol and a0 <= g[1] + tol and a1 >= g[0] - tol:
+                g[2] = (g[2] * g[3] + c * w) / (g[3] + w)
+                g[3] += w
+                g[0] = min(g[0], a0)
+                g[1] = max(g[1], a1)
+                break
+        else:
+            groups.append([a0, a1, c, w])
+
+    groups.sort(key=lambda g: (g[2], g[0]))
+    return [(g[0], g[1], g[2]) for g in groups]

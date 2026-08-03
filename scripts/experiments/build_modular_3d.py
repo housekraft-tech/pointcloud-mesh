@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.recon import clean, frame
 from scripts.recon.metrology import clear_between, detect_wall_faces
+from scripts.recon.regularize import merge_collinear_runs
 from scripts.recon.io_las import load_scan
 from scripts.recon.isolate import select_z_band, isolate_unit
 from scripts.isolidarflow import DEFAULT_CONFIG
@@ -195,15 +196,7 @@ def main(las_path, out_dir):
                 Vs.append([min(p0[1], p1[1]), max(p0[1], p1[1]), (p0[0] + p1[0]) / 2])
 
         def m(segs):
-            segs = sorted(segs, key=lambda s: (s[2], s[0])); out = []
-            for a0, a1, c in segs:
-                hit = False
-                for w in out:
-                    if abs(w[2] - c) <= tol and a0 <= w[1] + tol and a1 >= w[0] - tol:
-                        w[0] = min(w[0], a0); w[1] = max(w[1], a1); w[2] = (w[2] + c) / 2; hit = True; break
-                if not hit:
-                    out.append([a0, a1, c])
-            return out
+            return merge_collinear_runs(segs, tol=tol)
         res = []
         for a0, a1, y in m(Hs):
             res.append((np.array([a0, y]), np.array([a1, y])))
