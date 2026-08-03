@@ -127,6 +127,22 @@ def main(las_path, out_dir):
     sub = rng.choice(scan.n, size=min(cfg["normals_max_points"], scan.n), replace=False)
     normals = frame.estimate_normals(scan.xyz[sub], radius=cfg["normals_radius_m"], max_nn=cfg["normals_max_nn"])
     R = frame.dominant_axes(normals)
+    # How much does the single Manhattan grid actually cost? An angular
+    # residual is not an error until multiplied by a lever arm, so report it
+    # in mm over a 10m span -- directly comparable with the rest of the budget.
+    fres = frame.axis_residuals(normals)
+    frame_note = "frame residual: not measurable (no wall normals)"
+    if fres is not None:
+        frame_note = (f"frame residual: p90 {fres.p90_dev_deg:.2f}deg "
+                      f"= {frame.deviation_mm(fres.p90_dev_deg, 10.0):.0f}mm over 10m"
+                      f"  |  grid {fres.theta_deg:.3f}+/-{fres.theta_stderr_deg:.3f}deg")
+        log(frame_note)
+        log(f"   dispersion {fres.dispersion_deg:.2f}deg | median dev "
+            f"{fres.p50_dev_deg:.2f}deg | max {fres.max_dev_deg:.2f}deg | n={fres.n:,}")
+        if fres.frac_off_grid > 0.10:
+            log(f"   WARNING {fres.frac_off_grid:.0%} of walls are >5deg off the grid -- "
+                f"this building is not Manhattan, so snapping to it is WRONG, "
+                f"not merely imprecise, and the grid angle itself is unreliable")
     scan = frame.axis_align(scan, R)
     xyz = scan.xyz
     x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
@@ -322,6 +338,8 @@ def main(las_path, out_dir):
     cv2.putText(dim, "+/- = 95% interval on the measured faces    "
                      "* = inner face unseen, derived from estimated wall thickness",
                (PL, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (110, 110, 110), 1, cv2.LINE_AA)
+    cv2.putText(dim, frame_note, (PL, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+               (110, 110, 110), 1, cv2.LINE_AA)
     cv2.imwrite(str(out_dir / "wall_plan_dimensioned.png"), dim)
 
     # ---- COMPLETE floorplan: every internal wall of every room, rendered as
