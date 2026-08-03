@@ -110,7 +110,8 @@ def refine_face(vals, seed: float, windows=(0.040, 0.020, 0.012),
 
 def detect_wall_faces(coords, heights, bin_m: float = 0.05,
                       min_points: int = 6, min_span_m: float = 1.5,
-                      merge_tol: float = 0.005, **refine_kw) -> list[Location]:
+                      merge_tol: float = 0.005, min_bin_frac: float = 0.0,
+                      **refine_kw) -> list[Location]:
     """Find full-height wall faces along one axis, measured to sub-mm.
 
     Coarse binning is used ONLY to locate candidates -- a bin qualifies when it
@@ -131,11 +132,19 @@ def detect_wall_faces(coords, heights, bin_m: float = 0.05,
         return []
 
     b = np.floor(co / bin_m).astype(np.int64)
+    uniq, counts = np.unique(b, return_counts=True)
+    # A face PERPENDICULAR to this axis concentrates its whole surface into one
+    # bin; a wall PARALLEL to it smears uniformly across every bin. Requiring a
+    # fraction of the strongest bin rejects the parallel walls that would
+    # otherwise be measured as phantom faces (they are full-height too, so the
+    # span test alone cannot see them).
+    floor_count = min_bin_frac * float(counts.max()) if min_bin_frac > 0 else 0.0
+
     seeds = []
-    for bb in np.unique(b):
-        m = b == bb
-        if int(m.sum()) < min_points:
+    for bb, cnt in zip(uniq, counts):
+        if int(cnt) < min_points or float(cnt) < floor_count:
             continue
+        m = b == bb
         if float(zc[m].max() - zc[m].min()) <= min_span_m:
             continue
         seeds.append(float(np.median(co[m])))
@@ -213,6 +222,53 @@ def fit_plane_tls(points, normal0=None, band: float = 0.05,
     resid = p @ n - d
     n_in = int(inl.sum())
     return PlaneFit(n, d, sigma, sigma / np.sqrt(max(n_in, 1)), n_in)
+
+
+def clear_between(coords, heights, c_lo: float, c_hi: float,
+                  half_window: float = 0.30, min_bin_frac: float = 0.15,
+                  **detect_kw) -> tuple[float, float] | None:
+    """Clear distance between the facing inner faces of two wall centrelines.
+
+    This replaces `centreline_distance - t_lo/2 - t_hi/2`. Deriving a clear
+    dimension from centrelines needs two wall THICKNESSES, each estimated, each
+    contributing half its error -- and for a perimeter wall whose outer face was
+    never scanned the thickness cannot be measured at all. Measuring the two
+    inner faces directly needs neither: it is one subtraction between two
+    surfaces the scanner actually saw.
+
+    `coords` are positions along the measurement axis and `heights` the matching
+    z. Search windows are clipped so they can never meet in the middle, so a
+    doorway or furniture between the walls cannot be mistaken for a face.
+
+    Returns (clear_distance, stderr), or None if either inner face is missing.
+    """
+    co = np.asarray(coords, dtype=float).ravel()
+    zc = np.asarray(heights, dtype=float).ravel()
+    if co.size == 0 or not np.isfinite([c_lo, c_hi]).all():
+        return None
+    lo, hi = (c_lo, c_hi) if c_lo <= c_hi else (c_hi, c_lo)
+    gap = hi - lo
+    if gap <= 0:
+        return None
+    half = min(half_window, 0.45 * gap)
+    mid = 0.5 * (lo + hi)
+
+    def _inner(centre, want_upper):
+        w = (co >= centre - half) & (co <= centre + half)
+        if int(w.sum()) < 30:
+            return None
+        faces = detect_wall_faces(co[w], zc[w], min_bin_frac=min_bin_frac, **detect_kw)
+        # The INNER face is the one on the far side, i.e. nearest the midpoint.
+        side = [f for f in faces if (f.value <= mid if want_upper else f.value >= mid)]
+        if not side:
+            return None
+        return max(side, key=lambda f: f.value) if want_upper else min(side, key=lambda f: f.value)
+
+    a = _inner(lo, want_upper=True)
+    b = _inner(hi, want_upper=False)
+    if a is None or b is None:
+        return None
+    return face_gap(a, b)
 
 
 def face_gap(a: Location, b: Location) -> tuple[float, float]:
