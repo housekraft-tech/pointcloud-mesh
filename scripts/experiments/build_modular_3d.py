@@ -30,6 +30,7 @@ from shapely.ops import unary_union
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from scripts.recon import clean, frame
+from scripts.recon.metrology import detect_wall_faces
 from scripts.recon.io_las import load_scan
 from scripts.recon.isolate import select_z_band, isolate_unit
 from scripts.isolidarflow import DEFAULT_CONFIG
@@ -411,28 +412,31 @@ def main(las_path, out_dir):
             co, zc = yw[m2], zw[m2]
         if co.size < 30:
             return None
-        b = np.round(co / 0.05).astype(int)
-        wallpos = []
-        for bb in np.unique(b):
-            mm = b == bb
-            if mm.sum() >= 6 and (zc[mm].max() - zc[mm].min()) > 1.5:
-                wallpos.append(bb * 0.05)
-        wp = np.array(sorted(wallpos))
+        # Coarse bins only LOCATE the faces; every returned position is
+        # re-measured from the raw coordinates, so nothing is grid-quantized.
+        faces = detect_wall_faces(co, zc, bin_m=0.05, min_points=6, min_span_m=1.5)
+        if not faces:
+            return None
+        wp = np.array([f.value for f in faces])
         lft = wp[wp < along_c]; rgt = wp[wp > along_c]
-        # left face: nearest wall if it sits at the room edge, else the partition
+        # left face: nearest wall if it sits at the room edge, else the partition.
+        # A capped (open) side has no measured face, so it carries no stderr --
+        # its uncertainty is the segmentation's, not the LiDAR's.
         if lft.size and lft.max() >= fs_lo - OPEN_MARGIN:
             left, open_l = float(lft.max()), False
+            se_l = faces[int(np.argmin(np.abs(wp - left)))].stderr
         else:
-            left, open_l = fs_lo, True
+            left, open_l, se_l = fs_lo, True, CELL
         # right face: same logic mirrored
         if rgt.size and rgt.min() <= fs_hi + OPEN_MARGIN:
             right, open_r = float(rgt.min()), False
+            se_r = faces[int(np.argmin(np.abs(wp - right)))].stderr
         else:
-            right, open_r = fs_hi, True
+            right, open_r, se_r = fs_hi, True, CELL
         span = right - left
         if span < 0.5:
             return None
-        return span, (open_l or open_r)
+        return span, (open_l or open_r), float(np.hypot(se_l, se_r))
 
     nroom = 0
     FT = cv2.FONT_HERSHEY_SIMPLEX
@@ -470,11 +474,14 @@ def main(las_path, out_dir):
         rh = clear_span("y", rcy, rcx, fs_y_lo, fs_y_hi)
         if rw is None or rh is None:
             continue
-        wdt, ow = rw; hgt, oh = rh
+        wdt, ow, sew = rw; hgt, oh, seh = rh
         nroom += 1
         op = "~" if (ow or oh) else ""                          # ~ = open-side span
+        # 95% interval on the worse of the two axes; a mm-level number is only
+        # a claim if it carries its error bar.
+        pm = 1.96 * max(sew, seh) * 1000
         for t, dy, sc in [(f"{op}{wdt*1000:.0f} x {hgt*1000:.0f} mm", -6, 0.5),
-                          (f"({wdt*3.28084:.1f} x {hgt*3.28084:.1f} ft)", 12, 0.42)]:
+                          (f"+/-{pm:.1f}mm  ({wdt*3.28084:.1f} x {hgt*3.28084:.1f} ft)", 12, 0.42)]:
             (tw, th), _ = cv2.getTextSize(t, FT, sc, 1)
             tx = int(np.clip(cx - tw // 2, 2, W - tw - 2))       # keep label on-canvas
             cv2.rectangle(fr, (tx - 2, cy + dy - th - 1), (tx + tw + 2, cy + dy + 3), (255, 255, 255), -1)
