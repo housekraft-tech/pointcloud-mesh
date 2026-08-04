@@ -19,6 +19,8 @@ import svgwrite
 from shapely.geometry import LineString, MultiLineString
 from shapely.ops import polygonize, unary_union
 
+from scripts.recon import metrology
+
 LAYER_NAMES = ("WALLS", "OPENINGS", "ROOMS", "DIMS")
 
 
@@ -116,6 +118,52 @@ def build_room_polygons(walls, epsilon_m: float = 0.05) -> list:
     merged = unary_union(MultiLineString(lines))
     polygons = list(polygonize(merged))
     return [p for p in polygons if p.area > 1e-6]
+
+
+def measure_room_clear_dims(room, points, z_lo: float, z_hi: float,
+                            margin_m: float = 0.15, half_window: float = 0.30):
+    """Clear inner-face-to-inner-face X and Y span of one room, from raw points.
+
+    The room polygon's bounding box edges are the facing wall CENTRELINES;
+    the clear dimension the occupant experiences is smaller by each wall's
+    inner-face inset. Rather than subtract two estimated half-thicknesses
+    (each with its own error, and undefined for a perimeter wall whose outer
+    face was never scanned), this measures the two inner faces directly via
+    `metrology.clear_between` -- one subtraction between two surfaces the
+    scanner actually saw.
+
+    Points are restricted to the story z-band and, for each axis, to the
+    room's extent along the OTHER axis shrunk by `margin_m` so the two
+    perpendicular end walls never contribute faces to this axis's scan.
+
+    Returns a dict with whichever of clear_x_m/clear_y_m (each with a
+    _stderr_m) could be measured; an axis whose inner faces are missing
+    (open side, too few points) is simply omitted.
+    """
+    pts = np.asarray(points, dtype=float)
+    out: dict = {}
+    if pts.size == 0:
+        return out
+
+    minx, miny, maxx, maxy = room.bounds
+    x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+    zband = (z >= z_lo) & (z <= z_hi)
+
+    # X span: keep points inside the room's y-extent (minus the end walls),
+    # spanning the two x-centrelines with room to see each inner face.
+    xsel = zband & (y >= miny + margin_m) & (y <= maxy - margin_m) & \
+        (x >= minx - margin_m) & (x <= maxx + margin_m)
+    cx = metrology.clear_between(x[xsel], z[xsel], minx, maxx, half_window=half_window)
+    if cx is not None:
+        out["clear_x_m"], out["clear_x_stderr_m"] = float(cx[0]), float(cx[1])
+
+    ysel = zband & (x >= minx + margin_m) & (x <= maxx - margin_m) & \
+        (y >= miny - margin_m) & (y <= maxy + margin_m)
+    cy = metrology.clear_between(y[ysel], z[ysel], miny, maxy, half_window=half_window)
+    if cy is not None:
+        out["clear_y_m"], out["clear_y_stderr_m"] = float(cy[0]), float(cy[1])
+
+    return out
 
 
 # ---------- DXF export ----------

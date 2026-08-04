@@ -44,7 +44,8 @@ from scripts.recon import io_las, clean, frame, planes, structure, regularize  #
 from scripts.recon.trajectory import approx_trajectory, load_trajectory, wall_crossings  # noqa: E402
 from scripts.recon.isolate import select_z_band, isolate_unit  # noqa: E402
 from scripts.recon.openings import detect_openings  # noqa: E402
-from scripts.recon.floorplan2d import build_room_polygons, write_dxf, write_svg  # noqa: E402
+from scripts.recon.floorplan2d import (  # noqa: E402
+    build_room_polygons, measure_room_clear_dims, write_dxf, write_svg)
 from scripts.recon.schema import build_manifest, new_wall_id, new_opening_id  # noqa: E402
 from scripts.recon.model import build_room_model  # noqa: E402
 from scripts.recon.assemble import build_scene, write_glb  # noqa: E402
@@ -139,6 +140,8 @@ DEFAULT_CONFIG = {
     "room_eps_recovery_m": 0.50,     # looser epsilon for room recovery pass
     "room_min_area_m2": 1.0,         # ignore polygons smaller than this
     "room_simplify_m": 0.02,         # Douglas-Peucker tolerance for room polygons
+    "clear_z_floor_margin_m": 0.20,  # z inset above floor for clear-span measurement
+    "clear_z_ceiling_margin_m": 0.15,  # z inset below ceiling for clear-span measurement
     # --- opening priors (Task 7) -- never hard rejections, only classification/flags ---
     "priors": {
         "door_h_m": 2.13,            # 7 ft door height prior (user requirement)
@@ -421,6 +424,14 @@ def run(in_path, out_dir, config=None):
         # --- 13. manifest ---
         manifest = build_manifest(walls, openings_by_wall, columns, beams, room_coords,
                                   z_floor, z_ceiling, cfg)
+
+        # Clear inner-face-to-inner-face room dimensions, measured from raw
+        # points (metrology), merged onto each manifest room by index.
+        clear_z_lo = z_floor + cfg["clear_z_floor_margin_m"]
+        clear_z_hi = z_ceiling - cfg["clear_z_ceiling_margin_m"]
+        for room_poly, room_dict in zip(rooms, manifest["rooms"]):
+            room_dict.update(
+                measure_room_clear_dims(room_poly, xyz, clear_z_lo, clear_z_hi))
 
         # --- 14. 3D model -> GLB ---
         model = build_room_model(walls, openings_by_wall, columns, beams, rooms,

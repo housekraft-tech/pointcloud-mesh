@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from scripts.recon import metrology
+
 
 # ---------------------------------------------------------------------------
 # snap_walls
@@ -400,6 +402,106 @@ def _measure_thickness_from_points(run, points, min_thickness_m, max_thickness_m
     return best[1] if best else None
 
 
+def _measure_thickness_metrology(run, points, min_thickness_m, max_thickness_m,
+                                  min_overlap_frac=0.5, margin_m=0.1,
+                                  min_points=60, seed_tol_m=0.030):
+    """Robust raw-point thickness via the metrology M-estimator.
+
+    Projects the wall's neighbourhood onto its own normal and lets
+    `metrology.detect_wall_faces` locate every full-height face along that
+    axis to sub-mm, then reports the gap between the pair of adjacent faces
+    that (a) lie within [min_thickness_m, max_thickness_m] and (b) sit
+    nearest the centreline the run came from -- i.e. this wall's own front
+    and back, not a neighbouring wall the search window happened to include.
+
+    Unlike `_measure_thickness_from_points` (which medians |offset| and so
+    reports the distance from p0 to a single back face -- half the thickness
+    when p0 is the centreline), this measures the span between two surfaces,
+    so it is correct whether p0 sits on the main face or on the centreline.
+    A skirting board or picture frame near a face cannot drag the estimate,
+    because the underlying face fits are Huber M-estimators, not means.
+
+    A wall's own back face cannot be told from a neighbouring wall's face by
+    raw points alone -- both are full-height, high-support surfaces. So the
+    steps-derived thickness is used as a DISTANCE PRIOR (topology): among the
+    faces the M-estimator finds, the pair whose gap matches that prior (within
+    `seed_tol_m`) is the wall's own two faces, now measured to sub-mm. This is
+    the module's own rule applied to thickness -- rasters (here, the grouped
+    steps) decide which surfaces, the raw points decide the distance.
+
+    Returns (thickness_m, stderr_m), or None when there is no steps prior or no
+    detected face pair matches it.
+    """
+    pts = np.asarray(points, dtype=float)
+    if pts.size == 0:
+        return None
+
+    # Topology prior: the grouped steps say roughly how thick this wall is.
+    prior = _thickness_from_steps(run, min_thickness_m, max_thickness_m, min_overlap_frac)
+    if prior is None:
+        return None
+
+    p0 = np.asarray(run["p0"], dtype=float)
+    p1 = np.asarray(run["p1"], dtype=float)
+    u_vec = p1 - p0
+    length = float(np.linalg.norm(u_vec))
+    if length < 1e-9:
+        return None
+    u_vec = u_vec / length
+
+    normal = run.get("normal")
+    if normal is None:
+        return None
+    normal = np.asarray(normal[:2], dtype=float)
+    nn = np.linalg.norm(normal)
+    if nn < 1e-9:
+        return None
+    normal = normal / nn
+
+    steps = run.get("steps") or []
+    if steps:
+        z_min = min(st.z_min_m for st in steps)
+        z_max = max(st.z_max_m for st in steps)
+    else:
+        z_min, z_max = -np.inf, np.inf
+
+    rel = pts[:, :2] - p0
+    u = rel @ u_vec
+    off = rel @ normal
+
+    z_ok = np.ones(len(pts), dtype=bool)
+    if pts.shape[1] > 2 and np.isfinite(z_min) and np.isfinite(z_max):
+        z_ok = (pts[:, 2] >= z_min - margin_m) & (pts[:, 2] <= z_max + margin_m)
+
+    sel = z_ok & (u >= -margin_m) & (u <= length + margin_m) & \
+        (np.abs(off) <= max_thickness_m + margin_m)
+    if int(sel.sum()) < min_points:
+        return None
+
+    faces = metrology.detect_wall_faces(off[sel], pts[sel, 2])
+    if len(faces) < 2:
+        return None
+
+    # Of every detected face pair, take the one whose gap matches the steps
+    # prior most closely (tie-broken by combined support). This rejects a
+    # shallow relief face (too near the prior's front) and a neighbouring
+    # wall's face (too far), keeping only the wall's own front/back.
+    best = None  # (|gap - prior|, -support, thickness, stderr)
+    for i in range(len(faces)):
+        for j in range(i + 1, len(faces)):
+            gap, stderr = metrology.face_gap(faces[i], faces[j])
+            if not (min_thickness_m <= gap <= max_thickness_m):
+                continue
+            if abs(gap - prior) > seed_tol_m:
+                continue
+            key = (abs(gap - prior), -(faces[i].n + faces[j].n))
+            if best is None or key < best[0]:
+                best = (key, gap, stderr)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
 def pair_thickness(walls, points, default_m: float = 0.10,
                     min_thickness_m: float = 0.03, max_thickness_m: float = 0.6,
                     min_overlap_frac: float = 0.5):
@@ -425,7 +527,20 @@ def pair_thickness(walls, points, default_m: float = 0.10,
     out = []
     for run in walls:
         run = dict(run)
-        thickness = _thickness_from_steps(run, min_thickness_m, max_thickness_m, min_overlap_frac)
+        stderr = None
+        # Raw points decide distance: measure the two faces directly with the
+        # M-estimator (support-ranked so a relief step can't pose as the back
+        # face), keeping its uncertainty. Fall back to the grid-derived steps
+        # estimate only where the points can't resolve a facing pair.
+        thickness = None
+        if points_arr.size:
+            measured = _measure_thickness_metrology(
+                run, points_arr, min_thickness_m, max_thickness_m, min_overlap_frac
+            )
+            if measured is not None:
+                thickness, stderr = measured
+        if thickness is None:
+            thickness = _thickness_from_steps(run, min_thickness_m, max_thickness_m, min_overlap_frac)
         if thickness is None and points_arr.size:
             thickness = _measure_thickness_from_points(
                 run, points_arr, min_thickness_m, max_thickness_m, min_overlap_frac
@@ -433,6 +548,8 @@ def pair_thickness(walls, points, default_m: float = 0.10,
         if thickness is not None:
             run["thickness_m"] = float(thickness)
             run["thickness_source"] = "measured"
+            if stderr is not None:
+                run["thickness_stderr_m"] = float(stderr)
         else:
             run["thickness_m"] = float(default_m)
             run["thickness_source"] = "assumed"

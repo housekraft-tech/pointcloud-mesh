@@ -252,6 +252,8 @@ def build_manifest(walls, openings, columns, beams, rooms, z_floor, z_ceiling, c
             "thickness_source": w.get("thickness_source", "assumed"),
             "steps": steps_out,
         })
+        if w.get("thickness_stderr_m") is not None:
+            wall_dicts[-1]["thickness_stderr_m"] = float(w["thickness_stderr_m"])
 
     opening_dicts = []
     opening_index = 0
