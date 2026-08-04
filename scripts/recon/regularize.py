@@ -502,6 +502,28 @@ def _measure_thickness_metrology(run, points, min_thickness_m, max_thickness_m,
     return best[1], best[2]
 
 
+def _plausibility_upper(measured):
+    """Upper bound on a believable wall thickness for THIS building.
+
+    A single-sided wall's raw-point back-face search errs by reaching OUT to
+    grab distant clutter, so it inflates thickness; the guard that matters is
+    therefore an upper one. Uses the Tukey fence (q75 + 1.5*IQR) of the
+    directly-measured walls, floored at 1.1x the thickest measured wall so a
+    tight/degenerate distribution still admits a slightly-thicker real wall.
+    Returns None when there is nothing measured to reference.
+    """
+    m = np.asarray(measured, dtype=float)
+    m = m[np.isfinite(m)]
+    if m.size == 0:
+        return None
+    if m.size >= 4:
+        q25, q75 = np.percentile(m, [25, 75])
+        tukey = q75 + 1.5 * (q75 - q25)
+    else:
+        tukey = float(m.max())
+    return float(max(tukey, m.max() * 1.10))
+
+
 def pair_thickness(walls, points, default_m: float = 0.10,
                     min_thickness_m: float = 0.03, max_thickness_m: float = 0.6,
                     min_overlap_frac: float = 0.5):
@@ -509,22 +531,29 @@ def pair_thickness(walls, points, default_m: float = 0.10,
     a second, parallel, opposite-facing surface near the wall's own
     location.
 
-    Tries the run's own steps first (_thickness_from_steps -- often
-    already implicit in how structure.group_wall_runs grouped the run's
-    planes), then falls back to a direct raw-point-cloud search
-    (_measure_thickness_from_points) when that comes up empty. If neither
-    finds a plausible back face (single-sided wall -- common with a
-    handheld scanner that only ever walks through the interior),
-    thickness_m is set to `default_m` and thickness_source="assumed";
-    otherwise thickness_source="measured".
+    Two passes. First, every wall whose two faces the scan actually saw is
+    measured directly: the metrology M-estimator (sub-mm, with an uncertainty),
+    or failing that the grid-derived steps estimate. These reliable thicknesses
+    define what a wall in THIS building plausibly measures.
+
+    Then the single-sided walls -- only the interior face scanned, common with
+    a handheld walk-through -- are resolved. A raw-point search still looks for
+    a back face, but its answer is only trusted when it falls within the
+    plausible range of the measured walls; otherwise it has grabbed distant
+    clutter or a neighbouring wall, and the wall is assigned the modal measured
+    thickness (thickness_source="inferred") rather than a fabricated number.
+    With no measured wall to reference at all, thickness_m falls back to
+    `default_m` (thickness_source="assumed").
 
     `points` is the full source point cloud (N,3) that steps/planes were
-    derived from (same array passed to structure.group_wall_runs) -- only
-    consulted by the fallback path.
+    derived from (same array passed to structure.group_wall_runs).
     """
     points_arr = np.asarray(points, dtype=float) if points is not None else np.zeros((0, 3))
 
+    # --- pass 1: measure every wall whose back face was actually scanned ---
     out = []
+    pending = []          # (index, run) single-sided walls, resolved in pass 2
+    measured_ref = []     # thicknesses of the directly-measured walls
     for run in walls:
         run = dict(run)
         stderr = None
@@ -541,19 +570,37 @@ def pair_thickness(walls, points, default_m: float = 0.10,
                 thickness, stderr = measured
         if thickness is None:
             thickness = _thickness_from_steps(run, min_thickness_m, max_thickness_m, min_overlap_frac)
-        if thickness is None and points_arr.size:
-            thickness = _measure_thickness_from_points(
-                run, points_arr, min_thickness_m, max_thickness_m, min_overlap_frac
-            )
         if thickness is not None:
             run["thickness_m"] = float(thickness)
             run["thickness_source"] = "measured"
             if stderr is not None:
                 run["thickness_stderr_m"] = float(stderr)
+            measured_ref.append(float(thickness))
+        else:
+            pending.append(run)
+        out.append(run)
+
+    # --- pass 2: resolve single-sided walls against the measured distribution ---
+    upper = _plausibility_upper(measured_ref)
+    modal = float(np.median(measured_ref)) if measured_ref else None
+    for run in pending:
+        t = None
+        if points_arr.size:
+            t = _measure_thickness_from_points(
+                run, points_arr, min_thickness_m, max_thickness_m, min_overlap_frac
+            )
+        # The search already bounded t to [min_thickness_m, max_thickness_m];
+        # the building-specific upper fence only rejects when we have measured
+        # walls to judge against. No reference => keep the found face.
+        if t is not None and min_thickness_m <= t and (upper is None or t <= upper):
+            run["thickness_m"] = float(t)
+            run["thickness_source"] = "measured"
+        elif modal is not None:
+            run["thickness_m"] = modal
+            run["thickness_source"] = "inferred"
         else:
             run["thickness_m"] = float(default_m)
             run["thickness_source"] = "assumed"
-        out.append(run)
     return out
 
 

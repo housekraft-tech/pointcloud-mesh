@@ -98,6 +98,56 @@ class TestThicknessPairSelection:
         assert thickness == pytest.approx(0.20, abs=1.0 * MM)
 
 
+class TestSingleSidedFallback:
+    def _reference_walls(self, n=4, thickness=0.20):
+        # Double-sided walls resolved via steps alone (placed far from the
+        # single-sided wall's points so metrology declines and steps decides).
+        return [{"p0": (10.0 * (i + 1), 0.0), "p1": (10.0 * (i + 1), 5.0),
+                 "normal": (1.0, 0.0, 0.0), "steps": _steps(thickness)}
+                for i in range(n)]
+
+    def test_implausible_phantom_backface_is_inferred_not_fabricated(self):
+        # A single-sided wall: only its front face was scanned; a distant
+        # clutter cluster 0.36 m away is the only "back" the search can find.
+        rng = np.random.default_rng(1)
+        front = _slab((0.0,), (0.0, 5.0), (0.0, 2.7), rng=rng)
+        phantom = _slab((0.36,), (0.0, 5.0), (0.0, 2.7), rng=rng)
+        pts = np.vstack([front, phantom])
+
+        from types import SimpleNamespace
+        single = {"p0": (0.0, 0.0), "p1": (0.0, 5.0), "normal": (1.0, 0.0, 0.0),
+                  "steps": [SimpleNamespace(offset_m=0.0, u_min_m=0.0, u_max_m=5.0,
+                                            z_min_m=0.0, z_max_m=2.7)]}
+        walls = self._reference_walls() + [single]
+
+        out = regularize.pair_thickness(walls, pts, default_m=0.10)
+        w = out[-1]
+
+        assert w["thickness_source"] == "inferred"
+        assert w["thickness_m"] == pytest.approx(0.20, abs=5.0 * MM)  # modal, not 0.36
+        assert "thickness_stderr_m" not in w
+
+    def test_plausible_backface_is_kept_as_measured(self):
+        # Here the search finds a real back face at 0.12 m -- thinner than the
+        # 0.20 m reference walls but well within plausible range: keep it.
+        rng = np.random.default_rng(2)
+        front = _slab((0.0,), (0.0, 5.0), (0.0, 2.7), rng=rng)
+        back = _slab((0.12,), (0.0, 5.0), (0.0, 2.7), rng=rng)
+        pts = np.vstack([front, back])
+
+        from types import SimpleNamespace
+        single = {"p0": (0.0, 0.0), "p1": (0.0, 5.0), "normal": (1.0, 0.0, 0.0),
+                  "steps": [SimpleNamespace(offset_m=0.0, u_min_m=0.0, u_max_m=5.0,
+                                            z_min_m=0.0, z_max_m=2.7)]}
+        walls = self._reference_walls() + [single]
+
+        out = regularize.pair_thickness(walls, pts, default_m=0.10)
+        w = out[-1]
+
+        assert w["thickness_source"] == "measured"
+        assert w["thickness_m"] == pytest.approx(0.12, abs=5.0 * MM)
+
+
 class TestClearSpanSeam:
     def test_room_clear_dims_measured_inner_face_to_inner_face(self):
         pts, _ = two_room_house(rng=np.random.default_rng(42))
