@@ -60,7 +60,7 @@ def intersection_line(a: Patch, b: Patch, config: dict | None = None) -> tuple[n
     therefore cannot provide a numerically stable intersection line.
     """
     if config is None:
-        from .patches import DEFAULT_CONFIG
+        from ..config import DEFAULT_CONFIG
         config = DEFAULT_CONFIG
 
     direction = np.cross(a.normal, b.normal)

@@ -65,6 +65,17 @@ def test_intersection_line_of_near_parallel_planes_rejects_numerically_unstable_
     assert intersection_line(a, b, config) is None
 
 
+def test_intersection_line_uses_default_config_when_not_provided():
+    # Verifies the no-config fallback path works correctly.
+    # When called without config, intersection_line should use DEFAULT_CONFIG.
+    a = _patch(0, (1, 0, 0), 0.0)        # x = 0
+    b = _patch(1, (0, 1, 0), 0.0)        # y = 0
+    point, direction = intersection_line(a, b)  # no config argument
+
+    assert np.allclose(np.abs(direction), [0, 0, 1])
+    assert abs(point[0]) < 1e-9 and abs(point[1]) < 1e-9
+
+
 def test_adjacent_patches_are_detected_and_distant_ones_are_not():
     corner = np.concatenate([
         Box("a", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",)),
