@@ -37,10 +37,40 @@ class Patch:
         return (self.u_range[1] - self.u_range[0]) * (self.v_range[1] - self.v_range[0])
 
 
-def _finalise(patch_id: int, xyz: np.ndarray, members: np.ndarray) -> Patch:
-    """Fit the final plane and measure the patch's residual and extent."""
+# Fewer than this many curvature-clean members and a fit on clean points
+# alone would be numerically thin (fit_plane itself refuses below 3); fall
+# back to fitting on every member rather than raising or discarding the
+# patch. Below this floor there usually isn't enough of a "clean core" for
+# the distinction to matter anyway.
+_MIN_CLEAN_FOR_FIT = 3
+
+
+def _fit_on_clean_members(
+    xyz: np.ndarray, curvature: np.ndarray, members: np.ndarray, max_curvature: float
+) -> tuple[np.ndarray, float]:
+    """Fit a plane using only members whose curvature is within the seed gate.
+
+    Contaminated (high-curvature) members are still patch members -- they are
+    labelled, counted, and included in the reported residual -- they just
+    don't get a vote on where the plane sits, so one edge-blended point can't
+    drag the whole patch's fitted offset. Falls back to fitting on every
+    member when too few clean ones are available.
+    """
+    clean = members[curvature[members] <= max_curvature]
+    fit_pts = clean if len(clean) >= _MIN_CLEAN_FOR_FIT else members
+    return fit_plane(xyz[fit_pts])
+
+
+def _finalise(
+    patch_id: int, xyz: np.ndarray, curvature: np.ndarray, members: np.ndarray, max_curvature: float
+) -> Patch:
+    """Fit the final plane (clean members only) and measure the patch's
+    residual and extent over ALL members -- the residual is a truthfulness
+    diagnostic and must reflect how well the plane explains every point the
+    patch claims, edges included, not just the points that founded the fit.
+    """
+    normal, d = _fit_on_clean_members(xyz, curvature, members, max_curvature)
     pts = xyz[members]
-    normal, d = fit_plane(pts)
     residual = np.abs(plane_distance(pts, normal, d))
     u, v = plane_basis(normal)
     centroid = pts.mean(axis=0)
@@ -118,16 +148,17 @@ def extract_patches(
             # Edge/corner points blend normals from two faces (Task 6 review
             # finding 2); refusing to SEED from them stops a contaminated
             # point from ever founding its own spurious patch. This gate is
-            # deliberately seed-only (Task 10 finding): a high-curvature
-            # point may still be RECRUITED below, once a patch's plane is
-            # already established from a clean seed, subject to the
-            # existing normal-agreement and tau_fit gates. Those two gates
-            # are meant to stop a contaminated point being recruited across
-            # a real edge (e.g. a 75 mm step); empirically (Task 10) they
-            # are not always enough -- min_patch_points=100 lets one such
-            # recruit skew a step-side patch's fitted offset by ~20 mm (see
-            # task-10-report.md), so this trade-off is not yet fully closed.
-            # Left at -1, counted via unassigned_count, never dropped.
+            # deliberately seed-only (Task 10): a high-curvature point may
+            # still be RECRUITED below, once a patch's plane is already
+            # established from a clean seed, subject to the existing
+            # normal-agreement and tau_fit gates -- that's what lets a small,
+            # finely-sampled feature (e.g. a recessed switch box) reach
+            # min_patch_points at all. Recruited contaminated points don't
+            # get a vote on the plane, though: _fit_on_clean_members excludes
+            # them from every fit (periodic refit and the final one), so one
+            # edge-blended recruit can't drag the whole patch's offset the
+            # way it could before that split existed. Left at -1, counted
+            # via unassigned_count, never dropped.
             continue
 
         pending_id = len(patches)
@@ -155,7 +186,8 @@ def extract_patches(
 
                 since_refit += 1
                 if since_refit >= refit_interval:
-                    plane_n, plane_d = fit_plane(xyz[np.asarray(members)])
+                    plane_n, plane_d = _fit_on_clean_members(
+                        xyz, curvature, np.asarray(members, dtype=np.int64), max_curvature)
                     since_refit = 0
 
         member_arr = np.asarray(members, dtype=np.int64)
@@ -163,7 +195,7 @@ def extract_patches(
             labels[member_arr] = -1        # release; may join a later patch
             continue
 
-        patches.append(_finalise(pending_id, xyz, member_arr))
+        patches.append(_finalise(pending_id, xyz, curvature, member_arr, max_curvature))
 
     return patches, labels
 
