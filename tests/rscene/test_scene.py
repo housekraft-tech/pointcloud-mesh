@@ -63,3 +63,36 @@ def test_json_keys_are_sorted_so_diffs_stay_readable():
 def test_unassigned_points_are_recorded_not_dropped():
     payload = json.loads(scene_to_json(_scene()))
     assert payload["unassigned_points"] == 42
+
+
+def test_measurement_round_trips_through_its_dict_form():
+    m = Measurement(value=0.2031, method="face-to-face raw points",
+                    n_points=18422, p95_residual=0.0021)
+    assert Measurement.from_dict(m.to_dict()) == m
+
+
+def test_scene_round_trip_preserves_point_idx_dtype():
+    original = _scene()
+    restored = scene_from_json(scene_to_json(original))
+    assert restored.patches[0].point_idx.dtype == np.int64
+
+
+def test_frame_with_none_floor_and_ceiling_round_trips():
+    frame_with_nones = Frame(z_axis=[0.0, 0.0, 1.0], xy_rotation_deg=1.4,
+                             floor_z=None, ceiling_z=None)
+    scene = Scene(
+        provenance=Provenance(
+            scan_path="test.las", scan_sha256="def456",
+            pipeline_version="0.1.0", timestamp="2026-08-11T00:00:00Z",
+            config={},
+        ),
+        frame=frame_with_nones,
+        patches=[],
+        coplanarity_classes=[],
+        adjacency=[],
+        unassigned_points=0,
+        diagnostics={},
+    )
+    restored = scene_from_json(scene_to_json(scene))
+    assert restored.frame.floor_z is None
+    assert restored.frame.ceiling_z is None
