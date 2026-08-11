@@ -25,6 +25,8 @@ DEFAULT_CONFIG: dict = {
     # --- coplanarity (recorded, never applied) ---
     "coplanar_dist_tol_m": 0.005,  # max plane-offset difference within a class
     "coplanar_angle_tol_deg": 2.0,  # max normal deviation within a class
+    # --- intersection lines ---
+    "min_intersection_angle_deg": 0.5,  # planes closer than this angle return None; guards against numerical instability in near-parallel cases
     # --- adjacency ---
     "adjacency_radius_m": 0.05,    # max gap between patches counted as adjacent
     # --- frame (measured, never enforced) ---

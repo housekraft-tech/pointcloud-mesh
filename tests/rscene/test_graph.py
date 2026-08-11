@@ -41,7 +41,7 @@ def test_patches_with_different_normals_are_not_coplanar():
 def test_intersection_line_of_two_perpendicular_planes():
     a = _patch(0, (1, 0, 0), 0.0)        # x = 0
     b = _patch(1, (0, 1, 0), 0.0)        # y = 0
-    point, direction = intersection_line(a, b)
+    point, direction = intersection_line(a, b, merged_config())
 
     assert np.allclose(np.abs(direction), [0, 0, 1])
     assert abs(point[0]) < 1e-9 and abs(point[1]) < 1e-9
@@ -49,7 +49,20 @@ def test_intersection_line_of_two_perpendicular_planes():
 
 def test_intersection_line_of_parallel_planes_is_none():
     assert intersection_line(_patch(0, (1, 0, 0), 0.0),
-                             _patch(1, (1, 0, 0), -0.2)) is None
+                             _patch(1, (1, 0, 0), -0.2), merged_config()) is None
+
+
+def test_intersection_line_of_near_parallel_planes_rejects_numerically_unstable_case():
+    # Planes at 0.001° apart: sin(0.001°) ≈ 1.7e-5, which is much smaller than
+    # the default min_intersection_angle_deg threshold (~0.5°, sin ≈ 0.0087).
+    # This should return None to avoid numerically unstable computation.
+    angle_rad = np.radians(0.001)
+    # Create a second normal by rotating (1,0,0) by tiny angle around z
+    normal2 = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0])
+    a = _patch(0, (1, 0, 0), 0.0)
+    b = _patch(1, normal2, 0.0)
+    config = merged_config()
+    assert intersection_line(a, b, config) is None
 
 
 def test_adjacent_patches_are_detected_and_distant_ones_are_not():

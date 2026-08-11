@@ -53,14 +53,23 @@ def coplanarity_classes(patches: list[Patch], config: dict) -> list[list[int]]:
     return sorted([sorted(v) for v in groups.values()])
 
 
-def intersection_line(a: Patch, b: Patch) -> tuple[np.ndarray, np.ndarray] | None:
+def intersection_line(a: Patch, b: Patch, config: dict | None = None) -> tuple[np.ndarray, np.ndarray] | None:
     """Line where two planes meet, as (point, unit direction).
 
-    Returns None when the planes are parallel and therefore never meet.
+    Returns None when the planes are parallel (within angle tolerance) and
+    therefore cannot provide a numerically stable intersection line.
     """
+    if config is None:
+        from .patches import DEFAULT_CONFIG
+        config = DEFAULT_CONFIG
+
     direction = np.cross(a.normal, b.normal)
     norm = float(np.linalg.norm(direction))
-    if norm < 1e-9:
+
+    # norm = sin(angle) between normals. Guard against numerical instability
+    # by rejecting planes closer than min_intersection_angle_deg.
+    min_sin_angle = float(np.sin(np.radians(config["min_intersection_angle_deg"])))
+    if norm < min_sin_angle:
         return None
     direction = direction / norm
 
@@ -81,16 +90,38 @@ def patch_adjacency(
     radius = float(config["adjacency_radius_m"])
     xyz = np.asarray(xyz, dtype=np.float64)
 
+    ordered = sorted(patches, key=lambda q: q.patch_id)
     owner = {}
     clouds = []
-    for p in sorted(patches, key=lambda q: q.patch_id):
-        owner[len(clouds)] = p.patch_id
-        clouds.append(xyz[p.point_idx])
+    bounds = []
+    for idx, p in enumerate(ordered):
+        owner[idx] = p.patch_id
+        cloud = xyz[p.point_idx]
+        clouds.append(cloud)
+        # Compute axis-aligned bounding box for this patch
+        if len(cloud) > 0:
+            lo = np.min(cloud, axis=0)
+            hi = np.max(cloud, axis=0)
+        else:
+            lo = hi = p.centroid
+        bounds.append((lo, hi))
 
     pairs: set[tuple[int, int]] = set()
     trees = [cKDTree(c) for c in clouds]
     for i in range(len(clouds)):
         for j in range(i + 1, len(clouds)):
+            # Prefilter: check if bounding boxes (inflated by radius) overlap
+            lo_i, hi_i = bounds[i]
+            lo_j, hi_j = bounds[j]
+            # Inflate by radius in each direction
+            lo_i_inflated = lo_i - radius
+            hi_i_inflated = hi_i + radius
+            lo_j_inflated = lo_j - radius
+            hi_j_inflated = hi_j + radius
+            # Check for axis-aligned overlap
+            if not (np.all(hi_i_inflated >= lo_j_inflated) and np.all(hi_j_inflated >= lo_i_inflated)):
+                continue
+            # Passed prefilter: do expensive tree-vs-tree query
             if trees[i].count_neighbors(trees[j], radius) > 0:
                 pairs.add((min(owner[i], owner[j]), max(owner[i], owner[j])))
 
