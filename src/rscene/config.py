@@ -18,8 +18,8 @@ DEFAULT_CONFIG: dict = {
     "tau_feature_m": 0.008,        # min depth to count as a feature, not roughness
     "patch_angle_tol_deg": 8.0,    # max normal deviation when growing a patch
     "patch_connect_radius_m": 0.05,  # CALIBRATION PENDING -- neighbour radius enforcing patch connectivity; must stay below the narrowest feature width
-    "min_patch_points": 200,       # tuned against the golden room (Task 10): below 184 lets a curvature-gate splinter off the extrusion face and a groove fragment survive as spurious patches with wrong plane offsets, corrupting the extrusion-depth and groove-depth measurements; stays below ~441, the switch-box recess sample count, so the box patch is never excluded by size alone (it fails to form for a different reason -- see task-10-report.md)
-    "patch_max_curvature": 0.01,   # CALIBRATION PENDING -- points blended across a geometric edge run hotter than this; gated out of seeding and growth so edges can't chain into spurious slivers
+    "min_patch_points": 100,       # smallest patch kept; floor set by switch-box sample count (~441 raw points)
+    "patch_max_curvature": 0.01,   # CALIBRATION PENDING -- points blended across a geometric edge run hotter than this; gated out of seeding only (Task 10), so a contaminated point can't found a spurious sliver, but an already-founded patch may still recruit it under the normal-agreement and tau_fit gates
     "patch_neighbor_k": 256,       # CALIBRATION PENDING -- vectorised k-NN precompute size for growth; a point denser than this falls back to an exact radius query, so correctness never depends on this value
     "refit_interval": 200,         # points added between plane refits while growing
     # --- coplanarity (recorded, never applied) ---

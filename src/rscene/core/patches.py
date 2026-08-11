@@ -116,9 +116,18 @@ def extract_patches(
             continue
         if curvature[seed] > max_curvature:
             # Edge/corner points blend normals from two faces (Task 6 review
-            # finding 2); refusing to seed from them stops spurious slivers
-            # from forming at all. Left at -1, counted via unassigned_count,
-            # never dropped.
+            # finding 2); refusing to SEED from them stops a contaminated
+            # point from ever founding its own spurious patch. This gate is
+            # deliberately seed-only (Task 10 finding): a high-curvature
+            # point may still be RECRUITED below, once a patch's plane is
+            # already established from a clean seed, subject to the
+            # existing normal-agreement and tau_fit gates. Those two gates
+            # are meant to stop a contaminated point being recruited across
+            # a real edge (e.g. a 75 mm step); empirically (Task 10) they
+            # are not always enough -- min_patch_points=100 lets one such
+            # recruit skew a step-side patch's fitted offset by ~20 mm (see
+            # task-10-report.md), so this trade-off is not yet fully closed.
+            # Left at -1, counted via unassigned_count, never dropped.
             continue
 
         pending_id = len(patches)
@@ -134,8 +143,6 @@ def extract_patches(
             current = stack.pop()
             for j in neighbours_within_radius(current):
                 if labels[j] != -1:
-                    continue
-                if curvature[j] > max_curvature:
                     continue
                 if abs(float(normals[j] @ plane_n)) < cos_tol:
                     continue
