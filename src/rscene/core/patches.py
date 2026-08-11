@@ -79,18 +79,46 @@ def extract_patches(
     cos_tol = float(np.cos(np.radians(config["patch_angle_tol_deg"])))
     radius = float(config["patch_connect_radius_m"])
     min_points = int(config["min_patch_points"])
+    max_curvature = float(config["patch_max_curvature"])
     refit_interval = int(config["refit_interval"])
 
     tree = cKDTree(xyz)
     n = len(xyz)
+    k_query = min(int(config["patch_neighbor_k"]), n)
     labels = np.full(n, -1, dtype=np.int64)
     patches: list[Patch] = []
+
+    # Vectorised k-nearest precompute (Task 6 review finding 1): a single
+    # batched call replaces one Python-level query_ball_point per point.
+    # nbr_dist is ascending per row, so once its last entry already exceeds
+    # `radius` we know every point within `radius` was captured; only when a
+    # neighbourhood is denser than k_query do we fall back to an exact
+    # radius query for that one point, which keeps results identical to an
+    # unbounded radius search regardless of local density.
+    nbr_dist, nbr_idx = tree.query(xyz, k=k_query, workers=-1)
+    if k_query == 1:
+        nbr_dist = nbr_dist[:, None]
+        nbr_idx = nbr_idx[:, None]
+
+    def neighbours_within_radius(i: int) -> np.ndarray:
+        row_dist = nbr_dist[i]
+        if k_query < n and row_dist[-1] < radius:
+            cand = tree.query_ball_point(xyz[i], radius)
+        else:
+            cand = nbr_idx[i][row_dist <= radius]
+        return np.sort(np.asarray(cand, dtype=np.int64))
 
     # flattest points first: seeds land mid-face, never on an edge
     seed_order = np.argsort(curvature, kind="stable")
 
     for seed in seed_order:
         if labels[seed] != -1:
+            continue
+        if curvature[seed] > max_curvature:
+            # Edge/corner points blend normals from two faces (Task 6 review
+            # finding 2); refusing to seed from them stops spurious slivers
+            # from forming at all. Left at -1, counted via unassigned_count,
+            # never dropped.
             continue
 
         pending_id = len(patches)
@@ -104,9 +132,10 @@ def extract_patches(
         since_refit = 0
         while stack:
             current = stack.pop()
-            # sorted() keeps neighbour visit order deterministic
-            for j in sorted(tree.query_ball_point(xyz[current], radius)):
+            for j in neighbours_within_radius(current):
                 if labels[j] != -1:
+                    continue
+                if curvature[j] > max_curvature:
                     continue
                 if abs(float(normals[j] @ plane_n)) < cos_tol:
                     continue
