@@ -18,7 +18,7 @@ DEFAULT_CONFIG: dict = {
     "tau_feature_m": 0.008,        # min depth to count as a feature, not roughness
     "patch_angle_tol_deg": 8.0,    # max normal deviation when growing a patch
     "patch_connect_radius_m": 0.05,  # CALIBRATION PENDING -- neighbour radius enforcing patch connectivity; must stay below the narrowest feature width
-    "min_patch_points": 100,       # CALIBRATION PENDING -- smallest patch kept; floor set by switch-box sample count
+    "min_patch_points": 250,       # CALIBRATION PENDING -- smallest patch kept; floor set by switch-box sample count
     "refit_interval": 200,         # points added between plane refits while growing
     # --- coplanarity (recorded, never applied) ---
     "coplanar_dist_tol_m": 0.005,  # max plane-offset difference within a class
