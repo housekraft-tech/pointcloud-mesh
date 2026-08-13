@@ -24,7 +24,7 @@ class Patch:
 
     patch_id: int
     normal: np.ndarray                 # (3,) unit, canonically oriented
-    d: float                           # normal @ x + d == 0
+    d: float                           # normal @ x + d == 0; defines the plane relative to the WORLD ORIGIN -- never difference two patches' d to measure the distance between them (that lever-arms any normal error by distance-from-origin instead of by the real, small gap); use graph.perpendicular_offset instead
     point_idx: np.ndarray              # indices into the source cloud
     n_points: int
     p95_residual_m: float

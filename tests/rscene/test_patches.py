@@ -1,10 +1,19 @@
 import numpy as np
 
+from itertools import combinations
+
 from rscene.config import merged_config
+from rscene.core.graph import perpendicular_offset
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import extract_patches
 from rscene.core.points import add_gaussian_noise
 from rscene.core.prim import Box
+
+
+def _max_pairwise_offset(patches):
+    """Largest perpendicular_offset among all pairs -- the two farthest-apart
+    same-normal patches, without relying on origin-referenced Patch.d."""
+    return max(perpendicular_offset(a, b) for a, b in combinations(patches, 2))
 
 
 def _wall_with_step(spacing=0.008, noise_m=0.001):
@@ -38,8 +47,7 @@ def test_a_75mm_step_survives_as_its_own_patch():
     x_facing = [p for p in patches if abs(p.normal[0]) > 0.99]
     assert len(x_facing) >= 2, "the step was absorbed into the wall face"
 
-    offsets = sorted(abs(p.d) for p in x_facing)
-    assert abs((offsets[-1] - offsets[0]) - 0.075) < 0.003
+    assert abs(_max_pairwise_offset(x_facing) - 0.075) < 0.003
 
 
 def test_the_step_side_faces_are_found_as_separate_patches():
@@ -50,8 +58,7 @@ def test_the_step_side_faces_are_found_as_separate_patches():
     y_facing = [p for p in patches if abs(p.normal[1]) > 0.99]
     assert len(y_facing) >= 2
 
-    offsets = sorted(abs(p.d) for p in y_facing)
-    assert abs((offsets[-1] - offsets[0]) - 0.35) < 0.003   # step is 350 mm wide
+    assert abs(_max_pairwise_offset(y_facing) - 0.35) < 0.003   # step is 350 mm wide
 
 
 def test_no_surface_is_snapped_to_another():
@@ -65,7 +72,7 @@ def test_no_surface_is_snapped_to_another():
 
     x_facing = [p for p in patches if abs(p.normal[0]) > 0.99]
     assert len(x_facing) == 2
-    assert abs(abs(x_facing[0].d - x_facing[1].d) - 0.02) < 0.002
+    assert abs(perpendicular_offset(x_facing[0], x_facing[1]) - 0.02) < 0.002
 
 
 def test_labels_cover_every_point_or_mark_it_unassigned():

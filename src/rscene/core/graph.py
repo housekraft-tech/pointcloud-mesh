@@ -53,6 +53,26 @@ def coplanarity_classes(patches: list[Patch], config: dict) -> list[list[int]]:
     return sorted([sorted(v) for v in groups.values()])
 
 
+def perpendicular_offset(a: Patch, b: Patch) -> float:
+    """Perpendicular distance between two parallel patches, centroid to centroid.
+
+    `Patch.d` is the plane's distance from the WORLD ORIGIN. Differencing two
+    `d` values to measure the gap between two surfaces is a trap: any error in
+    a patch's fitted normal gets multiplied by that patch's distance from the
+    origin (a lever arm), not by the small distance actually being measured.
+    A 1 degree tilt on a patch 1.6 m from the origin costs ~20 mm of spurious
+    offset even though the two surfaces are exactly where they should be --
+    this is exactly what corrupted the golden room's step- and switch-box
+    measurements before this helper existed (see task-10-report.md).
+
+    This measures the gap the way it should be measured: along one patch's
+    own normal, between the two patches' own centroids, which is invariant to
+    where the world origin happens to sit. `abs()` is applied so canonical
+    normal orientation (Task 6 review) never flips the sign.
+    """
+    return abs(float(a.normal @ (b.centroid - a.centroid)))
+
+
 def intersection_line(a: Patch, b: Patch, config: dict | None = None) -> tuple[np.ndarray, np.ndarray] | None:
     """Line where two planes meet, as (point, unit direction).
 
