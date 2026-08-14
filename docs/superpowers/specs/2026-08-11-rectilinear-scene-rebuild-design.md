@@ -178,6 +178,45 @@ welcome *upgrade* — it is independent evidence of which openings were walked
 through, which is how a door is distinguished from a window — but it is no
 longer a dependency. `trajectory.load_trajectory` already parses such a file.
 
+#### 4.4.2 Second amendment (2026-08-13): enclosure, not flood-fill
+
+§4.4.1 replaced the trajectory with an occupancy flood-fill seeded in air above
+the floor. Measurement retired that too.
+
+A flood-fill defines interior as "reachable from an interior seed without
+crossing occupancy". That requires a **watertight** occupancy envelope, and a
+real scan never has one: a single missing voxel — from a scan hole, an
+occlusion, or glazing that returns nothing — lets the fill escape into the
+grid's outer padding, which wraps the entire model. Measured on
+`isolated_structural_v2.las` at 50 mm cells:
+
+| | flood-fill | enclosure |
+|---|---|---|
+| one-room crop | 100.00% of free cells filled | 12.3% |
+| full isolated scan | 100.00% filled | 40.8% |
+| fill/enclosure touching a grid boundary face | all six | none |
+
+100% is not an interior; it is the whole bounding box. The full scan leaks as
+readily as the crop, so this is not an artefact of cropping.
+
+The mechanism is therefore **horizontal enclosure**: a free cell is interior
+when rays along −x, +x, −y and +y all strike occupancy within its own Z slice.
+This is a *local* test. It needs no watertight envelope, is unaffected by any
+number of leaks, costs one cumulative sum per axis, and is deterministic. A
+cell inside a room is walled on all four sides; a cell outside the building
+escapes in at least one direction; a cell on a balcony correctly reads as
+outside.
+
+`build_occupancy` is unchanged and still correct. `flood_interior` is retained
+because it is the right tool for a genuinely closed envelope (a synthetic
+sealed room, or a scan whose holes have been repaired), but it is **not** the
+default and must not be used to decide interior direction on real data.
+
+The wider lesson, recorded because it has now happened twice: a mechanism that
+is obviously correct on synthetic geometry can be unusable on a real scan, and
+only the real scan will say so. Both retirements here — the trajectory and the
+flood-fill — were caught by measuring, not by reasoning.
+
 ## 5. Pipeline
 
 Thirteen stages, each a pure function with typed input and output.
