@@ -2204,6 +2204,63 @@ git commit -m "test: golden part-level truth for spans, widths and wall thicknes
 - Two runs of `rscene parts` on the same scan produce byte-identical `scene.json`.
 - Every point is in a face, a named unassigned bucket, or `unmodeled` — and the report says which.
 
+---
+
+## Revision, 2026-08-13 — grounded in the real scan
+
+Tasks 1–3 shipped and were reviewed. Then the pipeline was run on the real crop, and the result changed how the rest of this plan should be built. Three of the first three tasks had tests that proved less than they appeared to — each caught by an implementer reporting an anomaly, never by an assertion failing. Synthetic fixtures reproduce the *shape* of real data without its awkwardness.
+
+### Measured baseline
+
+One-room crop of `data/isolated_structural_v2.las`, 454,708 points at native density, `patch_neighbor_k=64`:
+
+| stage | result |
+|---|---|
+| `extract_patches` | 196 patches, 62,239 unassigned (13.69%) |
+| `merge_patches` | 88 faces (55% fewer) |
+| `apply_density_gate` | 86 kept, 2 rejected (409 pts, 0.09%) |
+| `recruit_points` | unassigned 62,239 → 32,994 — 47% claimed, 29,245 recruits, **7.26% final** |
+| kept faces | 22 horizontal, 59 vertical, 5 oblique; median 190 pts, max 128,659 |
+| residual | median p95 2.77 mm |
+
+### What the real scan changed
+
+**1. Recruitment is confirmed as the highest-value stage.** 13.69% → 7.26% unassigned, nearly halved. The user requirement that every point be accounted for is now measurably closer.
+
+**2. The density gate is in the wrong place.** It rejects 0.09% of points post-merge. Its 4.4%-fill motivation was measured on *patches*, before merging; merging absorbs those chains into real faces first, so by the time the gate runs there is almost nothing left for it to catch. It is not wrong, it is redundant where it sits. **Do not move it yet** — the merge fix below changes the face population, so re-measure before deciding whether it belongs pre-merge, on patches.
+
+**3. Merging had a correctness defect that only real data revealed.** Union-find over a pairwise predicate permits unbounded chain drift: face 0 chained 17 patches whose extremes were **41.2 mm apart against a 5 mm tolerance**, giving a 7.36 mm p95 residual against a 3 mm `tau_fit_m`. A robust refit does *not* rescue it — trimmed refit on the inlier 80% reaches 4.89 mm but then covers only 50% of the face's own points within tolerance. The face is genuinely not one plane. Fixed by greedy seeded accumulation: a patch joins only if it is within tolerance of the **group's current fitted plane**, refitted after each addition, so drift is bounded by the tolerance rather than by chain length.
+
+### New global requirement: every remaining task carries a real-scan assertion
+
+Alongside its synthetic accuracy test, each of Tasks 4–12 gains a test marked `real_scan` (skipped when `data/isolated_structural_v2.las` is absent) asserting a **behavioural** property against a figure measured beforehand. Synthetic tests answer *is the number right*; only real-scan tests answer *does this stage do anything at all on real data*.
+
+The distinction matters because the two cannot substitute for each other. Synthetic is the only place ground truth exists — on a real scan nobody knows the true wall thickness, so a wrong answer is indistinguishable from a right one. That is how the origin lever-arm bug survived twelve reviews producing entirely plausible numbers. But synthetic cannot show what actually happens on noisy, occluded, cluttered data, which is how three vacuous tests got through.
+
+Every real-scan assertion must:
+
+- **State a precondition** — that the input to this stage is non-trivial — before asserting the stage's effect. A stage cannot be shown to work on nothing.
+- **Use a measured number, not a guessed one.** Run the stage, look at the result, then write the assertion with headroom.
+- **Be falsifiable by the stage doing nothing.** "Merging reduces face count", "recruitment reduces unassigned", "no face exceeds tolerance" all fail instantly against a no-op. `assert x is not None` does not.
+
+### Task 12 (new): emit the scene as a program
+
+Modularity is the point of this rebuild — the user's third confirmed failure of the old pipeline was "not actually modular", and the LiteReality architecture this design borrows from makes the scene an editable program rather than an opaque mesh. Plan 1 deferred `room.py` to the export plan, which demoted the deliverable to an afterthought. It moves here, to the point where walls first exist.
+
+`rscene parts` gains a `room.py` output alongside `scene.json`: one object per part, parameters visible and editable, regenerating the same geometry when re-run.
+
+```python
+Wall("W03", length=4.182, height=2.748, thickness=0.2031,
+     at=(2.10, 0.35), angle=5.17,
+     features=[Extrusion("W03_E01", u=(2.80, 3.15), depth=0.075)])
+```
+
+`scene.json` stays the measurement record with provenance and uncertainty; `room.py` is the modular artifact a designer or an agent edits. The two are generated from the same in-memory scene, never from each other.
+
+Requirements: every part in `scene.json` appears as exactly one object; every dimension carries the measured value, not a rounded one; the file is deterministic; and a test asserts that executing it reproduces the part count and dimensions it was generated from. Without that round-trip test it is a pretty-printer, not a program.
+
+---
+
 ## Deferred to Plan 3
 
 Openings (voids in wall faces validated against the flood-fill), rooms (interior connected components), solidify (half-space CSG per part), the residual critique loop, and the LLM advisory labelling described in spec §6.2. Exports — plan DXF, per-wall elevations, OBJ/FBX, glTF, `room.py` — are Plan 4.
