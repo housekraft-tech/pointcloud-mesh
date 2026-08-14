@@ -10,6 +10,7 @@ from rscene.core.faces import (
 )
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import extract_patches
+from rscene.core.points import add_gaussian_noise
 from rscene.core.prim import Box
 
 
@@ -236,3 +237,60 @@ def test_recruitment_is_deterministic():
 
     assert np.array_equal(l1, l2)
     assert [f.loose_idx.tolist() for f in f1] == [f.loose_idx.tolist() for f in f2]
+
+
+def test_recruitment_claims_a_noisy_tail_growth_left_behind():
+    """Sensor noise (real p95 residual 2.36 mm) puts a genuine tail past
+    tau_fit_m (3 mm) but inside recruit_dist_tol_m (8 mm) -- exactly the
+    points growth cannot admit but recruitment should.
+    """
+    xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",))
+    xyz = add_gaussian_noise(xyz, 0.0025, np.random.default_rng(1))
+    patches, labels, cfg = _extract(xyz)
+
+    before = int(np.count_nonzero(labels < 0))
+    assert before >= 100, "fixture leaves nothing for recruitment to do"
+
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+    new_labels = recruit_points(faces, xyz, normals, labels, cfg)
+    after = int(np.count_nonzero(new_labels < 0))
+
+    assert after <= before // 2, f"recruited too few: {before - after}/{before}"
+    assert sum(len(f.loose_idx) for f in faces) == before - after
+
+
+def test_recruitment_reaches_across_a_gap_growth_cannot_cross():
+    """recruit_max_reach_m (100 mm) exceeds patch_connect_radius_m (50 mm),
+    so a cluster 70 mm past the wall's edge is out of growth's reach but
+    inside recruitment's.
+    """
+    face = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",))
+    zs = np.arange(0.2, 1.8, 0.02)
+    near = np.column_stack([np.zeros_like(zs), np.full_like(zs, 2.07), zs])
+    xyz = np.concatenate([face, near])
+    cluster_idx = np.arange(len(face), len(xyz))
+
+    patches, labels, cfg = _extract(xyz)
+    assert np.all(labels[cluster_idx] < 0), "fixture is wrong: growth already reached the cluster"
+
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+    new_labels = recruit_points(faces, xyz, normals, labels, cfg)
+    assert np.all(new_labels[cluster_idx] >= 0), "reachable cluster was not recruited"
+
+
+def test_recruitment_does_not_cross_a_gap_beyond_reach():
+    """The converse of the reach test: a cluster past recruit_max_reach_m
+    (150 mm here) must stay unassigned, proving the reach gate is real."""
+    face = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",))
+    zs = np.arange(0.2, 1.8, 0.02)
+    far = np.column_stack([np.zeros_like(zs), np.full_like(zs, 2.15), zs])
+    xyz = np.concatenate([face, far])
+    cluster_idx = np.arange(len(face), len(xyz))
+
+    patches, labels, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+    new_labels = recruit_points(faces, xyz, normals, labels, cfg)
+    assert np.all(new_labels[cluster_idx] < 0), "cluster beyond reach was recruited anyway"

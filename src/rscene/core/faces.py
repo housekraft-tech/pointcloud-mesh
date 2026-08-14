@@ -282,14 +282,24 @@ def recruit_points(
         best_dist = cand[np.arange(len(idx)), best]
         viable = np.isfinite(best_dist)
 
-        for local in np.flatnonzero(viable):
-            fi = int(best[local])
-            point = P[local]
-            if trees[fi].query(point, k=1, workers=-1)[0] > reach:
-                continue
-            gi = int(idx[local])
-            claimed[ordered[fi].face_id].append(gi)
-            labels[gi] = ordered[fi].face_id
+        # Reach is checked one face at a time, batching every viable candidate
+        # assigned to that face into a single cKDTree query. A per-point query
+        # loop here scales with candidate count -- on a real scan that is
+        # ~17k individual calls, the same shape that cost Plan 1 161 s.
+        viable_local = np.flatnonzero(viable)
+        fi_viable = best[viable_local]
+        gi_viable = idx[viable_local]
+        pts_viable = P[viable_local]
+
+        for fi in np.unique(fi_viable):
+            sel = fi_viable == fi
+            gi_f = gi_viable[sel]
+            dist_to_member, _ = trees[int(fi)].query(pts_viable[sel], k=1, workers=-1)
+            face_id = ordered[int(fi)].face_id
+            for gi in gi_f[dist_to_member <= reach]:
+                gi = int(gi)
+                claimed[face_id].append(gi)
+                labels[gi] = face_id
 
     for f in ordered:
         got = claimed[f.face_id]
