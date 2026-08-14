@@ -29,6 +29,10 @@ DEFAULT_CONFIG: dict = {
     "min_intersection_angle_deg": 0.5,  # planes closer than this angle return None; guards against numerical instability in near-parallel cases -- OPEN DECISION: this is below coplanar_angle_tol_deg (2.0), so pairs 0.5-2 deg apart are classed as one coplanarity group yet still yield an intersection line; unresolved for whoever wires edge construction
     # --- adjacency ---
     "adjacency_radius_m": 0.05,    # max gap between patches counted as adjacent
+    # --- face merging (Plan 2) ---
+    "face_merge_dist_tol_m": 0.005,   # max perpendicular offset to merge two patches into one face; MUST stay below the shallowest feature to preserve (golden groove is 12 mm)
+    "face_merge_angle_tol_deg": 2.0,  # max normal deviation between patches merged into one face
+    "face_merge_gap_m": 0.05,         # max spatial gap between two patches' points for them to count as the same face
     # --- frame (measured, never enforced) ---
     "floor_normal_tol_deg": 15.0,  # max tilt from world Z for a floor/ceiling patch
     "vertical_normal_max_z": 0.2,  # patch counted as vertical when abs(normal.z) is below this; patches between roughly 11.5 and 78.5 deg off vertical fall into neither the horizontal nor vertical set (four such patches exist in the real crop)
