@@ -43,7 +43,7 @@ def coplanarity_classes(patches: list[Patch], config: dict) -> list[list[int]]:
         for b in ordered[i + 1:]:
             if abs(float(a.normal @ b.normal)) < cos_tol:
                 continue
-            if abs(a.d - b.d) > dist_tol:
+            if perpendicular_offset(a, b) > dist_tol:
                 continue
             union(a.patch_id, b.patch_id)
 

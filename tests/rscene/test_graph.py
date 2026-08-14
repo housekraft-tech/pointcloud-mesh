@@ -8,10 +8,17 @@ from rscene.core.prim import Box
 
 
 def _patch(pid, normal, d):
+    # Default centroid sits ON the plane the patch claims (normal @ x + d ==
+    # 0), matching how a real fitted Patch's centroid always lies on its own
+    # plane. Coplanarity now measures the gap via perpendicular_offset
+    # (centroid to centroid), so a centroid inconsistent with (normal, d)
+    # would silently misrepresent the patch being tested.
+    normal = np.array(normal, dtype=float)
+    centroid = -d * normal
     return Patch(
-        patch_id=pid, normal=np.array(normal, dtype=float), d=d,
+        patch_id=pid, normal=normal, d=d,
         point_idx=np.array([0]), n_points=1, p95_residual_m=0.0,
-        centroid=np.zeros(3), u_range=(0.0, 1.0), v_range=(0.0, 1.0),
+        centroid=centroid, u_range=(0.0, 1.0), v_range=(0.0, 1.0),
     )
 
 
@@ -119,6 +126,74 @@ def test_perpendicular_offset_raises_on_opposed_normals():
         assert False, "expected ValueError for opposed normals"
     except ValueError:
         pass
+
+
+def test_coplanar_patches_far_from_origin_share_a_class_despite_d_lever_arm():
+    # Two genuinely coplanar patches, 8-15 m from the world origin, whose
+    # fitted normals differ by ~0.2 deg (ordinary fitting noise). Differencing
+    # a.d and b.d directly (the old, forbidden predicate) lever-arms that 0.2
+    # deg disagreement by the patches' distance-from-origin components and
+    # produces a spurious ~30 mm gap -- comfortably over coplanar_dist_tol_m
+    # (5 mm) -- even though the true perpendicular offset between the patches
+    # (measured centroid to centroid, via perpendicular_offset) is under 1 mm.
+    # This is the false-negative failure mode from the review: 241 of 331
+    # genuinely coplanar pairs on the real crop were missed this way.
+    normal_a = np.array([1.0, 0.0, 0.0])
+    centroid_a = np.array([10.0, 8.0, -3.0])
+    a = _patch(0, normal_a, -float(normal_a @ centroid_a))
+    a.centroid = centroid_a
+
+    theta = np.radians(0.2)
+    normal_b = np.array([np.cos(theta), np.sin(theta), 0.0])
+    centroid_b = np.array([10.0, 8.5, -2.5])   # shifted WITHIN the x=10 plane
+    b = _patch(1, normal_b, -float(normal_b @ centroid_b))
+    b.centroid = centroid_b
+
+    config = merged_config()
+    dist_tol = float(config["coplanar_dist_tol_m"])
+
+    # Sanity: the forbidden d-difference predicate would have rejected this
+    # pair (proving this is a real regression test, not a vacuous one).
+    assert abs(a.d - b.d) > dist_tol
+    # The real perpendicular offset is small -- these ARE the same surface.
+    assert perpendicular_offset(a, b) < dist_tol
+
+    classes = coplanarity_classes([a, b], config)
+    assert classes == [[0, 1]]
+
+
+def test_coplanar_by_d_but_truly_offset_patches_land_in_different_classes():
+    # Converse of the case above: two patches at similar distance from the
+    # origin whose d values coincidentally agree to sub-micron precision
+    # (a small normal tilt exactly cancels a real spatial offset via the
+    # origin lever arm), yet whose true perpendicular offset is ~20 mm. The
+    # old d-difference predicate calls this coplanar; perpendicular_offset
+    # must not. This is the false-positive failure mode from the review: 65
+    # of 155 pairs the old predicate called coplanar were really 5-29 mm
+    # apart.
+    normal_a = np.array([1.0, 0.0, 0.0])
+    centroid_a = np.array([10.0, 0.0, 0.0])
+    a = _patch(0, normal_a, -float(normal_a @ centroid_a))
+    a.centroid = centroid_a
+
+    theta = np.radians(-0.2287253629674964)
+    normal_b = np.array([np.cos(theta), np.sin(theta), 0.0])
+    centroid_b = np.array([10.04, 10.0, 0.0])
+    b = _patch(1, normal_b, -float(normal_b @ centroid_b))
+    b.centroid = centroid_b
+
+    config = merged_config()
+    dist_tol = float(config["coplanar_dist_tol_m"])
+
+    # Sanity: the forbidden d-difference predicate would have accepted this
+    # pair as coplanar.
+    assert abs(a.d - b.d) < dist_tol
+    # The real perpendicular offset is ~20 mm -- these are NOT the same
+    # surface.
+    assert perpendicular_offset(a, b) > 0.015
+
+    classes = coplanarity_classes([a, b], config)
+    assert classes == [[0], [1]]
 
 
 def test_classes_and_pairs_are_deterministically_ordered():
