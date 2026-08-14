@@ -150,3 +150,52 @@ def merge_patches(patches: list[Patch], xyz: np.ndarray, config: dict) -> list[F
     for new_id, f in enumerate(faces):
         f.face_id = new_id
     return faces
+
+
+def median_spacing(xyz: np.ndarray, sample_n: int = 50_000, seed: int = 0) -> float:
+    """Median nearest-neighbour distance -- the cloud's native point spacing.
+
+    Sampled rather than exhaustive: the median is stable well below full size,
+    and this is called once per run. Seeded for determinism.
+    """
+    xyz = np.asarray(xyz, dtype=np.float64)
+    if len(xyz) < 2:
+        return 0.0
+    if len(xyz) > sample_n:
+        rng = np.random.default_rng(seed)
+        sample = xyz[np.sort(rng.choice(len(xyz), sample_n, replace=False))]
+    else:
+        sample = xyz
+    dist, _ = cKDTree(sample).query(sample, k=2, workers=-1)
+    return float(np.median(dist[:, 1]))
+
+
+def apply_density_gate(
+    faces: list[Face], xyz: np.ndarray, config: dict
+) -> tuple[list[Face], list[Face]]:
+    """Split faces into (kept, rejected) on in-plane fill ratio and area.
+
+    Fill is the face's point count against the count a fully-sampled surface of
+    the same bbox would hold at the cloud's native spacing. A point count alone
+    cannot distinguish a small dense feature from a large sparse chain -- and
+    SLAM density falls off with range, so an absolute count is not portable
+    across one scan, let alone between scans.
+
+    Rejected faces are RETURNED, never dropped. The caller routes them to the
+    scene's `unmodeled` set so a designer still sees that something is there.
+    """
+    spacing = median_spacing(xyz, seed=int(config["seed"]))
+    min_fill = float(config["face_min_fill"])
+    min_area = float(config["face_min_area_m2"])
+    per_m2 = 1.0 / (spacing ** 2) if spacing > 0 else 0.0
+
+    kept, rejected = [], []
+    for f in sorted(faces, key=lambda g: g.face_id):
+        area = f.area_bound_m2()
+        if area < min_area:
+            rejected.append(f)
+            continue
+        expected = area * per_m2
+        fill = (f.n_points / expected) if expected > 0 else 0.0
+        (kept if fill >= min_fill else rejected).append(f)
+    return kept, rejected

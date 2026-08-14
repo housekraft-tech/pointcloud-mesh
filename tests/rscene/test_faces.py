@@ -1,7 +1,7 @@
 import numpy as np
 
 from rscene.config import merged_config
-from rscene.core.faces import merge_patches
+from rscene.core.faces import apply_density_gate, median_spacing, merge_patches
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import extract_patches
 from rscene.core.prim import Box
@@ -97,3 +97,46 @@ def test_merging_is_deterministic():
     assert [f.face_id for f in f1] == [f.face_id for f in f2]
     assert [f.d for f in f1] == [f.d for f in f2]
     assert [f.patch_ids for f in f1] == [f.patch_ids for f in f2]
+
+
+def test_median_spacing_recovers_the_sample_grid():
+    xyz = Box("f", (0, 0, 0), (2, 2, 0)).sample_surface(0.01, faces=("z+",))
+    assert abs(median_spacing(xyz) - 0.01) < 0.001
+
+
+def test_a_dense_surface_passes_the_gate():
+    xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
+    patches, _, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    kept, rejected = apply_density_gate(faces, xyz, cfg)
+    assert len(kept) >= 1 and len(rejected) == 0
+
+
+def test_a_sparse_chain_is_rejected():
+    """A scattered chain spanning a large box at low fill is not a surface."""
+    dense = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
+    rng = np.random.default_rng(0)
+    chain = np.column_stack([
+        np.zeros(300),
+        rng.uniform(5.0, 5.5, 300),
+        rng.uniform(0.0, 0.5, 300),
+    ])
+    xyz = np.concatenate([dense, chain])
+
+    patches, _, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    kept, rejected = apply_density_gate(faces, xyz, cfg)
+
+    for f in kept:
+        assert not (f.centroid[1] > 4.5), "the sparse chain survived the gate"
+    assert sum(f.n_points for f in kept) + sum(f.n_points for f in rejected) == \
+        sum(f.n_points for f in faces)
+
+
+def test_rejected_faces_are_returned_not_discarded():
+    """No silent drops: the gate hands rejects back for the unmodeled bucket."""
+    dense = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
+    patches, _, cfg = _extract(dense)
+    faces = merge_patches(patches, dense, cfg)
+    kept, rejected = apply_density_gate(faces, dense, cfg)
+    assert len(kept) + len(rejected) == len(faces)

@@ -33,6 +33,8 @@ DEFAULT_CONFIG: dict = {
     "face_merge_dist_tol_m": 0.005,   # max perpendicular offset to merge two patches into one face; MUST stay below the shallowest feature to preserve (golden groove is 12 mm)
     "face_merge_angle_tol_deg": 2.0,  # max normal deviation between patches merged into one face
     "face_merge_gap_m": 0.15,         # max spatial gap between two patches' points to count as one face; MUST exceed patch_connect_radius_m (0.05) or merging can never bridge a gap region growing could not
+    "face_min_fill": 0.25,            # min fraction of the points a fully-sampled surface would put in the face's own bbox; real crop showed sparse chains at 0.044
+    "face_min_area_m2": 0.004,        # smallest face bbox kept (0.004 = a 63 mm square, below the golden 80 mm switch box)
     # --- frame (measured, never enforced) ---
     "floor_normal_tol_deg": 15.0,  # max tilt from world Z for a floor/ceiling patch
     "vertical_normal_max_z": 0.2,  # patch counted as vertical when abs(normal.z) is below this; patches between roughly 11.5 and 78.5 deg off vertical fall into neither the horizontal nor vertical set (four such patches exist in the real crop)
