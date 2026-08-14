@@ -237,45 +237,98 @@ def median_spacing(xyz: np.ndarray, sample_n: int = 50_000, seed: int = 0) -> fl
     return float(np.median(dist[:, 1]))
 
 
+def _face_coverage(xyz: np.ndarray, f: Face, cell_mult: float, seed: int) -> float:
+    """Fraction of the face's own in-plane grid cells that hold >=1 point.
+
+    The grid cell size is `cell_mult` times the face's OWN median spacing
+    (measured from the face's own points, not the whole-cloud spacing) --
+    that is what makes this a COVERAGE metric rather than a DENSITY metric.
+    A genuine surface, however sparse the scan made it, is dense relative to
+    ITS OWN spacing and so fills nearly every one of its own cells. A
+    scattered chain threaded together by the patch connect radius leaves
+    most cells empty no matter how the cell size is chosen, because its
+    points are far apart relative to each other, not just relative to some
+    global reference. This is what makes the metric invariant to range and
+    incidence-angle density falloff, which a global-spacing fill ratio is not.
+    """
+    pts = xyz[f.point_idx]
+    if len(pts) < 2:
+        return 0.0
+    own_spacing = median_spacing(pts, seed=seed)
+    if own_spacing <= 0:
+        return 1.0  # degenerate (e.g. duplicate points): treat as fully covered
+
+    u, v = plane_basis(f.normal)
+    rel = pts - f.centroid
+    us, vs = rel @ u, rel @ v
+    u_lo, u_hi = np.percentile(us, [2, 98])
+    v_lo, v_hi = np.percentile(vs, [2, 98])
+
+    cell = cell_mult * own_spacing
+    n_u = max(1, int(np.ceil((u_hi - u_lo) / cell))) if u_hi > u_lo else 1
+    n_v = max(1, int(np.ceil((v_hi - v_lo) / cell))) if v_hi > v_lo else 1
+
+    in_range = (us >= u_lo) & (us <= u_hi) & (vs >= v_lo) & (vs <= v_hi)
+    us, vs = us[in_range], vs[in_range]
+    if len(us) == 0:
+        return 0.0
+
+    ui = np.clip(((us - u_lo) / cell).astype(np.int64), 0, n_u - 1)
+    vi = np.clip(((vs - v_lo) / cell).astype(np.int64), 0, n_v - 1)
+    occupied = len(np.unique(ui * n_v + vi))
+    return occupied / float(n_u * n_v)
+
+
 def apply_density_gate(
     faces: list[Face], xyz: np.ndarray, config: dict
 ) -> tuple[list[Face], list[Face]]:
-    """Split faces into (kept, rejected) on in-plane fill ratio and area.
+    """Split faces into (kept, rejected) on in-plane grid COVERAGE and area.
 
-    Fill is the face's point count against the count a fully-sampled surface of
-    the same extent would hold at the cloud's native spacing. A point count alone
-    cannot distinguish a small dense feature from a large sparse chain -- and
-    SLAM density falls off with range, so an absolute count is not portable
-    across one scan, let alone between scans.
+    Coverage answers "are these points a coherent surface, or a scattered
+    chain?" -- a question about spatial layout, not about how many points
+    there are. It grids the face's own in-plane extent into cells sized off
+    the FACE'S OWN median spacing (see `_face_coverage`) and measures the
+    fraction of cells holding at least one point.
+
+    This replaced a global-density fill ratio (`n_points / (area / spacing^2)`
+    against one whole-cloud `median_spacing`). That metric could not tell a
+    real, sparse, far-from-scanner wall from actual junk: SLAM point density
+    varies with range and incidence angle by a factor of eight or more on a
+    single real scan, so a genuinely dense wall seen obliquely and a
+    deliberately scattered chain can land on the same fill ratio. Coverage
+    against the face's own spacing does not have this failure mode -- a real
+    surface is dense relative to itself no matter how sparse the scan made
+    it, so it still fills nearly all of its own cells; a scattered chain does
+    not, regardless of overall density. See
+    `.superpowers/sdd/2026-08-13-rectilinear-scene-plan2-parts/median-spacing-fix.md`
+    for the real-crop numbers that forced this: at correct global spacing,
+    the density-fill gate rejected a genuine 20.4 sq m, 64k-point wall (fill
+    0.116) alongside actual junk (a synthetic sparse chain at fill 0.121) --
+    the two were indistinguishable on that metric.
 
     The extent used here is a 2nd-98th percentile TRIM of the fitted members'
     in-plane coordinates, deliberately different from `area_bound_m2()` (a plain
     min/max over `u_range`/`v_range`). Region growing only requires 50 mm
     connectivity and 3 mm planarity, so a single stray member dragged a metre out
-    inflates the plain bbox and deflates fill by the same factor -- easily enough
-    to flip a genuinely dense wall from kept to rejected, which is a worse
-    failure than admitting junk (the gate exists to stop concrete dust becoming
-    objects, not to delete walls). `u_range`/`v_range`/`area_bound_m2()` on the
-    Face itself are left untouched -- they are the face's true reported extent
-    for downstream consumers -- so do not "helpfully" make the two consistent.
+    inflates the plain bbox -- easily enough to flip a genuinely dense wall from
+    kept to rejected, which is a worse failure than admitting junk (the gate
+    exists to stop concrete dust becoming objects, not to delete walls).
+    `u_range`/`v_range`/`area_bound_m2()` on the Face itself are left untouched
+    -- they are the face's true reported extent for downstream consumers -- so
+    do not "helpfully" make the two consistent.
 
-    Fill counts `f.n_points` (fitted members only, i.e. `f.point_idx`), never
+    Coverage is measured over `f.point_idx` (fitted members only), never
     `f.all_idx()`. From Task 3 onward `loose_idx` holds recruited members
     attached under a looser tolerance than the fitted plane; deliberately, they
     cannot rescue a face whose own fitted points do not already support it.
 
-    `median_spacing` is a single global figure over the whole cloud. SLAM
-    density falls off with range, so a face far from the scanner is judged
-    against a standard set mostly by near-scanner points, understating its
-    fill -- an open calibration concern on real scans, not addressed here.
-
     Rejected faces are RETURNED, never dropped. The caller routes them to the
     scene's `unmodeled` set so a designer still sees that something is there.
     """
-    spacing = median_spacing(xyz, seed=int(config["seed"]))
-    min_fill = float(config["face_min_fill"])
+    min_coverage = float(config["face_min_coverage"])
     min_area = float(config["face_min_area_m2"])
-    per_m2 = 1.0 / (spacing ** 2) if spacing > 0 else 0.0
+    cell_mult = float(config["face_coverage_cell_spacing_mult"])
+    seed = int(config["seed"])
 
     kept, rejected = [], []
     for f in sorted(faces, key=lambda g: g.face_id):
@@ -283,16 +336,8 @@ def apply_density_gate(
         if area < min_area:
             rejected.append(f)
             continue
-        pts = xyz[f.point_idx]
-        u, v = plane_basis(f.normal)
-        rel = pts - f.centroid
-        us, vs = rel @ u, rel @ v
-        u_lo, u_hi = np.percentile(us, [2, 98])
-        v_lo, v_hi = np.percentile(vs, [2, 98])
-        trimmed_area = float((u_hi - u_lo) * (v_hi - v_lo))
-        expected = trimmed_area * per_m2
-        fill = (f.n_points / expected) if expected > 0 else 0.0
-        (kept if fill >= min_fill else rejected).append(f)
+        coverage = _face_coverage(xyz, f, cell_mult, seed)
+        (kept if coverage >= min_coverage else rejected).append(f)
     return kept, rejected
 
 

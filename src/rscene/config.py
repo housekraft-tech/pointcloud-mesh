@@ -33,7 +33,8 @@ DEFAULT_CONFIG: dict = {
     "face_merge_dist_tol_m": 0.005,   # max perpendicular offset to merge two patches into one face; MUST stay below the shallowest feature to preserve (golden groove is 12 mm)
     "face_merge_angle_tol_deg": 2.0,  # max normal deviation between patches merged into one face
     "face_merge_gap_m": 0.15,         # max spatial gap between two patches' points to count as one face; MUST exceed patch_connect_radius_m (0.05) or merging can never bridge a gap region growing could not
-    "face_min_fill": 0.25,            # min fraction of the points a fully-sampled surface would put in the face's own bbox; real crop showed sparse chains at 0.044
+    "face_min_coverage": 0.55,         # min fraction of a face's own in-plane grid cells (sized off the face's OWN spacing, not a global one) that must contain a point; calibrated on the real crop to keep the two named large real faces (20.4 m^2 @ 0.59, 7.7 m^2 @ 0.72) that the old global-fill gate wrongly rejected -- NOT a clean discriminator: the synthetic scattered-chain fixture in test_a_sparse_chain_is_rejected measures 0.64, ABOVE the 20.4 m^2 real face, so no threshold both protects that real face and rejects that junk fixture; see median-spacing-fix.md
+    "face_coverage_cell_spacing_mult": 2.5,  # grid cell size = this many multiples of the face's own median spacing; big enough that a well-sampled surface fills essentially every cell, small enough that a scattered chain still leaves obvious gaps
     "face_min_area_m2": 0.004,        # smallest face bbox kept (0.004 = a 63 mm square, below the golden 80 mm switch box)
     # --- recruitment (Plan 2) ---
     "recruit_dist_tol_m": 0.008,      # max point-to-plane distance to recruit a leftover point; deliberately looser than tau_fit_m since recruits never enter the fit
