@@ -65,12 +65,38 @@ def perpendicular_offset(a: Patch, b: Patch) -> float:
     this is exactly what corrupted the golden room's step- and switch-box
     measurements before this helper existed (see task-10-report.md).
 
-    This measures the gap the way it should be measured: along one patch's
-    own normal, between the two patches' own centroids, which is invariant to
-    where the world origin happens to sit. `abs()` is applied so canonical
+    This measures the gap the way it should be measured: along the two
+    patches' centroids, projected onto their own normals, which is invariant
+    to where the world origin happens to sit.
+
+    The projection direction is the BISECTOR of `a.normal` and `b.normal`
+    (their sum, normalized), not either patch's normal alone. Projecting onto
+    a single patch's normal makes the result asymmetric -- `a`'s and `b`'s
+    fitted normals never agree to the last digit, so
+    `perpendicular_offset(a, b) != perpendicular_offset(b, a)`, and which
+    patch happens to be `a` is an accident of list ordering
+    (`itertools.combinations` order, patch enumeration order, ...). The
+    bisector makes the function symmetric in its two arguments: swapping `a`
+    and `b` gives the identical result. `abs()` is applied so canonical
     normal orientation (Task 6 review) never flips the sign.
+
+    Patch normals are canonically oriented, so for genuinely parallel patches
+    `a.normal` and `b.normal` already point the same way and `a.normal +
+    b.normal` is well-conditioned. If the sum is near zero the two normals
+    are (numerically) opposed -- not expected for canonically-oriented
+    patches -- and a `ValueError` is raised rather than dividing by ~0.
     """
-    return abs(float(a.normal @ (b.centroid - a.centroid)))
+    bisector = a.normal + b.normal
+    norm = float(np.linalg.norm(bisector))
+    if norm < 1e-9:
+        raise ValueError(
+            "perpendicular_offset: a.normal and b.normal are opposed "
+            f"(a.normal={a.normal!r}, b.normal={b.normal!r}); the bisector "
+            "is degenerate. Canonically-oriented patches should never hit "
+            "this."
+        )
+    bisector /= norm
+    return abs(float(bisector @ (b.centroid - a.centroid)))
 
 
 def intersection_line(a: Patch, b: Patch, config: dict | None = None) -> tuple[np.ndarray, np.ndarray] | None:

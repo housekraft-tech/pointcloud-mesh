@@ -1,7 +1,7 @@
 import numpy as np
 
 from rscene.config import merged_config
-from rscene.core.graph import coplanarity_classes, intersection_line, patch_adjacency
+from rscene.core.graph import coplanarity_classes, intersection_line, patch_adjacency, perpendicular_offset
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import Patch, extract_patches
 from rscene.core.prim import Box
@@ -93,6 +93,32 @@ def test_adjacent_patches_are_detected_and_distant_ones_are_not():
 
     assert any(a in ids_near and b in ids_near for a, b in pairs)
     assert not any((a in ids_far) != (b in ids_far) for a, b in pairs)
+
+
+def test_perpendicular_offset_is_symmetric_under_slightly_different_normals():
+    # Two parallel-ish patches whose fitted normals differ by a tiny tilt --
+    # exactly the situation that made the old a.normal-only projection
+    # asymmetric. With the bisector, argument order must not matter.
+    angle_rad = np.radians(0.02)
+    normal_a = np.array([1.0, 0.0, 0.0])
+    normal_b = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0])
+
+    a = _patch(0, normal_a, 0.0)
+    b = _patch(1, normal_b, -0.045)
+    a.centroid = np.array([0.0, 0.0, 0.0])
+    b.centroid = np.array([0.045, 0.01, 0.02])
+
+    assert perpendicular_offset(a, b) == perpendicular_offset(b, a)
+
+
+def test_perpendicular_offset_raises_on_opposed_normals():
+    a = _patch(0, (1, 0, 0), 0.0)
+    b = _patch(1, (-1, 0, 0), -0.045)
+    try:
+        perpendicular_offset(a, b)
+        assert False, "expected ValueError for opposed normals"
+    except ValueError:
+        pass
 
 
 def test_classes_and_pairs_are_deterministically_ordered():
