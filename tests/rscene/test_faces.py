@@ -15,14 +15,24 @@ def _extract(xyz, overrides=None):
 
 
 def test_two_fragments_of_one_face_merge():
-    """A face split by a gap narrower than face_merge_gap_m becomes one face."""
-    a = Box("a", (0, 0.00, 0), (0, 1.98, 2.5)).sample_surface(0.008, faces=("x+",))
-    b = Box("b", (0, 2.01, 0), (0, 4.00, 2.5)).sample_surface(0.008, faces=("x+",))
+    """A face split by a gap narrower than face_merge_gap_m becomes one face.
+
+    The gap (80 mm) must sit strictly between patch_connect_radius_m (50 mm)
+    -- so extraction cannot bridge it and the fixture actually exercises
+    merge_patches -- and face_merge_gap_m (150 mm) -- so merging can.
+    """
+    a = Box("a", (0, 0.00, 0), (0, 1.96, 2.5)).sample_surface(0.008, faces=("x+",))
+    b = Box("b", (0, 2.04, 0), (0, 4.00, 2.5)).sample_surface(0.008, faces=("x+",))
     xyz = np.concatenate([a, b])
 
     patches, _, cfg = _extract(xyz)
-    faces = merge_patches(patches, xyz, cfg)
+    x_patches = [p for p in patches if abs(p.normal[0]) > 0.99]
+    assert len(x_patches) >= 2, (
+        "fixture is wrong: extraction already merged the fragments, so this "
+        "test would pass without merge_patches doing anything"
+    )
 
+    faces = merge_patches(patches, xyz, cfg)
     x_facing = [f for f in faces if abs(f.normal[0]) > 0.99]
     assert len(x_facing) == 1, f"expected one merged face, got {len(x_facing)}"
     assert x_facing[0].n_points == sum(p.n_points for p in patches
@@ -56,8 +66,8 @@ def test_distant_coplanar_patches_do_not_merge():
 
 
 def test_merged_plane_is_refitted_from_the_union():
-    a = Box("a", (0, 0.00, 0), (0, 1.98, 2.5)).sample_surface(0.008, faces=("x+",))
-    b = Box("b", (0, 2.01, 0), (0, 4.00, 2.5)).sample_surface(0.008, faces=("x+",))
+    a = Box("a", (0, 0.00, 0), (0, 1.96, 2.5)).sample_surface(0.008, faces=("x+",))
+    b = Box("b", (0, 2.04, 0), (0, 4.00, 2.5)).sample_surface(0.008, faces=("x+",))
     xyz = np.concatenate([a, b])
 
     patches, _, cfg = _extract(xyz)
@@ -77,8 +87,8 @@ def test_a_lone_patch_becomes_a_single_patch_face():
 
 
 def test_merging_is_deterministic():
-    a = Box("a", (0, 0.00, 0), (0, 1.98, 2.5)).sample_surface(0.01, faces=("x+",))
-    b = Box("b", (0, 2.01, 0), (0, 4.00, 2.5)).sample_surface(0.01, faces=("x+",))
+    a = Box("a", (0, 0.00, 0), (0, 1.96, 2.5)).sample_surface(0.01, faces=("x+",))
+    b = Box("b", (0, 2.04, 0), (0, 4.00, 2.5)).sample_surface(0.01, faces=("x+",))
     xyz = np.concatenate([a, b])
     patches, _, cfg = _extract(xyz)
 
