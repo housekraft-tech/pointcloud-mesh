@@ -178,6 +178,52 @@ welcome *upgrade* — it is independent evidence of which openings were walked
 through, which is how a door is distinguished from a window — but it is no
 longer a dependency. `trajectory.load_trajectory` already parses such a file.
 
+#### 4.4.1a Correction (2026-08-13): the trajectory IS recoverable
+
+§4.4.1 above claims the walk path cannot be reconstructed from `gps_time`. **That
+claim is wrong and is retracted.** It was reached with the wrong method and then
+defended with a second error.
+
+What was wrong:
+
+1. The first attempt binned points into arbitrary 0.25 s slices and took each
+   slice's **mean**. The mean is dragged toward whichever far wall happened to be
+   open, biasing the estimate by 1–2 m. That produced the zigzag.
+2. A retest used the median but kept the arbitrary bins, and judged the result
+   against an expected 6–12 cm per step. The samples are **0.7 s** apart, not
+   0.25 s. At 0.7 s a 99 cm step is 1.4 m/s — a person walking.
+3. `gps_time` carrying only ~356 distinct values over 249 s (one per 0.7 s) was
+   then read as a fatal limit. It is the opposite: it is the natural unit.
+
+The correct method — already implemented in
+`scripts/experiments/freespace_floorplan.sensor_trajectory_from_gpstime`, and
+documented there before this rebuild began:
+
+> A handheld SLAM scanner spins, sampling a full sphere around itself many times
+> per `gps_time` tick, so **all points sharing one `gps_time` value were seen from
+> one sensor position.** Its robust centre estimates that position.
+
+So: use the **native tick grouping** (never sub-bin it — a finer bin fragments one
+real pose into noise), take the per-tick **median** XY (not the mean), and apply
+light moving-average smoothing. Measured on `isolated_structural_v2.las`: 356
+poses, 368 m over 248.5 s = 1.48 m/s raw, or 121 m = 0.49 m/s after 5-tick
+smoothing. The rendered path is a coherent room-by-room route closing a loop near
+its start, and the operator confirms it matches how they walked the house.
+
+Consequences for this design:
+
+- **Opening validation by walk-through is back on.** Whether the operator passed
+  through a void is the cleanest discriminator between a door and a window, and it
+  was written off in §4.4.1 on a false premise.
+- Free-space carving still uses enclosure (§4.4.2) rather than the trajectory —
+  that retirement stands on its own measurement and is unaffected.
+- Speed should be read from the **raw** per-tick path; smoothing shortens it.
+  Use the smoothed path for geometry, the raw one for motion statistics.
+
+The lesson, recorded because it cost three wrong conclusions: an existing
+implementation in the repository had already solved this and explained why in its
+docstring. Reading it first would have been faster than measuring three times.
+
 #### 4.4.2 Second amendment (2026-08-13): enclosure, not flood-fill
 
 §4.4.1 replaced the trajectory with an occupancy flood-fill seeded in air above
