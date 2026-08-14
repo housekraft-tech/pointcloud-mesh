@@ -211,6 +211,44 @@ def test_median_spacing_recovers_the_sample_grid():
     assert abs(median_spacing(xyz) - 0.01) < 0.001
 
 
+def test_median_spacing_is_correct_above_the_sample_size():
+    """Regression: a cloud LARGER than sample_n must still yield the cloud's
+    true spacing, not the spacing of a 50k subsample.
+
+    A dense 2-D grid at a known 5 mm pitch, well over sample_n=50_000 points,
+    lets us assert the exact answer. Under the old (buggy) implementation --
+    which built the KD-tree on a 50k subsample of the grid rather than the
+    full grid -- the measured spacing on a real scan came out ~2-4x too
+    large for clouds this much bigger than sample_n; here the fixed-size grid
+    makes the discrepancy exact and reproducible without touching disk data.
+    """
+    # 1000x1000 = 1,000,000 points, a 20x thinning against sample_n=50_000.
+    # At this thinning ratio the old (subsample-first) implementation returns
+    # ~2.2x the true pitch -- a wide, unambiguous failure, not a borderline
+    # one. A smaller grid (e.g. 90k points, ~1.8x thinning) is NOT enough to
+    # expose the bug: most sampled points still keep an immediate grid
+    # neighbour, so the old code's answer is accidentally correct.
+    pitch = 0.005
+    n_side = 1000
+    xs, ys = np.meshgrid(np.arange(n_side) * pitch, np.arange(n_side) * pitch)
+    xyz = np.column_stack([xs.ravel(), ys.ravel(), np.zeros(n_side * n_side)])
+
+    spacing = median_spacing(xyz, sample_n=50_000, seed=0)
+    assert abs(spacing - pitch) < 0.05 * pitch, (
+        f"expected ~{pitch} m, got {spacing} m -- looks like the tree was "
+        f"built on a subsample instead of the full cloud"
+    )
+
+
+def test_median_spacing_unchanged_for_a_small_cloud():
+    """Below sample_n, the tree is built on the (unsampled) full cloud in both
+    the old and new implementation, so the fast path's answer must not move.
+    """
+    xyz = Box("f", (0, 0, 0), (2, 2, 0)).sample_surface(0.01, faces=("z+",))
+    assert len(xyz) < 50_000
+    assert abs(median_spacing(xyz) - 0.01) < 0.001
+
+
 def test_a_dense_surface_passes_the_gate():
     xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
     patches, _, cfg = _extract(xyz)

@@ -213,18 +213,27 @@ def merge_patches(patches: list[Patch], xyz: np.ndarray, config: dict) -> list[F
 def median_spacing(xyz: np.ndarray, sample_n: int = 50_000, seed: int = 0) -> float:
     """Median nearest-neighbour distance -- the cloud's native point spacing.
 
-    Sampled rather than exhaustive: the median is stable well below full size,
-    and this is called once per run. Seeded for determinism.
+    The KD-tree MUST be built on the full cloud: the tree defines what "the
+    neighbourhood" is, and thinning the cloud before building it inflates
+    nearest-neighbour distances by the thinning factor -- a 50k sample of a
+    1M-point cloud measures the SAMPLE's spacing, not the cloud's, and returns
+    a near-constant figure regardless of how dense the real cloud is.
+
+    `sample_n` instead bounds which points are QUERIED against that full
+    tree. This keeps the cost close to the sampled version (only the tree
+    build is full-size; the query is bounded by sample_n) while returning the
+    cloud's true spacing. Seeded for determinism.
     """
     xyz = np.asarray(xyz, dtype=np.float64)
     if len(xyz) < 2:
         return 0.0
+    tree = cKDTree(xyz)
     if len(xyz) > sample_n:
         rng = np.random.default_rng(seed)
-        sample = xyz[np.sort(rng.choice(len(xyz), sample_n, replace=False))]
+        query = xyz[np.sort(rng.choice(len(xyz), sample_n, replace=False))]
     else:
-        sample = xyz
-    dist, _ = cKDTree(sample).query(sample, k=2, workers=-1)
+        query = xyz
+    dist, _ = tree.query(query, k=2, workers=4)
     return float(np.median(dist[:, 1]))
 
 
