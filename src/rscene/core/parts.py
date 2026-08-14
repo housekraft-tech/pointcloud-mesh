@@ -9,10 +9,15 @@ overlap -- never as a single global centroid-to-centroid offset, and never by
 differencing the two faces' `d` values. Real faces are not flat across their
 whole extent (measured neighbour-bin correlation +0.59 to +0.83 on a real
 scan: genuine slab/wall curvature of several millimetres over metres, not
-noise). A single global offset silently inherits that curvature. Binning the
-overlap and taking the median of local offsets is immune to it, and the
-spread across bins is reported as the measurement's `p95_residual` so a
-curved wall says so instead of hiding it in one falsely-precise number.
+noise). A single global offset silently inherits that curvature.
+
+Thickness also genuinely VARIES, and not as noise around a mean: a wall runs
+at one thickness, steps where a structural column is embedded in it, and
+steps back. Binning the overlap and SEGMENTING the bins along the wall's
+length (see `ThicknessSegment`) captures that directly -- where the step is,
+not a spread number that would describe it as smearing. `Wall.thickness` is
+the dominant segment's own median; `Wall.thickness_field` is the full
+segmented field for anything that needs to see the step.
 
 `d` is origin-referenced; differencing it amplifies normal error by distance
 from the origin. `perpendicular_offset` (and the local measurement here)
@@ -33,14 +38,143 @@ from .occupancy import OccupancyGrid, build_occupancy, interior_by_enclosure
 from .scene import Measurement
 
 
+#: Two or more overlap cells qualified (>= 3 points from EACH face); the
+#: reported thickness is a genuine median across independent local samples.
+METHOD_LOCAL_BIN_MEDIAN = "local-bin-median"
+#: Exactly one overlap cell qualified. A real local measurement -- not a
+#: whole-overlap average -- but there is only one of it; no spread to trust.
+METHOD_LOCAL_SINGLE_BIN = "local-single-bin"
+#: No cell qualified (empty overlap box, no points inside it, or every cell
+#: fell short of the per-face minimum). The reported value is the mean
+#: offset over the WHOLE overlap (or, if the overlap box itself was empty,
+#: the whole face) -- i.e. exactly the non-local measurement this module
+#: exists to avoid. Visibly labelled as such rather than silently returned
+#: as if it were a bin result.
+METHOD_WHOLE_OVERLAP_FALLBACK = "whole-overlap-fallback"
+
+
+@dataclass
+class ThicknessSample:
+    """One local thickness measurement: a bin centre (in the pair's shared
+    (u, v) basis -- see `_shared_uv_projection`) plus what was measured
+    there. For a `METHOD_WHOLE_OVERLAP_FALLBACK` result there is exactly one
+    sample, positioned at the overlap region's (or, lacking one, the whole
+    pair's) centre -- honestly one giant "bin".
+    """
+
+    u: float
+    v: float
+    value: float
+    n_points: int
+
+    def to_dict(self) -> dict:
+        return {"u": self.u, "v": self.v, "value": self.value, "n_points": self.n_points}
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ThicknessSample":
+        return ThicknessSample(
+            u=payload["u"], v=payload["v"], value=payload["value"],
+            n_points=payload["n_points"],
+        )
+
+
+@dataclass
+class ThicknessSegment:
+    """A contiguous run of bins along the wall's LONGER shared-basis axis
+    (an approximation of "along its length": whichever of the pair's shared
+    u/v extents is larger) whose thickness agrees within
+    `wall_thickness_step_tol_m`.
+
+    Wall thickness is not noise around a mean -- it is PIECEWISE: a wall
+    runs at one thickness, steps where a structural column is embedded in
+    it, and steps back. A summary statistic (min/max/percentile) describes
+    that bimodal reality as if it were a spread and hides the one thing that
+    matters: where the step is. Segments say that directly: "244 mm from
+    u=0.00 to 1.20, then 451 mm from u=1.20 to 1.60 (candidate column), then
+    244 mm again."
+
+    `start`/`end` are positions along the length axis in the pair's shared
+    basis (metres, relative to the pair's midpoint -- see
+    `_shared_uv_projection`). `thickness` is the median of the segment's own
+    bin values. `is_candidate_column` marks a segment thicker than the
+    DOMINANT segment (the one covering the most length) by more than the
+    step tolerance -- flagged, not classified: turning it into an actual
+    `Column` part needs the column's other faces, which is Plan 3's job.
+    """
+
+    start: float
+    end: float
+    thickness: float
+    n_bins: int
+    n_points: int
+    is_candidate_column: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "start": self.start, "end": self.end, "thickness": self.thickness,
+            "n_bins": self.n_bins, "n_points": self.n_points,
+            "is_candidate_column": self.is_candidate_column,
+        }
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ThicknessSegment":
+        return ThicknessSegment(
+            start=payload["start"], end=payload["end"], thickness=payload["thickness"],
+            n_bins=payload["n_bins"], n_points=payload["n_points"],
+            is_candidate_column=payload["is_candidate_column"],
+        )
+
+
+@dataclass
+class ThicknessField:
+    """The thickness FIELD behind a wall's single headline number: every
+    local sample that went into it (the raw material), plus that field
+    SEGMENTED along the wall's length (the structure). A wall's thickness
+    genuinely varies for a structural reason -- a column embedded in it --
+    not as noise around a mean; collapsing that to one median and a spread
+    number would describe a step as if it were smearing, and hide exactly
+    where a designer cannot route a conduit or clear joinery. See
+    `ThicknessSegment`.
+
+    `segments` always has at least one entry, covering the whole field --
+    the ordinary case of a wall with no column in it is correctly reported
+    as a single segment, not a missing or degenerate result.
+    """
+
+    samples: list[ThicknessSample]
+    segments: list[ThicknessSegment]
+
+    def to_dict(self) -> dict:
+        return {
+            "samples": [s.to_dict() for s in self.samples],
+            "segments": [s.to_dict() for s in self.segments],
+        }
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ThicknessField":
+        return ThicknessField(
+            samples=[ThicknessSample.from_dict(s) for s in payload["samples"]],
+            segments=[ThicknessSegment.from_dict(s) for s in payload["segments"]],
+        )
+
+
 @dataclass
 class Wall:
-    """One wall: one or two faces, with every dimension measured."""
+    """One wall: one or two faces, with every dimension measured.
+
+    `thickness` is the DOMINANT segment's median (the segment covering the
+    most length) -- the wall's own thickness, not an average contaminated by
+    an embedded column. `thickness_field` is the evidence behind it: every
+    local sample and the segments they were grouped into, for anything that
+    wants to see how thickness actually varies along the wall. `None` on
+    both when the wall is unpaired (no partner, no measurement to report).
+    """
 
     wall_id: str
     face_a: int
     face_b: Optional[int]
     thickness: Optional[Measurement]
+    thickness_field: Optional[ThicknessField]
     length: Measurement
     height: Measurement
     centroid: np.ndarray
@@ -115,47 +249,66 @@ def _overlap_fraction(a: Face, b: Face, xyz: np.ndarray) -> float:
 
 def measure_local_thickness(
     a: Face, b: Face, xyz: np.ndarray, config: dict
-) -> tuple[float, int, float]:
-    """Perpendicular distance between two faces, measured IN THEIR OVERLAP.
+) -> tuple[Measurement, ThicknessField]:
+    """The thickness FIELD between two faces, measured IN THEIR OVERLAP --
+    not one number, but the per-bin measurements it was built from.
 
     A single global centroid-to-centroid offset (`perpendicular_offset`)
     inherits whatever curvature the two surfaces have across their whole
     extent, which real concrete surfaces measurably have (several mm over
-    metres). This instead:
+    metres), and collapses genuine along-the-wall/up-the-wall variation
+    (plaster and masonry vary for different reasons) into one falsely
+    precise number. This instead:
 
       1. Builds a shared (u, v) basis orthogonal to the pair's bisector
          normal -- shared because `a` and `b` each fitted their own basis
-         independently and the two need not agree.
-      2. Projects both faces' fitted points into that basis, centred on the
-         pair's midpoint.
-      3. Restricts to the (u, v) BOUNDING BOX both faces actually share --
-         the overlap region -- and bins it into `wall_thickness_bin_m`
-         cells.
-      4. In each cell containing points from both faces, measures the local
+         independently and the two need not agree (see
+         `_shared_uv_projection`).
+      2. Restricts to the (u, v) BOUNDING BOX both faces actually share --
+         the overlap region.
+      3. Bins it ADAPTIVELY: cell size targets
+         `wall_thickness_bin_target_pts` points per bin from the SPARSER
+         face's overlap population, clipped to
+         [`wall_thickness_bin_min_m`, `wall_thickness_bin_max_m`]. A fixed
+         cell size cannot serve both a dense, metres-wide overlap (which
+         should resolve finely) and a sparse one (which should degrade
+         gracefully to few bins rather than fragment into empty ones).
+      4. In each cell with >= 3 points from EACH face, measures the local
          offset as the bisector-projected distance between the two faces'
-         mean positions in that cell.
-      5. Reports the MEDIAN local offset as the thickness, and the p95 of
-         |local offset - median| across cells as `p95_residual` -- the
-         measurement's own spread, not a plane-fit residual.
+         mean positions in that cell -- one `ThicknessSample`, positioned at
+         the cell centre.
+      5. SEGMENTS the bins along the LONGER shared-basis axis (an
+         approximation of "along the wall's length"): adjacent bins whose
+         median thickness agrees within `wall_thickness_step_tol_m` merge
+         into one `ThicknessSegment`; a jump beyond it starts a new one.
+         Wall thickness is piecewise, not noise around a mean -- a wall runs
+         at one thickness, steps where a structural column is embedded in
+         it, and steps back -- so this reports where the step is rather
+         than a spread number that would describe a genuine step as if it
+         were smearing. See `ThicknessSegment`.
+      6. Reports the DOMINANT segment (the one covering the most length) as
+         the headline `Measurement` -- the wall's own thickness, not an
+         average contaminated by an embedded column -- with the FULL
+         segmented field on the returned `ThicknessField`.
 
-    Falls back to the single centroid-to-centroid `perpendicular_offset` when
-    the overlap region or bin population is too small to bin (e.g. the two
-    faces barely overlap): a coarse single-cell measurement is still a local
-    one, just with one cell.
+    `Measurement.method` is one of three explicit values -- never a string a
+    caller has to parse to learn what happened -- and describes the DOMINANT
+    segment specifically:
+      - `METHOD_LOCAL_BIN_MEDIAN`   -- the dominant segment has >= 2 cells;
+        trustworthy.
+      - `METHOD_LOCAL_SINGLE_BIN`   -- the dominant segment has exactly 1
+        cell; a genuine local measurement, but there is only one of it.
+      - `METHOD_WHOLE_OVERLAP_FALLBACK` -- no cell qualified anywhere (empty
+        overlap box, no points inside it, or every cell under-populated).
+        The reported value is a plain mean over the whole overlap (or,
+        lacking an overlap box, the whole pair) -- NOT a local measurement,
+        and `Measurement.n_bins == 0` says so explicitly rather than being
+        conflated with a genuine single-bin result the way an earlier
+        version of this function did.
 
     Never touches `Face.d`. Everything here is a projection of actual point
     positions onto the bisector, so translating the whole scene changes
     nothing about the result.
-
-    Returns (thickness_m, n_points, p95_residual_m, n_bins). `n_bins` is the
-    number of overlap cells that actually qualified (>= 3 points from EACH
-    face) and contributed a local measurement -- it is what distinguishes a
-    genuinely flat `p95_residual == 0.0` (many qualifying bins, all
-    agreeing) from a fallback measurement that never bins at all (`n_bins`
-    is 0 when the overlap box is empty, 1 when the box exists but no cell
-    reached the per-face minimum so the whole-overlap mean is used instead).
-    A caller that wants "was this actually measured locally" should check
-    `n_bins >= 2`, not just look at the spread.
     """
     bisector = _bisector(a, b)
     origin = (a.centroid + b.centroid) / 2.0
@@ -170,21 +323,51 @@ def measure_local_thickness(
 
     fallback_t = float(abs(wb.mean() - wa.mean()))
     n_pts = int(len(a.point_idx) + len(b.point_idx))
-    if u_hi <= u_lo or v_hi <= v_lo:
-        return fallback_t, n_pts, 0.0, 0
+    fallback_uv = (
+        float((ua.mean() + ub.mean()) / 2.0),
+        float((va.mean() + vb.mean()) / 2.0),
+    )
 
-    cell = max(float(config["wall_thickness_bin_m"]), 1e-6)
-    n_u = max(1, int(np.ceil((u_hi - u_lo) / cell)))
-    n_v = max(1, int(np.ceil((v_hi - v_lo) / cell)))
+    def fallback_result() -> tuple[Measurement, ThicknessField]:
+        sample = ThicknessSample(u=fallback_uv[0], v=fallback_uv[1], value=fallback_t, n_points=n_pts)
+        segment = ThicknessSegment(
+            start=fallback_uv[0], end=fallback_uv[0], thickness=fallback_t,
+            n_bins=0, n_points=n_pts, is_candidate_column=False,
+        )
+        field = ThicknessField(samples=[sample], segments=[segment])
+        measurement = Measurement(
+            value=fallback_t, method=METHOD_WHOLE_OVERLAP_FALLBACK,
+            n_points=n_pts, p95_residual=0.0, n_bins=0,
+        )
+        return measurement, field
+
+    if u_hi <= u_lo or v_hi <= v_lo:
+        return fallback_result()
 
     in_a = (ua >= u_lo) & (ua <= u_hi) & (va >= v_lo) & (va <= v_hi)
     in_b = (ub >= u_lo) & (ub <= u_hi) & (vb >= v_lo) & (vb <= v_hi)
     if not in_a.any() or not in_b.any():
-        return fallback_t, n_pts, 0.0, 1
+        return fallback_result()
+
+    u_span, v_span = u_hi - u_lo, v_hi - v_lo
+    sparser = min(int(in_a.sum()), int(in_b.sum()))
+    bin_min = float(config["wall_thickness_bin_min_m"])
+    bin_max = float(config["wall_thickness_bin_max_m"])
+    target_pts = float(config["wall_thickness_bin_target_pts"])
+    overlap_area = u_span * v_span
+    if sparser > 0 and overlap_area > 0:
+        ideal_cell = float(np.sqrt(overlap_area * target_pts / sparser))
+        cell = min(max(ideal_cell, bin_min), bin_max)
+    else:
+        cell = bin_max
+
+    n_u = max(1, int(np.ceil(u_span / cell)))
+    n_v = max(1, int(np.ceil(v_span / cell)))
+    step_u, step_v = u_span / n_u, v_span / n_v
 
     def cell_id(uu, vv):
-        iu = np.clip(((uu - u_lo) / cell).astype(np.int64), 0, n_u - 1)
-        iv = np.clip(((vv - v_lo) / cell).astype(np.int64), 0, n_v - 1)
+        iu = np.clip(((uu - u_lo) / step_u).astype(np.int64), 0, n_u - 1)
+        iv = np.clip(((vv - v_lo) / step_v).astype(np.int64), 0, n_v - 1)
         return iu * n_v + iv
 
     ca = cell_id(ua[in_a], va[in_a])
@@ -192,24 +375,99 @@ def measure_local_thickness(
     wa_ov, wb_ov = wa[in_a], wb[in_b]
 
     min_bin_pts = 3
-    local_vals = []
-    used_pts = 0
+    samples: list[ThicknessSample] = []
+    # (iu, iv, value, n_points) per qualifying cell -- kept alongside `samples`
+    # for segmentation below, which groups by bin INDEX along the length
+    # axis, not by the samples' float positions.
+    records: list[tuple[int, int, float, int]] = []
     shared_cells = np.intersect1d(np.unique(ca), np.unique(cb))
     for c in shared_cells:
         sel_a = ca == c
         sel_b = cb == c
         if sel_a.sum() < min_bin_pts or sel_b.sum() < min_bin_pts:
             continue
-        local_vals.append(float(wb_ov[sel_b].mean() - wa_ov[sel_a].mean()))
-        used_pts += int(sel_a.sum() + sel_b.sum())
+        iu, iv = divmod(int(c), n_v)
+        u_center = u_lo + (iu + 0.5) * step_u
+        v_center = v_lo + (iv + 0.5) * step_v
+        value = abs(float(wb_ov[sel_b].mean() - wa_ov[sel_a].mean()))
+        n_bin_pts = int(sel_a.sum() + sel_b.sum())
+        samples.append(ThicknessSample(u=u_center, v=v_center, value=value, n_points=n_bin_pts))
+        records.append((iu, iv, value, n_bin_pts))
 
-    if not local_vals:
-        return fallback_t, n_pts, 0.0, 1
+    if not samples:
+        return fallback_result()
 
-    local_vals = np.abs(np.asarray(local_vals, dtype=np.float64))
-    thickness = float(np.median(local_vals))
-    spread = float(np.percentile(np.abs(local_vals - thickness), 95)) if len(local_vals) > 1 else 0.0
-    return thickness, used_pts, spread, len(local_vals)
+    step_tol = float(config["wall_thickness_step_tol_m"])
+    length_is_u = u_span >= v_span
+
+    # Group records by their index along the LONGER axis (an approximation
+    # of "along the wall's length"), aggregating the perpendicular axis --
+    # a step spans the wall's full height, not one height-bin of it.
+    groups: dict[int, list[tuple[int, int, float, int]]] = {}
+    for rec in records:
+        key = rec[0] if length_is_u else rec[1]
+        groups.setdefault(key, []).append(rec)
+    keys = sorted(groups.keys())
+
+    def group_median(k: int) -> float:
+        return float(np.median([r[2] for r in groups[k]]))
+
+    def key_extent(k: int) -> tuple[float, float]:
+        if length_is_u:
+            return u_lo + k * step_u, u_lo + (k + 1) * step_u
+        return v_lo + k * step_v, v_lo + (k + 1) * step_v
+
+    def finalise(run_keys: list[int]) -> ThicknessSegment:
+        recs = [r for k in run_keys for r in groups[k]]
+        vals = np.array([r[2] for r in recs], dtype=np.float64)
+        starts = [key_extent(k)[0] for k in run_keys]
+        ends = [key_extent(k)[1] for k in run_keys]
+        return ThicknessSegment(
+            start=float(min(starts)), end=float(max(ends)),
+            thickness=float(np.median(vals)),
+            n_bins=len(recs), n_points=int(sum(r[3] for r in recs)),
+            is_candidate_column=False,
+        )
+
+    # Adjacent groups whose median agrees within `step_tol` merge into one
+    # segment; a jump beyond it starts a new one. Comparison is against the
+    # immediately preceding GROUP's median (not a running segment average),
+    # so a slow drift across many groups cannot silently smuggle a step
+    # past the tolerance by accumulating it one small hop at a time.
+    segments: list[ThicknessSegment] = []
+    run = [keys[0]]
+    prev_median = group_median(keys[0])
+    for k in keys[1:]:
+        med = group_median(k)
+        if abs(med - prev_median) <= step_tol:
+            run.append(k)
+        else:
+            segments.append(finalise(run))
+            run = [k]
+        prev_median = med
+    segments.append(finalise(run))
+
+    dominant = max(segments, key=lambda s: s.end - s.start)
+    for seg in segments:
+        if seg is not dominant and seg.thickness > dominant.thickness + step_tol:
+            seg.is_candidate_column = True
+
+    dominant_keys = [k for k in keys if key_extent(k)[0] >= dominant.start and key_extent(k)[1] <= dominant.end]
+    dominant_vals = np.array(
+        [r[2] for k in dominant_keys for r in groups[k]], dtype=np.float64
+    )
+    spread = (
+        float(np.percentile(np.abs(dominant_vals - dominant.thickness), 95))
+        if len(dominant_vals) > 1 else 0.0
+    )
+    method = METHOD_LOCAL_SINGLE_BIN if dominant.n_bins == 1 else METHOD_LOCAL_BIN_MEDIAN
+
+    field = ThicknessField(samples=samples, segments=segments)
+    measurement = Measurement(
+        value=dominant.thickness, method=method,
+        n_points=dominant.n_points, p95_residual=spread, n_bins=dominant.n_bins,
+    )
+    return measurement, field
 
 
 def _probe_interior_fraction(
@@ -325,7 +583,8 @@ def assemble_walls(
                 continue
             if _overlap_fraction(a, b, xyz) < min_overlap:
                 continue
-            t, n_pts, resid, n_bins = measure_local_thickness(a, b, xyz, config)
+            measurement, _field = measure_local_thickness(a, b, xyz, config)
+            t = measurement.value
             if not (t_min <= t <= t_max):
                 continue
             for x, y in ((a.face_id, b.face_id), (b.face_id, a.face_id)):
@@ -354,17 +613,11 @@ def assemble_walls(
             g = by_id[other_id]
             used.add(f.face_id)
             used.add(other_id)
-            t, n_pts, resid, n_bins = measure_local_thickness(f, g, xyz, config)
+            measurement, field = measure_local_thickness(f, g, xyz, config)
             walls.append(Wall(
                 wall_id=wid, face_a=f.face_id, face_b=other_id,
-                thickness=Measurement(
-                    value=float(t),
-                    method=(
-                        "face-to-face perpendicular offset, local overlap "
-                        f"median (n_bins={n_bins})"
-                    ),
-                    n_points=int(n_pts), p95_residual=float(resid),
-                ),
+                thickness=measurement,
+                thickness_field=field,
                 length=Measurement(
                     value=float(max(_measure_span(f, False), _measure_span(g, False))),
                     method="face in-plane extent", n_points=int(f.n_points + g.n_points),
@@ -382,6 +635,7 @@ def assemble_walls(
             used.add(f.face_id)
             walls.append(Wall(
                 wall_id=wid, face_a=f.face_id, face_b=None, thickness=None,
+                thickness_field=None,
                 length=Measurement(
                     value=float(_measure_span(f, False)),
                     method="face in-plane extent", n_points=f.n_points,

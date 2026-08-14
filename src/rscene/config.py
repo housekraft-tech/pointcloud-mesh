@@ -52,7 +52,10 @@ DEFAULT_CONFIG: dict = {
     "wall_thickness_min_m": 0.050,    # thinnest face pair accepted as one wall
     "wall_thickness_max_m": 0.450,    # thickest face pair accepted as one wall
     "wall_pair_min_overlap": 0.30,    # min fraction of the smaller face's in-plane extent that must overlap its partner
-    "wall_thickness_bin_m": 0.30,     # bin size for measuring thickness locally within the overlap region (faces are not flat across their extent; a single global offset inherits several mm of real curvature)
+    "wall_thickness_bin_min_m": 0.10,   # finest bin size the adaptive thickness-field sizer will choose, even with abundant points -- below this, per-bin position resolution outruns what plane-fit noise can support
+    "wall_thickness_bin_max_m": 0.50,   # coarsest bin size (also the single-cell fallback size for a sparse overlap); large overlaps with few points degrade to this rather than fragmenting into empty bins
+    "wall_thickness_bin_target_pts": 12,  # target points per bin from the SPARSER face's overlap population; bin size is chosen so bins average this many points, comfortably above the 3-point-per-face qualification floor
+    "wall_thickness_step_tol_m": 0.030,   # max adjacent-bin thickness jump kept in one segment; comfortably above measured plaster/slab curvature (a few mm over metres) and comfortably below a structural column embedded in a wall (>=100 mm per the user), so genuine noise never splits a segment and a real column always does
 }
 
 

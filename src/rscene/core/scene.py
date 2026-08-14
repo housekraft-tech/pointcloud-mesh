@@ -21,12 +21,27 @@ from .patches import Patch
 
 @dataclass
 class Measurement:
-    """A dimension plus the evidence behind it."""
+    """A dimension plus the evidence behind it.
+
+    `n_bins` is an optional sibling to `n_points`/`p95_residual`: for a
+    measurement assembled from several local sub-measurements (e.g. wall
+    thickness binned across an overlap region -- see `core/parts.py`), it
+    states how many of those sub-measurements actually qualified and back
+    this specific value (for wall thickness: the DOMINANT segment's bin
+    count, not the whole field's -- see `ThicknessField`), so a caller can
+    tell a genuine multi-bin median from a single-cell or whole-overlap
+    fallback without parsing `method`. `None` for measurements that were
+    never binned (length, height, ...). Deliberately left out of
+    `to_dict`/`from_dict` for now -- wiring Wall/Feature (and this field)
+    into the scene JSON is Task 9's job, not this one's; adding it here
+    would change every existing Measurement payload's key set.
+    """
 
     value: float
     method: str
     n_points: int
     p95_residual: float
+    n_bins: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
