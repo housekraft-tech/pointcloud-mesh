@@ -1,7 +1,13 @@
 import numpy as np
 
 from rscene.config import merged_config
-from rscene.core.faces import _finalise, apply_density_gate, median_spacing, merge_patches
+from rscene.core.faces import (
+    _finalise,
+    apply_density_gate,
+    median_spacing,
+    merge_patches,
+    recruit_points,
+)
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import extract_patches
 from rscene.core.prim import Box
@@ -162,3 +168,71 @@ def test_a_bbox_outlier_does_not_flip_a_dense_wall_to_rejected():
     cfg = merged_config()
     kept, rejected = apply_density_gate([face], xyz, cfg)
     assert len(kept) == 1 and len(rejected) == 0, "outlier member sank a real wall's fill"
+
+
+def test_recruitment_claims_points_lying_on_a_face():
+    xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",))
+    patches, labels, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+
+    before = int(np.count_nonzero(labels < 0))
+    new_labels = recruit_points(faces, xyz, normals, labels, cfg)
+    after = int(np.count_nonzero(new_labels < 0))
+
+    assert after <= before
+    assert sum(len(f.loose_idx) for f in faces) == before - after
+
+
+def test_recruits_do_not_move_the_plane():
+    """A recruit is a member for accounting, never for fitting."""
+    xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",))
+    patches, labels, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+
+    planes_before = [(f.normal.copy(), f.d) for f in faces]
+    recruit_points(faces, xyz, normals, labels, cfg)
+    for (n0, d0), f in zip(planes_before, faces):
+        assert np.array_equal(n0, f.normal)
+        assert d0 == f.d
+
+
+def test_a_point_far_from_every_face_is_not_recruited():
+    xyz = np.concatenate([
+        Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",)),
+        np.array([[5.0, 5.0, 5.0]]),
+    ])
+    patches, labels, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+    new_labels = recruit_points(faces, xyz, normals, labels, cfg)
+    assert new_labels[-1] == -1
+
+
+def test_no_point_is_recruited_twice():
+    xyz = np.concatenate([
+        Box("a", (0, 0, 0), (0, 2, 2)).sample_surface(0.008, faces=("x+",)),
+        Box("b", (0.5, 0, 0), (0.5, 2, 2)).sample_surface(0.008, faces=("x+",)),
+    ])
+    patches, labels, cfg = _extract(xyz)
+    faces = merge_patches(patches, xyz, cfg)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+    recruit_points(faces, xyz, normals, labels, cfg)
+
+    claimed = np.concatenate([f.loose_idx for f in faces]) if faces else np.zeros(0)
+    assert len(claimed) == len(np.unique(claimed))
+
+
+def test_recruitment_is_deterministic():
+    xyz = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
+    patches, labels, cfg = _extract(xyz)
+    normals, _ = estimate_normals(xyz, k=cfg["normal_k"])
+
+    f1 = merge_patches(patches, xyz, cfg)
+    l1 = recruit_points(f1, xyz, normals, labels, cfg)
+    f2 = merge_patches(patches, xyz, cfg)
+    l2 = recruit_points(f2, xyz, normals, labels, cfg)
+
+    assert np.array_equal(l1, l2)
+    assert [f.loose_idx.tolist() for f in f1] == [f.loose_idx.tolist() for f in f2]

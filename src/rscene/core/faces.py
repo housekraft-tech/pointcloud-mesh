@@ -227,3 +227,72 @@ def apply_density_gate(
         fill = (f.n_points / expected) if expected > 0 else 0.0
         (kept if fill >= min_fill else rejected).append(f)
     return kept, rejected
+
+
+_RECRUIT_CHUNK = 20_000
+
+
+def recruit_points(
+    faces: list[Face],
+    xyz: np.ndarray,
+    normals: np.ndarray,
+    labels: np.ndarray,
+    config: dict,
+) -> np.ndarray:
+    """Attach leftover points to the face they lie on. Returns new labels.
+
+    On a real scan most unassigned points are not unexplained -- they sit ON a
+    face's plane and region growing simply could not reach them. Recruiting
+    them is the largest single reduction in unassigned points available.
+
+    Recruits go into `Face.loose_idx` and are EXCLUDED from the plane fit, so a
+    looser tolerance costs accounting completeness nothing in accuracy. A recruit
+    must also be within `recruit_max_reach_m` of an existing fitted member, so a
+    point cannot join a face across a void it has no business crossing.
+
+    Ties are broken by nearest plane, then lowest face_id -- deterministic.
+    """
+    xyz = np.asarray(xyz, dtype=np.float64)
+    normals = np.asarray(normals, dtype=np.float64)
+    labels = np.asarray(labels).copy()
+    if not faces:
+        return labels
+
+    tau = float(config["recruit_dist_tol_m"])
+    cos_tol = float(np.cos(np.radians(config["recruit_angle_tol_deg"])))
+    reach = float(config["recruit_max_reach_m"])
+
+    ordered = sorted(faces, key=lambda f: f.face_id)
+    N = np.vstack([f.normal for f in ordered])           # (F, 3)
+    D = np.array([f.d for f in ordered])                 # (F,)
+    trees = [cKDTree(xyz[f.point_idx]) for f in ordered]
+
+    free = np.flatnonzero(labels < 0)
+    claimed: dict[int, list[int]] = {f.face_id: [] for f in ordered}
+
+    for start in range(0, len(free), _RECRUIT_CHUNK):
+        idx = free[start:start + _RECRUIT_CHUNK]
+        P = xyz[idx]
+        dists = np.abs(P @ N.T + D)                      # (n, F)
+        agrees = np.abs(normals[idx] @ N.T) >= cos_tol   # (n, F)
+        ok = agrees & (dists <= tau)
+
+        cand = np.where(ok, dists, np.inf)
+        best = np.argmin(cand, axis=1)
+        best_dist = cand[np.arange(len(idx)), best]
+        viable = np.isfinite(best_dist)
+
+        for local in np.flatnonzero(viable):
+            fi = int(best[local])
+            point = P[local]
+            if trees[fi].query(point, k=1, workers=-1)[0] > reach:
+                continue
+            gi = int(idx[local])
+            claimed[ordered[fi].face_id].append(gi)
+            labels[gi] = ordered[fi].face_id
+
+    for f in ordered:
+        got = claimed[f.face_id]
+        f.loose_idx = np.sort(np.asarray(got, dtype=np.int64)) if got \
+            else np.zeros(0, dtype=np.int64)
+    return labels
