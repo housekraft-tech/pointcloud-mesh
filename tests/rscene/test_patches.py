@@ -62,9 +62,17 @@ def test_the_step_side_faces_are_found_as_separate_patches():
 
 
 def test_no_surface_is_snapped_to_another():
-    """Two nearly-parallel faces stay distinct rather than collapsing to one."""
+    """Two nearly-parallel faces stay distinct rather than collapsing to one.
+
+    The gap between the faces (30 mm in y) is INSIDE patch_connect_radius_m
+    (50 mm), so region growth genuinely has the opportunity to jump between
+    them -- unlike a 10x-radius gap, which is trivially disjoint and cannot
+    exercise the invariant this test exists to guard. What must keep the two
+    surfaces apart is the 20 mm offset between their planes (in x), not
+    spatial separation.
+    """
     a = Box("a", (0.0, 0.0, 0.0), (0.0, 2.0, 2.0)).sample_surface(0.008, faces=("x+",))
-    b = Box("b", (0.02, 2.5, 0.0), (0.02, 4.5, 2.0)).sample_surface(0.008, faces=("x+",))
+    b = Box("b", (0.02, 2.03, 0.0), (0.02, 4.03, 2.0)).sample_surface(0.008, faces=("x+",))
     xyz = np.concatenate([a, b])
 
     normals, curvature = estimate_normals(xyz, k=24)
