@@ -48,6 +48,11 @@ DEFAULT_CONFIG: dict = {
     "occupancy_cell_m": 0.05,         # voxel size for the interior flood-fill; coarse on purpose, it never defines geometry
     "interior_seed_height_m": 1.20,   # height above the floor plane to seed the fill, chosen to sit in open air in any room
     "interior_probe_cells": 1.5,      # cells probed along +-normal from a face's own points to read the `interior` array; measured on the real crop against interior_by_enclosure -- see assign_interior_sides docstring
+    # --- wall assembly (Plan 2) ---
+    "wall_thickness_min_m": 0.050,    # thinnest face pair accepted as one wall
+    "wall_thickness_max_m": 0.450,    # thickest face pair accepted as one wall
+    "wall_pair_min_overlap": 0.30,    # min fraction of the smaller face's in-plane extent that must overlap its partner
+    "wall_thickness_bin_m": 0.30,     # bin size for measuring thickness locally within the overlap region (faces are not flat across their extent; a single global offset inherits several mm of real curvature)
 }
 
 
