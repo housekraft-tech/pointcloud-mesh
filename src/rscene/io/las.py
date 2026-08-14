@@ -73,6 +73,8 @@ def load_las(path: str, max_points: int | None = None, seed: int = 0) -> PointSe
     if has_rgb:
         rgb16 = np.concatenate(rgb_chunks)
         if np.any(rgb16):
+            # Heuristic: if max is > 255, assume 16-bit values and shift down.
+            # Note: a uniformly dark 16-bit scan (all channels <= 255) would be misread as 8-bit.
             rgb = (rgb16 >> 8).astype(np.uint8) if rgb16.max() > 255 else rgb16.astype(np.uint8)
 
     points = PointSet(
