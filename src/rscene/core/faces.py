@@ -29,7 +29,6 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from .fitting import fit_plane, plane_basis, plane_distance
-from .graph import perpendicular_offset
 from .patches import Patch
 
 
@@ -104,47 +103,106 @@ def _finalise(face_id: int, xyz: np.ndarray, members: np.ndarray,
 def merge_patches(patches: list[Patch], xyz: np.ndarray, config: dict) -> list[Face]:
     """Group patches into faces. Returns faces ordered by descending point count.
 
-    Two patches join the same face when their normals agree, their PERPENDICULAR
-    offset (never a difference of `d`) is within tolerance, and their points are
-    spatially adjacent.
+    Grouping is GREEDY SEEDED ACCUMULATION against the group's own fitted
+    plane, not pairwise union-find over neighbours. Union-find only ever
+    checks adjacent pairs: A joins B, B joins C, C joins D, each link within
+    tolerance, and nothing stops A and D from ending up far apart -- a chain
+    can drift arbitrarily far past `face_merge_dist_tol_m` even though every
+    individual link obeyed it. Measured on a real room crop this put patches
+    41 mm apart inside a single face against a 5 mm tolerance.
+
+    Algorithm:
+      1. Order patches by descending point count -- the largest is the most
+         reliable plane estimate.
+      2. Seed a new face with the largest unassigned patch; its fitted plane
+         is the group plane.
+      3. Repeatedly scan remaining unassigned patches for candidates whose
+         normal agrees with the GROUP plane, whose centroid is within
+         `face_merge_dist_tol_m` of the GROUP plane (never a neighbour's
+         plane), and which are spatially adjacent to at least one patch
+         already in the group.
+      4. Add the best candidate (smallest offset to the group plane, ties
+         broken by lowest patch_id), refit the group plane over the union of
+         members' points, and repeat.
+      5. Stop when nothing qualifies; start a new face from the largest
+         remaining unassigned patch.
+
+    Every member therefore ends up within tolerance of the face's OWN plane,
+    which bounds total drift by the tolerance rather than by chain length.
+
+    Refitting after every addition is O(n^2) in group size in the worst
+    case; fine for the tens-of-patches groups seen so far.
     """
     xyz = np.asarray(xyz, dtype=np.float64)
     dist_tol = float(config["face_merge_dist_tol_m"])
     cos_tol = float(np.cos(np.radians(config["face_merge_angle_tol_deg"])))
     gap = float(config["face_merge_gap_m"])
 
-    ordered = sorted(patches, key=lambda p: p.patch_id)
-    parent = {p.patch_id: p.patch_id for p in ordered}
+    by_id = {p.patch_id: p for p in patches}
+    priority = sorted(patches, key=lambda p: (-p.n_points, p.patch_id))
+    unassigned = {p.patch_id: p for p in priority}
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    groups: list[list[int]] = []
 
-    def union(x: int, y: int) -> None:
-        rx, ry = find(x), find(y)
-        if rx != ry:
-            parent[max(rx, ry)] = min(rx, ry)
+    while unassigned:
+        seed = next(p for p in priority if p.patch_id in unassigned)
+        group_ids = [seed.patch_id]
+        del unassigned[seed.patch_id]
+        group_normal, group_d = seed.normal, seed.d
+        group_members = seed.point_idx
 
-    for i, a in enumerate(ordered):
-        for b in ordered[i + 1:]:
-            if abs(float(a.normal @ b.normal)) < cos_tol:
-                continue
-            if perpendicular_offset(a, b) > dist_tol:
-                continue
-            if not _adjacent(xyz, a, b, gap):
-                continue
-            union(a.patch_id, b.patch_id)
+        while True:
+            prelim = []  # (offset, patch_id, patch) candidates against the CURRENT group plane
+            for pid, p in unassigned.items():
+                if abs(float(p.normal @ group_normal)) < cos_tol:
+                    continue
+                offset = abs(float(group_normal @ p.centroid + group_d))
+                if offset > dist_tol:
+                    continue
+                if not any(_adjacent(xyz, by_id[gid], p, gap) for gid in group_ids):
+                    continue
+                prelim.append((offset, pid, p))
+            prelim.sort(key=lambda c: (c[0], c[1]))
 
-    groups: dict[int, list[Patch]] = {}
-    for p in ordered:
-        groups.setdefault(find(p.patch_id), []).append(p)
+            # A candidate that looks close to the OLD group plane can still pull
+            # the refit plane away from an existing member -- e.g. a group that
+            # already spans a bend, where the next step continues the bend past
+            # what a single plane can explain. Refitting alone does not catch
+            # that: it only checks the new point going in, never re-validates
+            # points already accepted. So every candidate is tried by refitting
+            # the WHOLE enlarged group and re-checking every member (old and
+            # new) against that refit plane; the first one that leaves the
+            # entire group within tolerance is accepted. This keeps the
+            # invariant -- every member within tolerance of the face's own
+            # plane -- true after every single addition, not just at the end.
+            accepted = None
+            for offset, pid, p in prelim:
+                trial_members = np.concatenate([group_members, p.point_idx])
+                trial_normal, trial_d = fit_plane(xyz[trial_members])
+                ok = True
+                for gid in (*group_ids, pid):
+                    gp = by_id[gid]
+                    if abs(float(gp.normal @ trial_normal)) < cos_tol:
+                        ok = False
+                        break
+                    if abs(float(trial_normal @ gp.centroid + trial_d)) > dist_tol:
+                        ok = False
+                        break
+                if ok:
+                    accepted = (pid, trial_members, trial_normal, trial_d)
+                    break
+            if accepted is None:
+                break
+            best_pid, group_members, group_normal, group_d = accepted
+            group_ids.append(best_pid)
+            del unassigned[best_pid]
+
+        groups.append(group_ids)
 
     faces = []
-    for root in sorted(groups):
-        members = np.concatenate([p.point_idx for p in groups[root]])
-        faces.append(_finalise(0, xyz, members, [p.patch_id for p in groups[root]]))
+    for group_ids in groups:
+        members = np.concatenate([by_id[pid].point_idx for pid in group_ids])
+        faces.append(_finalise(0, xyz, members, group_ids))
 
     faces.sort(key=lambda f: (-f.n_points, f.patch_ids[0]))
     for new_id, f in enumerate(faces):

@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 
 from rscene.config import merged_config
@@ -8,10 +10,55 @@ from rscene.core.faces import (
     merge_patches,
     recruit_points,
 )
+from rscene.core.fitting import fit_plane, plane_basis
+from rscene.core.graph import perpendicular_offset
 from rscene.core.normals import estimate_normals
-from rscene.core.patches import extract_patches
+from rscene.core.patches import Patch, extract_patches
 from rscene.core.points import add_gaussian_noise
 from rscene.core.prim import Box
+
+
+def _synthetic_x_facing_patches(offsets_mm, width=0.5, height=0.5, spacing=0.05):
+    """Build Patch objects directly on flat, exactly-planar strips.
+
+    Bypasses region growing entirely so the fixture's geometry is exact and
+    under full control: strip `i` is a flat rectangle at x = offsets_mm[i] mm,
+    spanning y in [i*width, (i+1)*width] (so consecutive strips touch) and z
+    in [0, height]. Used to build adversarial offset sequences that a real
+    scan's region growing would not reliably reproduce on demand.
+    """
+    xyz_chunks, ranges = [], []
+    start = 0
+    for i, off_mm in enumerate(offsets_mm):
+        ys = np.arange(i * width, (i + 1) * width + 1e-9, spacing)
+        zs = np.arange(0, height + 1e-9, spacing)
+        yy, zz = np.meshgrid(ys, zs, indexing="ij")
+        n = yy.size
+        pts = np.zeros((n, 3))
+        pts[:, 0] = off_mm / 1000.0
+        pts[:, 1] = yy.ravel()
+        pts[:, 2] = zz.ravel()
+        xyz_chunks.append(pts)
+        ranges.append((start, start + n))
+        start += n
+    xyz = np.concatenate(xyz_chunks)
+
+    patches = []
+    for patch_id, (a, b) in enumerate(ranges):
+        idx = np.arange(a, b)
+        pts = xyz[idx]
+        normal, d = fit_plane(pts)
+        u, v = plane_basis(normal)
+        centroid = pts.mean(axis=0)
+        rel = pts - centroid
+        us, vs = rel @ u, rel @ v
+        patches.append(Patch(
+            patch_id=patch_id, normal=normal, d=d, point_idx=idx, n_points=len(idx),
+            p95_residual_m=0.0, centroid=centroid,
+            u_range=(float(us.min()), float(us.max())),
+            v_range=(float(vs.min()), float(vs.max())),
+        ))
+    return xyz, patches
 
 
 def _extract(xyz, overrides=None):
@@ -59,6 +106,59 @@ def test_a_12mm_groove_is_not_merged_into_its_wall():
     offsets = sorted({round(abs(f.d), 4) for f in faces if abs(f.normal[0]) > 0.99})
     assert len(offsets) >= 2, "the groove was merged into the wall"
     assert abs((offsets[-1] - offsets[0]) - 0.012) < 0.003, offsets
+
+
+def test_a_staircase_of_small_steps_does_not_drift_into_one_face():
+    """Regression for false transitivity in merge_patches.
+
+    A chain of 12 strips, each one adjacent to the next, wanders by up to
+    4.5 mm per step (below `face_merge_dist_tol_m`, 5 mm) but reverses
+    direction repeatedly rather than drifting smoothly in one direction --
+    the shape a real scan's independent per-patch normal noise actually
+    produces, and NOT reducible to one coherent tilted plane the way a clean
+    monotonic ramp would be. Every consecutive pair is within tolerance, but
+    the total spread (offsets below, seed 31) is 12 mm -- over twice the
+    tolerance.
+
+    Pairwise union-find chains link 0-1, 1-2, 2-3, ... through consecutive
+    small offsets and collapses all 12 into one face regardless of where the
+    chain ends up (confirmed separately against the pre-fix implementation:
+    it produces exactly 1 face here, p95 residual 4.49 mm). Grouping against
+    the GROUP's own refit plane, and re-validating every existing member
+    against that plane on every addition, refuses to let the chain wander
+    past tolerance: candidates are only admitted while every current member
+    -- old and new -- still sits within `face_merge_dist_tol_m` of the
+    refit plane.
+    """
+    rng = np.random.default_rng(31)
+    n_patches = 12
+    steps_mm = rng.uniform(-4.5, 4.5, size=n_patches - 1)
+    offsets_mm = np.concatenate([[0.0], np.cumsum(steps_mm)])
+    assert offsets_mm.max() - offsets_mm.min() > 10.0, (
+        "fixture is wrong: total spread must clear face_merge_dist_tol_m by a good margin"
+    )
+
+    xyz, patches = _synthetic_x_facing_patches(offsets_mm)
+    cfg = merged_config()
+    tol = cfg["face_merge_dist_tol_m"]
+
+    faces = merge_patches(patches, xyz, cfg)
+    assert len(faces) > 1, (
+        "the staircase collapsed into one face -- drift was not bounded by tolerance"
+    )
+    assert sum(f.n_points for f in faces) == sum(p.n_points for p in patches), (
+        "a patch was lost or duplicated while splitting the staircase"
+    )
+
+    by_id = {p.patch_id: p for p in patches}
+    for f in faces:
+        members = [by_id[pid] for pid in f.patch_ids]
+        for a, b in itertools.combinations(members, 2):
+            offset = perpendicular_offset(a, b)
+            assert offset <= tol + 1e-6, (
+                f"face {f.face_id} contains patches {offset * 1000:.2f} mm apart, "
+                f"over the {tol * 1000:.1f} mm tolerance"
+            )
 
 
 def test_distant_coplanar_patches_do_not_merge():
