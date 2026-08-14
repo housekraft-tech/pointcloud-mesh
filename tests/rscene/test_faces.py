@@ -1,7 +1,7 @@
 import numpy as np
 
 from rscene.config import merged_config
-from rscene.core.faces import apply_density_gate, median_spacing, merge_patches
+from rscene.core.faces import _finalise, apply_density_gate, median_spacing, merge_patches
 from rscene.core.normals import estimate_normals
 from rscene.core.patches import extract_patches
 from rscene.core.prim import Box
@@ -140,3 +140,25 @@ def test_rejected_faces_are_returned_not_discarded():
     faces = merge_patches(patches, dense, cfg)
     kept, rejected = apply_density_gate(faces, dense, cfg)
     assert len(kept) + len(rejected) == len(faces)
+
+
+def test_a_bbox_outlier_does_not_flip_a_dense_wall_to_rejected():
+    """A single far member inflates area_bound_m2() but must not tank fill.
+
+    Region growing only needs 50 mm connectivity and 3 mm planarity, so a
+    stray member dragged far from the rest of a real wall is not hypothetical.
+    Fill must be computed against a trimmed extent, not the raw bbox, or one
+    outlier point can flip a genuinely dense wall from kept to rejected.
+    """
+    dense = Box("f", (0, 0, 0), (0, 2, 2)).sample_surface(0.01, faces=("x+",))
+    outlier = np.array([[0.0, 100.0, 100.0]])
+    xyz = np.concatenate([dense, outlier])
+    members = np.arange(len(xyz))
+
+    face = _finalise(0, xyz, members, [0])
+    # the raw bbox is dominated by the outlier -- confirms the fixture is real
+    assert face.area_bound_m2() > 1000.0
+
+    cfg = merged_config()
+    kept, rejected = apply_density_gate([face], xyz, cfg)
+    assert len(kept) == 1 and len(rejected) == 0, "outlier member sank a real wall's fill"

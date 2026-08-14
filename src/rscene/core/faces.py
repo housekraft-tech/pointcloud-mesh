@@ -176,10 +176,31 @@ def apply_density_gate(
     """Split faces into (kept, rejected) on in-plane fill ratio and area.
 
     Fill is the face's point count against the count a fully-sampled surface of
-    the same bbox would hold at the cloud's native spacing. A point count alone
+    the same extent would hold at the cloud's native spacing. A point count alone
     cannot distinguish a small dense feature from a large sparse chain -- and
     SLAM density falls off with range, so an absolute count is not portable
     across one scan, let alone between scans.
+
+    The extent used here is a 2nd-98th percentile TRIM of the fitted members'
+    in-plane coordinates, deliberately different from `area_bound_m2()` (a plain
+    min/max over `u_range`/`v_range`). Region growing only requires 50 mm
+    connectivity and 3 mm planarity, so a single stray member dragged a metre out
+    inflates the plain bbox and deflates fill by the same factor -- easily enough
+    to flip a genuinely dense wall from kept to rejected, which is a worse
+    failure than admitting junk (the gate exists to stop concrete dust becoming
+    objects, not to delete walls). `u_range`/`v_range`/`area_bound_m2()` on the
+    Face itself are left untouched -- they are the face's true reported extent
+    for downstream consumers -- so do not "helpfully" make the two consistent.
+
+    Fill counts `f.n_points` (fitted members only, i.e. `f.point_idx`), never
+    `f.all_idx()`. From Task 3 onward `loose_idx` holds recruited members
+    attached under a looser tolerance than the fitted plane; deliberately, they
+    cannot rescue a face whose own fitted points do not already support it.
+
+    `median_spacing` is a single global figure over the whole cloud. SLAM
+    density falls off with range, so a face far from the scanner is judged
+    against a standard set mostly by near-scanner points, understating its
+    fill -- an open calibration concern on real scans, not addressed here.
 
     Rejected faces are RETURNED, never dropped. The caller routes them to the
     scene's `unmodeled` set so a designer still sees that something is there.
@@ -195,7 +216,14 @@ def apply_density_gate(
         if area < min_area:
             rejected.append(f)
             continue
-        expected = area * per_m2
+        pts = xyz[f.point_idx]
+        u, v = plane_basis(f.normal)
+        rel = pts - f.centroid
+        us, vs = rel @ u, rel @ v
+        u_lo, u_hi = np.percentile(us, [2, 98])
+        v_lo, v_hi = np.percentile(vs, [2, 98])
+        trimmed_area = float((u_hi - u_lo) * (v_hi - v_lo))
+        expected = trimmed_area * per_m2
         fill = (f.n_points / expected) if expected > 0 else 0.0
         (kept if fill >= min_fill else rejected).append(f)
     return kept, rejected
