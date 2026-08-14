@@ -27,21 +27,27 @@ from .core.scene import Provenance, Scene, scene_to_json
 # this sequence and a point is placed in the FIRST bucket it matches, so the
 # buckets are mutually exclusive by construction and always sum to the
 # unassigned total:
-#   1. high_curvature            -- curvature too high to have seeded or been
-#                                    recruited by any established patch
-#   2. no_plane_within_tolerance -- curvature is fine, but no finalised
-#                                    patch plane (agreeing in normal within
-#                                    patch_angle_tol_deg) sits within
-#                                    tau_fit_m of the point
-#   3. isolated                  -- fewer than _MIN_NEIGHBOURS neighbours
-#                                    within patch_connect_radius_m (sparse or
-#                                    at the edge of the scan)
-#   4. other                     -- anything left over
+#   1. high_curvature             -- curvature too high to have seeded or
+#                                     been recruited by any established patch
+#   2. plane_exists_but_unassigned -- curvature is fine AND a finalised patch
+#                                     plane (agreeing in normal within
+#                                     patch_angle_tol_deg, within tau_fit_m)
+#                                     sits right there -- a different story
+#                                     from a point with no plane at all: the
+#                                     plane exists, this point just never got
+#                                     recruited into it
+#   3. isolated                   -- no agreeing plane nearby AND fewer than
+#                                     _MIN_NEIGHBOURS neighbours within
+#                                     patch_connect_radius_m (sparse or at
+#                                     the edge of the scan)
+#   4. no_plane_within_tolerance  -- no agreeing plane nearby and not
+#                                     isolated either: genuinely no plane
+#                                     within tolerance
 _UNASSIGNED_BUCKET_ORDER = (
     "high_curvature",
-    "no_plane_within_tolerance",
+    "plane_exists_but_unassigned",
     "isolated",
-    "other",
+    "no_plane_within_tolerance",
 )
 
 # Below this many neighbours within patch_connect_radius_m, a point is
@@ -88,12 +94,14 @@ def _classify_unassigned(
 
     remaining = unassigned_idx[~is_high_curv]
 
-    # 2. no_plane_within_tolerance -- for the points that survive gate 1,
+    # 2. plane_exists_but_unassigned -- for the points that survive gate 1,
     # test every remaining point against every patch plane at once: a plane
     # "agrees" only if its normal is within patch_angle_tol_deg of the
     # point's own normal (the same gate region growth applies), and only
     # agreeing planes are checked for distance. Chunked over points so the
     # (chunk, n_patches) intermediate arrays stay bounded in size.
+    # `matched` points DO have a plane within tolerance -- they belong in
+    # plane_exists_but_unassigned, not no_plane_within_tolerance.
     matched = np.zeros(len(remaining), dtype=bool)
     if len(patches) and len(remaining):
         patch_normals = np.array([p.normal for p in patches])   # (P, 3)
@@ -105,7 +113,7 @@ def _classify_unassigned(
             agrees = np.abs(u_normals @ patch_normals.T) >= cos_tol      # (C, P)
             dists = np.abs(u_xyz @ patch_normals.T + patch_ds[None, :])  # (C, P)
             matched[start:start + _CLASSIFY_CHUNK] = np.any(agrees & (dists <= tau), axis=1)
-    counts["no_plane_within_tolerance"] = int(np.count_nonzero(matched))
+    counts["plane_exists_but_unassigned"] = int(np.count_nonzero(matched))
 
     remaining2 = remaining[~matched]
 
@@ -128,7 +136,10 @@ def _classify_unassigned(
         kth_dist = knn_dist[:, -1]
         is_isolated = kth_dist > radius
         counts["isolated"] = int(np.count_nonzero(is_isolated))
-        counts["other"] = int(len(remaining2) - counts["isolated"])
+        # 4. no_plane_within_tolerance -- what's left: curvature is fine, no
+        # agreeing plane sits within tau_fit_m, and it isn't isolated
+        # either. This is the genuinely-no-plane bucket.
+        counts["no_plane_within_tolerance"] = int(len(remaining2) - counts["isolated"])
 
     return counts
 
@@ -221,7 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         help="randomly subsample to this many points before extraction. "
              "WARNING: for quick previews/tests only -- see stderr warning.",
     )
-    patches_cmd.add_argument("--seed", type=int, default=0)
+    patches_cmd.add_argument(
+        "--seed", type=int, default=None,
+        help="RNG seed (default: 0, or the config default's value); "
+             "conflicts with an explicit --set seed=VALUE that disagrees",
+    )
     patches_cmd.add_argument(
         "--set", action="append", default=None, metavar="KEY=VALUE",
         help="override a config key, e.g. --set patch_neighbor_k=64; may be repeated",
@@ -253,7 +268,21 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    overrides["seed"] = args.seed
+
+    # --seed has an implicit default (argparse can't tell "not given" from
+    # "given as the default"), so only treat it as explicit when the caller
+    # actually passed it. An explicit --set seed=VALUE that disagrees with
+    # an explicit --seed is an error rather than one silently overwriting
+    # the other; if only one is given, it wins outright.
+    if args.seed is not None:
+        if "seed" in overrides and overrides["seed"] != args.seed:
+            print(
+                f"error: --seed {args.seed} conflicts with "
+                f"--set seed={overrides['seed']!r}; pass only one",
+                file=sys.stderr,
+            )
+            return 2
+        overrides.setdefault("seed", args.seed)
 
     try:
         config = merged_config(overrides)
@@ -261,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    points = load_las(args.input, max_points=args.max_points, seed=args.seed)
+    points = load_las(args.input, max_points=args.max_points, seed=config["seed"])
     if points.n < config["normal_k"]:
         print(f"error: only {points.n} points, need at least {config['normal_k']}",
               file=sys.stderr)

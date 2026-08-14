@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rscene.config import merged_config
 from rscene.core.points import PointSet
 from rscene.core.prim import Box
 
@@ -100,8 +101,88 @@ def test_unassigned_buckets_sum_to_unassigned_total(tmp_path):
     assert sum(buckets.values()) == payload["unassigned_points"]
 
     report = (out / "report.md").read_text()
-    for name in ("high_curvature", "no_plane_within_tolerance", "isolated", "other"):
+    for name in ("high_curvature", "plane_exists_but_unassigned", "isolated", "no_plane_within_tolerance"):
         assert name in report
+
+
+def test_unassigned_buckets_classify_each_kind_of_point_correctly():
+    # Synthetic case with one hand-placed point per bucket, so each is known
+    # in advance rather than only checking the sum (which the inverted
+    # bucket bug survived undetected under for a whole review cycle).
+    from rscene.cli import _classify_unassigned
+    from rscene.core.patches import Patch
+
+    config = merged_config()
+    max_curvature = float(config["patch_max_curvature"])
+    tau = float(config["tau_fit_m"])
+
+    # One patch: the plane x = 0.
+    patch = Patch(
+        patch_id=0, normal=np.array([1.0, 0.0, 0.0]), d=0.0,
+        point_idx=np.array([0]), n_points=1, p95_residual_m=0.0,
+        centroid=np.zeros(3), u_range=(0.0, 1.0), v_range=(0.0, 1.0),
+    )
+
+    # idx 0: high_curvature -- curvature far above the gate, regardless of
+    # position or normal.
+    p_high_curv = np.array([50.0, 50.0, 50.0])
+
+    # idx 1: plane_exists_but_unassigned -- low curvature, normal agrees
+    # with the patch's normal, and it sits well within tau_fit_m of the
+    # plane x = 0.
+    p_matched = np.array([0.0005, 5.0, 5.0])
+
+    # idx 2: isolated -- low curvature, normal disagrees with the patch (no
+    # plane match), and it is far from every other point (fewer than
+    # _MIN_NEIGHBOURS neighbours within patch_connect_radius_m).
+    p_isolated = np.array([100.0, 100.0, 100.0])
+
+    # idx 3-6: no_plane_within_tolerance -- a small dense cluster whose
+    # normal disagrees with the patch (no plane match) but which has
+    # plenty of close neighbours, so it is not isolated either.
+    p_cluster = np.array([
+        [10.0, 10.0, 10.0],
+        [10.01, 10.0, 10.0],
+        [10.0, 10.01, 10.0],
+        [10.0, 10.0, 10.01],
+    ])
+
+    xyz = np.vstack([p_high_curv, p_matched, p_isolated, p_cluster])
+    n = len(xyz)
+
+    normals = np.tile(np.array([0.0, 1.0, 0.0]), (n, 1))
+    normals[1] = [1.0, 0.0, 0.0]        # matches the patch's normal
+
+    curvature = np.full(n, 0.0001)
+    curvature[0] = max_curvature * 10   # far above the gate
+
+    labels = np.full(n, -1, dtype=np.int64)
+
+    buckets = _classify_unassigned(xyz, normals, curvature, labels, [patch], config)
+
+    assert sum(buckets.values()) == n
+
+    # Re-derive each point's bucket the same way _classify_unassigned does,
+    # to assert against by index rather than only against totals.
+    idx_high_curv, idx_matched, idx_isolated = 0, 1, 2
+    idx_cluster = 3
+
+    # high_curvature point is counted once, matched/isolated/cluster points
+    # are not high curvature.
+    assert buckets["high_curvature"] == 1
+
+    # The matched point is the only one whose normal agrees with the patch
+    # and whose distance to the plane is within tau.
+    dist_matched = abs(float(xyz[idx_matched] @ patch.normal + patch.d))
+    assert dist_matched <= tau
+    assert buckets["plane_exists_but_unassigned"] == 1
+
+    # The isolated point and the 4-point cluster together make up the
+    # remaining points that don't match the plane; isolated has none of its
+    # own kind nearby, the cluster has plenty of its own kind nearby.
+    assert buckets["isolated"] == 1
+    assert buckets["no_plane_within_tolerance"] == 4
+    assert idx_isolated == 2 and idx_cluster == 3   # documents point layout
 
 
 @pytest.mark.real_scan
