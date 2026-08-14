@@ -3,7 +3,15 @@ import pytest
 from pathlib import Path
 
 from rscene.config import merged_config
-from rscene.core.occupancy import build_occupancy, flood_interior, interior_by_enclosure
+from rscene.core.faces import apply_density_gate, merge_patches
+from rscene.core.normals import estimate_normals
+from rscene.core.occupancy import (
+    assign_interior_sides,
+    build_occupancy,
+    flood_interior,
+    interior_by_enclosure,
+)
+from rscene.core.patches import extract_patches
 from rscene.core.prim import Box
 
 pytest.importorskip("laspy")
@@ -280,3 +288,114 @@ def test_real_scan_enclosure_bounded_interior():
     assert not interior[-1, :, :].any(), "enclosed cells touch x+ boundary"
     assert not interior[:, 0, :].any(), "enclosed cells touch y- boundary"
     assert not interior[:, -1, :].any(), "enclosed cells touch y+ boundary"
+
+
+# --- assign_interior_sides -------------------------------------------------
+
+
+def _room_faces(spacing=0.015):
+    xyz = Box("room", (0, 0, 0), (3, 2.5, 2.5)).sample_surface(spacing)
+    cfg = merged_config()
+    normals, curv = estimate_normals(xyz, k=cfg["normal_k"])
+    patches, _ = extract_patches(xyz, normals, curv, cfg)
+    return xyz, merge_patches(patches, xyz, cfg), cfg
+
+
+def test_every_bounding_face_points_its_interior_inward():
+    xyz, faces, cfg = _room_faces()
+    grid = build_occupancy(xyz, cfg)
+    interior = flood_interior(grid, np.array([1.5, 1.25, 1.2]))
+    assign_interior_sides(faces, grid, interior, cfg, xyz)
+
+    centre = np.array([1.5, 1.25, 1.25])
+    decided = [f for f in faces if f.interior_sign is not None]
+    assert len(decided) >= 4, "most bounding faces should be decidable"
+    for f in decided:
+        inward = f.interior_sign * f.normal
+        to_centre = centre - f.centroid
+        assert float(inward @ to_centre) > 0, (
+            f"face {f.face_id} points away from the room interior"
+        )
+
+
+def test_interior_sign_is_none_when_neither_side_is_interior():
+    """A face with air on neither side cannot be decided; it must say so."""
+    xyz, faces, cfg = _room_faces()
+    grid = build_occupancy(xyz, cfg)
+    interior = np.zeros(grid.shape, dtype=bool)   # nothing is interior
+    assign_interior_sides(faces, grid, interior, cfg, xyz)
+    assert all(f.interior_sign is None for f in faces)
+
+
+def test_assignment_is_deterministic():
+    xyz, faces_a, cfg = _room_faces()
+    grid = build_occupancy(xyz, cfg)
+    interior = flood_interior(grid, np.array([1.5, 1.25, 1.2]))
+    assign_interior_sides(faces_a, grid, interior, cfg, xyz)
+    signs_a = [f.interior_sign for f in faces_a]
+
+    _, faces_b, _ = _room_faces()
+    assign_interior_sides(faces_b, grid, interior, cfg, xyz)
+    assert signs_a == [f.interior_sign for f in faces_b]
+
+
+@pytest.mark.real_scan
+@pytest.mark.skipif(not _REAL_SCAN.exists(), reason="isolated_structural_v2.las not found")
+def test_real_scan_interior_sides():
+    """Real scan: interior side decided for most faces, and both slabs correct.
+
+    Uses `interior_by_enclosure`, not `flood_interior` -- the flood-fill leaks
+    on this crop (see test_real_scan_occupancy_and_flood_fill_leaks above), so
+    a naive probe against it gets both slabs backwards. Measured this session
+    (patch_neighbor_k=64, same crop as test_real_scan_enclosure_bounded_interior):
+    89 kept faces, 77 decided (86.5%), 95.8% of face points decided. `Face.role`
+    (Task 6) is not implemented yet, so floor/ceiling are picked directly here
+    per the task brief: the largest horizontal faces (abs(normal.z) > 0.95) at
+    the lowest and highest centroid Z.
+    """
+    full = load_las(str(_REAL_SCAN))
+    xyz = full.xyz
+
+    mask = (
+        (xyz[:, 0] > -3.2) & (xyz[:, 0] < 1.0)
+        & (xyz[:, 1] > -8.0) & (xyz[:, 1] < -3.0)
+    )
+    idx = np.nonzero(mask)[0]
+    cropped_xyz = xyz[idx]
+
+    cfg = merged_config({"patch_neighbor_k": 64})
+    normals, curv = estimate_normals(cropped_xyz, k=cfg["normal_k"])
+    patches, _ = extract_patches(cropped_xyz, normals, curv, cfg)
+    all_faces = merge_patches(patches, cropped_xyz, cfg)
+    faces, _rejected = apply_density_gate(all_faces, cropped_xyz, cfg)
+    assert len(faces) >= 60
+
+    grid = build_occupancy(cropped_xyz, cfg)
+    interior = interior_by_enclosure(grid)
+    assert interior.sum() > 10_000, "enclosure fill did not run"
+
+    assign_interior_sides(faces, grid, interior, cfg, cropped_xyz)
+
+    # (a) not a no-op
+    decided = [f for f in faces if f.interior_sign is not None]
+    assert len(decided) >= 30
+    frac = sum(f.n_points for f in decided) / sum(f.n_points for f in faces)
+    assert frac >= 0.50
+
+    # (b) topology, not accuracy: air is above the floor, below the ceiling.
+    # Role is not assigned yet (Task 6); pick the largest horizontal faces at
+    # the lowest/highest centroid Z as floor/ceiling stand-ins, per the brief.
+    horizontal = [f for f in faces if abs(f.normal[2]) > 0.95]
+    assert horizontal, "no horizontal faces found -- stage is not reaching the slabs"
+    low = sorted(horizontal, key=lambda f: f.centroid[2])[:5]
+    high = sorted(horizontal, key=lambda f: -f.centroid[2])[:5]
+    floor = max(low, key=lambda f: f.n_points)
+    ceiling = max(high, key=lambda f: f.n_points)
+
+    if floor.interior_sign is not None:
+        assert floor.interior_sign * floor.normal[2] > 0, "floor's interior must be above it"
+    if ceiling.interior_sign is not None:
+        assert ceiling.interior_sign * ceiling.normal[2] < 0, "ceiling's interior must be below it"
+    assert floor.interior_sign is not None or ceiling.interior_sign is not None, (
+        "both slabs undecidable: the stage is not reaching the largest faces"
+    )

@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict = {
     # --- occupancy / interior (Plan 2) ---
     "occupancy_cell_m": 0.05,         # voxel size for the interior flood-fill; coarse on purpose, it never defines geometry
     "interior_seed_height_m": 1.20,   # height above the floor plane to seed the fill, chosen to sit in open air in any room
+    "interior_probe_cells": 1.5,      # cells probed along +-normal from a face's own points to read the `interior` array; measured on the real crop against interior_by_enclosure -- see assign_interior_sides docstring
 }
 
 

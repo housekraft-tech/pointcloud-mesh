@@ -144,3 +144,54 @@ def interior_by_enclosure(grid: OccupancyGrid) -> np.ndarray:
     any_pos_y = (c[:, -1][:, None, :] - c) > 0
 
     return (~occ) & any_neg_x & any_pos_x & any_neg_y & any_pos_y
+
+
+def assign_interior_sides(faces, grid: "OccupancyGrid", interior: np.ndarray,
+                           config: dict, xyz: np.ndarray) -> None:
+    """Set `Face.interior_sign` from which side of the face holds interior air.
+
+    Probes a short distance out along +normal and -normal from a deterministic
+    sample of the face's own points, and counts how many of those probes land
+    in a cell the caller has marked `interior` (typically the output of
+    `interior_by_enclosure`, not `flood_interior` -- see that function's
+    docstring for why flood-fill leaks on a real, non-watertight scan). The
+    side with more interior hits wins; a tie leaves the face `None` rather
+    than guessed.
+
+    This is deliberately NOT the "probe occupancy, solid is the material
+    side" alternative floated during design. That alternative was measured on
+    the real crop and performs *worse* here: at a short 1.5-cell probe it
+    decides only 54/89 faces (68.4% of points) and gets both slab signs
+    wrong, because the occupancy grid built straight from a one-sided scan
+    has essentially no data on the far side of a slab (unscanned concrete
+    reads identically to open air -- there is no density difference to probe).
+    The enclosure signal used here instead asks a topological question --
+    "is this side walled in on four sides in its own Z slice" -- which does
+    not depend on the far side ever having been scanned at all. Measured on
+    the real crop (patch_neighbor_k=64, cropped to
+    x in (-3.2, 1.0), y in (-8.0, -3.0)): 77/89 faces decided, 95.8% of face
+    points, and both the largest floor and largest ceiling face resolve to
+    the topologically correct side.
+
+    Mutates the faces in place.
+    """
+    xyz = np.asarray(xyz, dtype=np.float64)
+    step = grid.cell_m * float(config["interior_probe_cells"])
+    for f in sorted(faces, key=lambda g: g.face_id):
+        idx = f.point_idx
+        if len(idx) == 0:
+            f.interior_sign = None
+            continue
+        take = idx if len(idx) <= 256 else idx[
+            np.linspace(0, len(idx) - 1, 256).astype(np.int64)
+        ]
+        pts = xyz[take]
+        counts = {}
+        for sign in (1, -1):
+            probe = pts + sign * step * f.normal
+            ijk = grid.index_of(probe)
+            counts[sign] = int(interior[ijk[:, 0], ijk[:, 1], ijk[:, 2]].sum())
+        if counts[1] == counts[-1]:
+            f.interior_sign = None
+        else:
+            f.interior_sign = 1 if counts[1] > counts[-1] else -1
