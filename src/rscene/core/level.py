@@ -22,8 +22,13 @@ def estimate_frame(patches: list[Patch], config: dict) -> Frame:
     """
     tol_cos = float(np.cos(np.radians(config["floor_normal_tol_deg"])))
 
+    # Patches between roughly 11.5 and 78.5 deg off vertical (i.e. neither
+    # near-horizontal within floor_normal_tol_deg nor near-vertical within
+    # vertical_normal_max_z) fall into neither set -- four such patches exist
+    # on the real crop.
+    vertical_max_z = float(config["vertical_normal_max_z"])
     horizontal = [p for p in patches if abs(float(p.normal[2])) >= tol_cos]
-    vertical = [p for p in patches if abs(float(p.normal[2])) < 0.2]
+    vertical = [p for p in patches if abs(float(p.normal[2])) < vertical_max_z]
 
     if horizontal:
         floor_like = max(horizontal, key=lambda p: p.n_points)
