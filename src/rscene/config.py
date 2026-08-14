@@ -42,6 +42,8 @@ DEFAULT_CONFIG: dict = {
     # --- frame (measured, never enforced) ---
     "floor_normal_tol_deg": 15.0,  # max tilt from world Z for a floor/ceiling patch
     "vertical_normal_max_z": 0.2,  # patch counted as vertical when abs(normal.z) is below this; patches between roughly 11.5 and 78.5 deg off vertical fall into neither the horizontal nor vertical set (four such patches exist in the real crop)
+    # --- classification (Task 6) ---
+    "classify_slab_band_m": 0.30,  # a horizontal face within this of the storey floor/ceiling level is that slab; beyond it, an unknown horizontal (a sill, a step tread)
     # --- occupancy / interior (Plan 2) ---
     "occupancy_cell_m": 0.05,         # voxel size for the interior flood-fill; coarse on purpose, it never defines geometry
     "interior_seed_height_m": 1.20,   # height above the floor plane to seed the fill, chosen to sit in open air in any room
