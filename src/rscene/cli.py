@@ -48,6 +48,11 @@ _UNASSIGNED_BUCKET_ORDER = (
 # considered isolated (sparse/edge-of-scan) rather than simply unmatched.
 _MIN_NEIGHBOURS = 3
 
+# Chunk size for the no_plane_within_tolerance matmul pass: at n_patches in
+# the low hundreds, a (chunk, n_patches) float64 array costs a few tens of
+# MB, keeping memory bounded regardless of how many points are unassigned.
+_CLASSIFY_CHUNK = 20_000
+
 
 def _classify_unassigned(
     xyz: np.ndarray,
@@ -60,8 +65,11 @@ def _classify_unassigned(
     """Bucket every unassigned point into exactly one cause.
 
     Buckets are mutually exclusive and sum exactly to the unassigned total:
-    each point is tested against the checks in _UNASSIGNED_BUCKET_ORDER and
-    lands in the first one that matches.
+    each point is tested against the checks in _UNASSIGNED_BUCKET_ORDER, in
+    that order, and lands in the first one that matches. Fully vectorised
+    (chunked matmuls against every patch plane, one batched k-NN query) --
+    no per-point Python loop -- so this stays cheap as the unassigned count
+    and patch count both grow with scan size.
     """
     counts = {name: 0 for name in _UNASSIGNED_BUCKET_ORDER}
     unassigned_idx = np.nonzero(np.asarray(labels) == -1)[0]
@@ -73,37 +81,54 @@ def _classify_unassigned(
     cos_tol = float(np.cos(np.radians(config["patch_angle_tol_deg"])))
     radius = float(config["patch_connect_radius_m"])
 
-    from scipy.spatial import cKDTree
+    # 1. high_curvature -- already a vectorised comparison.
+    curv = curvature[unassigned_idx]
+    is_high_curv = curv > max_curvature
+    counts["high_curvature"] = int(np.count_nonzero(is_high_curv))
 
-    tree = cKDTree(xyz)
+    remaining = unassigned_idx[~is_high_curv]
 
-    patch_normals = np.array([p.normal for p in patches]) if patches else np.zeros((0, 3))
-    patch_ds = np.array([p.d for p in patches]) if patches else np.zeros((0,))
+    # 2. no_plane_within_tolerance -- for the points that survive gate 1,
+    # test every remaining point against every patch plane at once: a plane
+    # "agrees" only if its normal is within patch_angle_tol_deg of the
+    # point's own normal (the same gate region growth applies), and only
+    # agreeing planes are checked for distance. Chunked over points so the
+    # (chunk, n_patches) intermediate arrays stay bounded in size.
+    matched = np.zeros(len(remaining), dtype=bool)
+    if len(patches) and len(remaining):
+        patch_normals = np.array([p.normal for p in patches])   # (P, 3)
+        patch_ds = np.array([p.d for p in patches])              # (P,)
+        for start in range(0, len(remaining), _CLASSIFY_CHUNK):
+            chunk = remaining[start:start + _CLASSIFY_CHUNK]
+            u_xyz = xyz[chunk]                                    # (C, 3)
+            u_normals = normals[chunk]                            # (C, 3)
+            agrees = np.abs(u_normals @ patch_normals.T) >= cos_tol      # (C, P)
+            dists = np.abs(u_xyz @ patch_normals.T + patch_ds[None, :])  # (C, P)
+            matched[start:start + _CLASSIFY_CHUNK] = np.any(agrees & (dists <= tau), axis=1)
+    counts["no_plane_within_tolerance"] = int(np.count_nonzero(matched))
 
-    for i in unassigned_idx:
-        if curvature[i] > max_curvature:
-            counts["high_curvature"] += 1
-            continue
+    remaining2 = remaining[~matched]
 
-        matched = False
-        if len(patches):
-            # A plane "agrees" only if its normal is within
-            # patch_angle_tol_deg of this point's own normal -- the same
-            # gate region growth applies before ever checking distance.
-            agrees = np.abs(patch_normals @ normals[i]) >= cos_tol
-            if np.any(agrees):
-                dists = np.abs(patch_normals[agrees] @ xyz[i] + patch_ds[agrees])
-                matched = bool(np.any(dists <= tau))
-        if matched:
-            counts["no_plane_within_tolerance"] += 1
-            continue
+    # 3. isolated -- one batched k-NN query instead of a per-point radius
+    # query. tree.query returns ascending distances per row with the point
+    # itself as its own 0-distance nearest neighbour (it's in the tree), so
+    # asking for k = _MIN_NEIGHBOURS + 1 neighbours and taking the last
+    # column gives the distance to the _MIN_NEIGHBOURS-th *other* point --
+    # exactly what the original per-point
+    # `len(query_ball_point(..., radius)) - 1 < _MIN_NEIGHBOURS` check
+    # tested, just computed for every point in one call.
+    if len(remaining2):
+        from scipy.spatial import cKDTree
 
-        neighbour_count = len(tree.query_ball_point(xyz[i], radius)) - 1  # exclude self
-        if neighbour_count < _MIN_NEIGHBOURS:
-            counts["isolated"] += 1
-            continue
-
-        counts["other"] += 1
+        tree = cKDTree(xyz)
+        k_query = min(_MIN_NEIGHBOURS + 1, len(xyz))
+        knn_dist, _ = tree.query(xyz[remaining2], k=k_query, workers=-1)
+        if k_query == 1:
+            knn_dist = knn_dist[:, None]
+        kth_dist = knn_dist[:, -1]
+        is_isolated = kth_dist > radius
+        counts["isolated"] = int(np.count_nonzero(is_isolated))
+        counts["other"] = int(len(remaining2) - counts["isolated"])
 
     return counts
 
