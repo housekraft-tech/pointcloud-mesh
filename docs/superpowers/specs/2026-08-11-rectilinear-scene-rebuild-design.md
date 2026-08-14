@@ -141,16 +141,42 @@ behaviour.
 
 ### 4.4 Bounded role for free-space
 
-Free-space carving from the walk trajectory contributes exactly two things:
+Free-space carving contributes exactly two things:
 
 1. **Interior direction** — which side of a surface is inside. Geometry alone is
    unreliable for balconies, external walls and any surface scanned from one
    side only.
-2. **Opening validation** — confirming a void is a real hole that was walked or
-   seen through, rather than a data gap.
+2. **Opening validation** — confirming a void is a real hole rather than a data
+   gap.
 
 It does **not** define geometry. Its voxel resolution would cap accuracy and its
 edges are stair-stepped; both are unacceptable for the primary model.
+
+#### 4.4.1 Amendment (2026-08-13): the mechanism is flood-fill, not trajectory
+
+This section originally specified the **walk trajectory** as the mechanism.
+Measurement on real scans retired that choice:
+
+- Reconstructing the path by binning points into `gps_time` slices and taking
+  each slice's centroid does not recover the walk. A 360° scanner sees the whole
+  room at once, so a time-slice centroid is the centre of what was *seen*, not
+  where the scanner *stood*. The recovered path is a zigzag with no physical
+  meaning.
+- No sensor geometry is available to do better: `scan_angle_rank`,
+  `point_source_id`, `return_number` and `number_of_returns` are all identically
+  zero in both reference exports. Per-point data is XYZ, `gps_time`, intensity
+  and (on one scan) RGB.
+
+Neither of the two jobs above actually needs a path. Both are satisfied by
+**occupancy flood-fill**: voxelise the cloud, seed the fill in air above the
+floor patch's centroid, and interior is whatever the fill reaches. A face's
+inside is the side adjacent to filled voxels; an opening is a void the fill
+passes through.
+
+A trajectory exported from the vendor's post-processing software remains a
+welcome *upgrade* — it is independent evidence of which openings were walked
+through, which is how a door is distinguished from a window — but it is no
+longer a dependency. `trajectory.load_trajectory` already parses such a file.
 
 ## 5. Pipeline
 
