@@ -9,7 +9,7 @@ from rscene.core.faces import apply_density_gate, merge_patches
 from rscene.core.level import estimate_frame
 from rscene.core.normals import estimate_normals
 from rscene.core.occupancy import assign_interior_sides, build_occupancy, interior_by_enclosure
-from rscene.core.parts import assemble_walls
+from rscene.core.parts import _is_free_standing_leaf, assemble_walls
 from rscene.core.patches import extract_patches
 from rscene.core.prim import Box
 
@@ -162,34 +162,60 @@ def _two_separate_wall_pairs():
     return xyz, faces, cfg
 
 
-def test_faces_with_undecided_interior_sign_are_excluded_from_pairing_when_signal_present():
-    """A face pair standing in for a door leaf (interior air on both sides,
-    so `assign_interior_sides` cannot decide a sign for either) must not
-    pair, even though geometrically it looks exactly like the wall pair
-    next to it -- as long as the interior signal has actually been computed
-    for this scene (some other face got a decided sign)."""
+def test_face_with_interior_air_on_both_sides_is_excluded_from_pairing():
+    """A face pair standing in for a door leaf -- interior air on BOTH sides,
+    the positive test `_is_free_standing_leaf` looks for -- must not pair,
+    even though geometrically it looks exactly like the wall pair next to
+    it. `interior` is constructed directly here so the test controls exactly
+    which sides read as interior, independent of whatever `interior_by_enclosure`
+    would compute for this (non-enclosed) synthetic scene."""
     xyz, faces, cfg = _two_separate_wall_pairs()
     wall_faces = sorted([f for f in faces if f.role == "wall"], key=lambda f: f.face_id)
     assert len(wall_faces) == 4
+    by_id = {f.face_id: f for f in wall_faces}
 
-    # First pair (near x=0): a real wall, interior decided on both faces.
-    # Second pair (near x=10): a "leaf", undecided (default None) on both.
+    grid = build_occupancy(xyz, cfg)
+    interior = np.zeros(grid.shape, dtype=bool)
+    step = grid.cell_m * float(cfg["interior_probe_cells"])
+
+    # Pair partner = the other wall face closest in x. First pair (x < 5) is
+    # a real wall: interior only on the side facing AWAY from its partner.
+    # Second pair (x > 5) is the "leaf": interior on BOTH sides.
+    # The sample taken here mirrors `_probe_interior_fraction`'s own sampling
+    # (up to 256 points, evenly spaced across `point_idx`) exactly, so the
+    # cells marked interior are the same cells the probe actually reads --
+    # a different, sparser sample can miss those cells even when the
+    # intended geometry is identical.
     for f in wall_faces:
+        partner = min(
+            (g for g in wall_faces if g.face_id != f.face_id),
+            key=lambda g: abs(g.centroid[0] - f.centroid[0]),
+        )
+        away = f.centroid - partner.centroid
+        idx = f.point_idx
+        take = idx if len(idx) <= 256 else idx[
+            np.linspace(0, len(idx) - 1, 256).astype(np.int64)
+        ]
+        pts = xyz[take]
         if f.centroid[0] < 5.0:
-            f.interior_sign = 1 if f.normal[0] > 0 else -1
+            sign = 1.0 if float(f.normal @ away) > 0 else -1.0
+            probe = pts + sign * step * f.normal
+            ijk = grid.index_of(probe)
+            interior[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = True
         else:
-            f.interior_sign = None
+            for sign in (1.0, -1.0):
+                probe = pts + sign * step * f.normal
+                ijk = grid.index_of(probe)
+                interior[ijk[:, 0], ijk[:, 1], ijk[:, 2]] = True
 
-    walls, unpaired = assemble_walls(faces, xyz, cfg)
+    walls, unpaired = assemble_walls(faces, xyz, cfg, grid=grid, interior=interior)
     paired = [w for w in walls if w.face_b is not None]
     assert len(paired) == 1
     a, b = paired[0].face_a, paired[0].face_b
-    paired_centroids = {f.face_id: f.centroid[0] for f in wall_faces if f.face_id in (a, b)}
-    assert all(c < 5.0 for c in paired_centroids.values()), \
-        "the undecided-interior-sign pair must not have paired"
+    assert all(by_id[fid].centroid[0] < 5.0 for fid in (a, b)), \
+        "the both-sides-interior pair must not have paired"
 
-    # both faces of the undecided pair remain in the output, unpaired
-    unpaired_faces = [f for f in wall_faces if f.face_id in unpaired]
+    unpaired_faces = [by_id[fid] for fid in unpaired]
     assert len(unpaired_faces) == 2
     assert all(f.centroid[0] > 5.0 for f in unpaired_faces)
     for w in walls:
@@ -197,13 +223,16 @@ def test_faces_with_undecided_interior_sign_are_excluded_from_pairing_when_signa
             assert w.thickness is None
 
 
-def test_interior_sign_filter_is_a_noop_when_signal_never_computed():
-    """When `assign_interior_sides` never ran (every face's interior_sign is
-    the default None), the filter above must not accidentally block every
-    pairing -- covered structurally by test_two_opposing_faces_... already,
-    this test makes the no-op behaviour explicit."""
+def test_leaf_test_is_a_noop_when_no_interior_data_exists():
+    """A synthetic fixture with no enclosed room around it (just a wall slab
+    and a floor) has essentially no interior cells anywhere, so the
+    both-sides-interior probe reads ~0 on both sides of every face and the
+    leaf test never fires -- no separate synthetic-vs-real branch is needed
+    for this to behave. Covered structurally by
+    test_two_opposing_faces_become_one_wall_with_measured_thickness already;
+    this test makes the no-op behaviour explicit and exercises the
+    self-building occupancy path (grid/interior omitted)."""
     xyz, faces, cfg = _wall_with_two_faces()
-    assert all(f.interior_sign is None for f in faces)
     walls, _ = assemble_walls(faces, xyz, cfg)
     assert len([w for w in walls if w.face_b is not None]) == 1
 
@@ -253,7 +282,8 @@ def test_real_scan_wall_assembly():
     wall_faces = [f for f in faces if f.role == "wall"]
     assert len(wall_faces) >= 40  # measured 56
 
-    walls, unpaired = assemble_walls(faces, cropped_xyz, cfg)
+    # reuse the grid/interior already built above rather than recomputing
+    walls, unpaired = assemble_walls(faces, cropped_xyz, cfg, grid=grid, interior=interior)
 
     # accounting: every wall face is in exactly one Wall, paired or not
     assert len(walls) + sum(1 for w in walls if w.face_b is not None) == len(wall_faces)
@@ -278,10 +308,15 @@ def test_real_scan_wall_assembly():
     for w in sorted(paired, key=lambda w: w.thickness.value):
         print(
             f"  {w.wall_id}: thickness={w.thickness.value * 1000:.1f} mm "
-            f"n_points={w.thickness.n_points} spread(p95)={w.thickness.p95_residual * 1000:.2f} mm"
+            f"n_points={w.thickness.n_points} spread(p95)={w.thickness.p95_residual * 1000:.2f} mm "
+            f"method={w.thickness.method}"
         )
-    excluded = sum(
-        1 for f in wall_faces
-        if f.interior_sign is None and any(g.interior_sign is not None for g in wall_faces)
-    )
-    print(f"faces excluded from pairing (undecided interior sign): {excluded}")
+    leaf_ids = {
+        f.face_id for f in wall_faces
+        if _is_free_standing_leaf(f, grid, interior, cfg, cropped_xyz)
+    }
+    print(f"faces excluded from pairing (positive both-sides-interior test): {len(leaf_ids)}")
+    if leaf_ids:
+        for fid in sorted(leaf_ids):
+            f = next(x for x in wall_faces if x.face_id == fid)
+            print(f"  excluded face {fid}: n_points={f.n_points} centroid_z={f.centroid[2]:.2f}")

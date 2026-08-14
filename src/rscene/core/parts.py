@@ -29,6 +29,7 @@ import numpy as np
 from .faces import Face
 from .fitting import plane_basis
 from .graph import perpendicular_offset
+from .occupancy import OccupancyGrid, build_occupancy, interior_by_enclosure
 from .scene import Measurement
 
 
@@ -44,31 +45,6 @@ class Wall:
     height: Measurement
     centroid: np.ndarray
     normal: np.ndarray
-
-
-def _overlap_fraction(a: Face, b: Face) -> float:
-    """How much two parallel faces overlap, as a fraction of the smaller.
-
-    Compared in world XY and Z extents rather than each face's own uv basis,
-    because two opposing faces have independently chosen bases that need not
-    agree.
-    """
-    def extent(f: Face, axis: int) -> tuple[float, float]:
-        half_u = (f.u_range[1] - f.u_range[0]) / 2.0
-        half_v = (f.v_range[1] - f.v_range[0]) / 2.0
-        span = max(half_u, half_v)
-        return float(f.centroid[axis] - span), float(f.centroid[axis] + span)
-
-    fracs = []
-    for axis in (0, 1, 2):
-        lo_a, hi_a = extent(a, axis)
-        lo_b, hi_b = extent(b, axis)
-        inter = min(hi_a, hi_b) - max(lo_a, lo_b)
-        smaller = min(hi_a - lo_a, hi_b - lo_b)
-        if smaller <= 0:
-            continue
-        fracs.append(max(0.0, inter) / smaller)
-    return min(fracs) if fracs else 0.0
 
 
 def _measure_span(f: Face, vertical: bool) -> float:
@@ -88,6 +64,53 @@ def _bisector(a: Face, b: Face) -> np.ndarray:
             "never hit this."
         )
     return bisector / norm
+
+
+def _shared_uv_projection(a: Face, b: Face, xyz: np.ndarray):
+    """Project both faces' fitted points into ONE shared (u, v) basis,
+    orthogonal to the pair's bisector normal and centred on their midpoint.
+
+    `a` and `b` each fitted their own (u, v) basis independently (see
+    `Face.u_range`/`v_range`), and the two need not agree -- comparing them
+    directly, or approximating each face's footprint as an isotropic square
+    of side `max(u_span, v_span)` (the original approach here), silently
+    passes pairs that do not actually overlap. Measured on the real crop: a
+    ~0.28 m tall band face (a lintel/sill) squared out to a ~1.2 m box read
+    as overlapping a 2.5 m tall wall face it was actually 3-4 cm short of in
+    real height -- a false pass on the overlap gate that fed a fallback,
+    non-local thickness measurement into the deliverable's headline numbers.
+    Both `_overlap_fraction` and `measure_local_thickness` use THIS shared
+    projection so the overlap gate and the thickness measurement can never
+    disagree about what "overlapping" means.
+
+    Returns (ua, va, ub, vb): each face's points' (u, v) coordinates.
+    """
+    bisector = _bisector(a, b)
+    u, v = plane_basis(bisector)
+    origin = (a.centroid + b.centroid) / 2.0
+
+    pa = np.asarray(xyz, dtype=np.float64)[a.point_idx]
+    pb = np.asarray(xyz, dtype=np.float64)[b.point_idx]
+    rel_a, rel_b = pa - origin, pb - origin
+    return rel_a @ u, rel_a @ v, rel_b @ u, rel_b @ v
+
+
+def _overlap_fraction(a: Face, b: Face, xyz: np.ndarray) -> float:
+    """How much two faces' in-plane footprints actually overlap, as a
+    fraction of the SMALLER face's own footprint area -- both measured in
+    the shared bisector-normal basis (see `_shared_uv_projection`), never
+    each face's own independently-fitted basis or an isotropic-square
+    approximation.
+    """
+    ua, va, ub, vb = _shared_uv_projection(a, b, xyz)
+    u_lo, u_hi = max(ua.min(), ub.min()), min(ua.max(), ub.max())
+    v_lo, v_hi = max(va.min(), vb.min()), min(va.max(), vb.max())
+    inter_area = max(0.0, u_hi - u_lo) * max(0.0, v_hi - v_lo)
+
+    area_a = (ua.max() - ua.min()) * (va.max() - va.min())
+    area_b = (ub.max() - ub.min()) * (vb.max() - vb.min())
+    smaller = min(area_a, area_b)
+    return float(inter_area / smaller) if smaller > 0 else 0.0
 
 
 def measure_local_thickness(
@@ -123,16 +146,24 @@ def measure_local_thickness(
     Never touches `Face.d`. Everything here is a projection of actual point
     positions onto the bisector, so translating the whole scene changes
     nothing about the result.
+
+    Returns (thickness_m, n_points, p95_residual_m, n_bins). `n_bins` is the
+    number of overlap cells that actually qualified (>= 3 points from EACH
+    face) and contributed a local measurement -- it is what distinguishes a
+    genuinely flat `p95_residual == 0.0` (many qualifying bins, all
+    agreeing) from a fallback measurement that never bins at all (`n_bins`
+    is 0 when the overlap box is empty, 1 when the box exists but no cell
+    reached the per-face minimum so the whole-overlap mean is used instead).
+    A caller that wants "was this actually measured locally" should check
+    `n_bins >= 2`, not just look at the spread.
     """
     bisector = _bisector(a, b)
-    u, v = plane_basis(bisector)
     origin = (a.centroid + b.centroid) / 2.0
-
     pa = np.asarray(xyz, dtype=np.float64)[a.point_idx]
     pb = np.asarray(xyz, dtype=np.float64)[b.point_idx]
-    rel_a, rel_b = pa - origin, pb - origin
-    ua, va, wa = rel_a @ u, rel_a @ v, rel_a @ bisector
-    ub, vb, wb = rel_b @ u, rel_b @ v, rel_b @ bisector
+    wa = (pa - origin) @ bisector
+    wb = (pb - origin) @ bisector
+    ua, va, ub, vb = _shared_uv_projection(a, b, xyz)
 
     u_lo, u_hi = max(ua.min(), ub.min()), min(ua.max(), ub.max())
     v_lo, v_hi = max(va.min(), vb.min()), min(va.max(), vb.max())
@@ -140,7 +171,7 @@ def measure_local_thickness(
     fallback_t = float(abs(wb.mean() - wa.mean()))
     n_pts = int(len(a.point_idx) + len(b.point_idx))
     if u_hi <= u_lo or v_hi <= v_lo:
-        return fallback_t, n_pts, 0.0
+        return fallback_t, n_pts, 0.0, 0
 
     cell = max(float(config["wall_thickness_bin_m"]), 1e-6)
     n_u = max(1, int(np.ceil((u_hi - u_lo) / cell)))
@@ -149,7 +180,7 @@ def measure_local_thickness(
     in_a = (ua >= u_lo) & (ua <= u_hi) & (va >= v_lo) & (va <= v_hi)
     in_b = (ub >= u_lo) & (ub <= u_hi) & (vb >= v_lo) & (vb <= v_hi)
     if not in_a.any() or not in_b.any():
-        return fallback_t, n_pts, 0.0
+        return fallback_t, n_pts, 0.0, 1
 
     def cell_id(uu, vv):
         iu = np.clip(((uu - u_lo) / cell).astype(np.int64), 0, n_u - 1)
@@ -173,16 +204,61 @@ def measure_local_thickness(
         used_pts += int(sel_a.sum() + sel_b.sum())
 
     if not local_vals:
-        return fallback_t, n_pts, 0.0
+        return fallback_t, n_pts, 0.0, 1
 
     local_vals = np.abs(np.asarray(local_vals, dtype=np.float64))
     thickness = float(np.median(local_vals))
     spread = float(np.percentile(np.abs(local_vals - thickness), 95)) if len(local_vals) > 1 else 0.0
-    return thickness, used_pts, spread
+    return thickness, used_pts, spread, len(local_vals)
+
+
+def _probe_interior_fraction(
+    f: Face, grid: OccupancyGrid, interior: np.ndarray, config: dict, xyz: np.ndarray
+) -> tuple[float, float]:
+    """Fraction of a deterministic sample of `f`'s own points whose +/-normal
+    probe lands in an interior cell. Mirrors `assign_interior_sides`'s probe
+    geometry exactly (same step, same up-to-256-point sample), but returns
+    the raw per-side fractions instead of collapsing them to a single sign,
+    so both sides can be tested independently.
+    """
+    idx = f.point_idx
+    if len(idx) == 0:
+        return 0.0, 0.0
+    take = idx if len(idx) <= 256 else idx[
+        np.linspace(0, len(idx) - 1, 256).astype(np.int64)
+    ]
+    pts = np.asarray(xyz, dtype=np.float64)[take]
+    step = grid.cell_m * float(config["interior_probe_cells"])
+    fracs = []
+    for sign in (1, -1):
+        probe = pts + sign * step * f.normal
+        ijk = grid.index_of(probe)
+        fracs.append(float(interior[ijk[:, 0], ijk[:, 1], ijk[:, 2]].mean()))
+    return fracs[0], fracs[1]
+
+
+def _is_free_standing_leaf(
+    f: Face, grid: OccupancyGrid, interior: np.ndarray, config: dict, xyz: np.ndarray
+) -> bool:
+    """POSITIVE test for "interior air on both sides" -- not an absence-of-
+    signal proxy. A real wall has solid (non-interior) on one side; a
+    free-standing leaf (an open door) has interior air on both, because the
+    probe reach (`interior_probe_cells` cells) exceeds a leaf's ~40 mm
+    thickness and lands in the SAME room's air beyond it on either side.
+    Both sides must show a clear MAJORITY of probes landing in interior
+    cells (>= 0.5 each) to count -- a face where neither side has any
+    interior data at all (both fractions 0, e.g. a face far from any
+    computed interior region, or a synthetic fixture with no enclosed room)
+    fails this test and remains a normal pairing candidate, so this needs no
+    separate opt-in flag the way the old `interior_sign is None` proxy did.
+    """
+    frac_pos, frac_neg = _probe_interior_fraction(f, grid, interior, config, xyz)
+    return frac_pos >= 0.5 and frac_neg >= 0.5
 
 
 def assemble_walls(
-    faces: list[Face], xyz: np.ndarray, config: dict
+    faces: list[Face], xyz: np.ndarray, config: dict,
+    grid: OccupancyGrid | None = None, interior: np.ndarray | None = None,
 ) -> tuple[list[Wall], list[int]]:
     """Pair opposing wall faces into walls. Returns (walls, unpaired_face_ids).
 
@@ -195,17 +271,24 @@ def assemble_walls(
     already below `wall_thickness_min_m` and so can never pair -- but each of
     its two faces would otherwise still surface as its own unpaired "wall",
     which is wrong: a leaf has interior air on BOTH sides, a real wall has
-    solid on one. When `Face.interior_sign` has actually been decided for
-    this scene (i.e. `assign_interior_sides` ran upstream -- synthetic
-    fixtures that skip that stage leave every `interior_sign` at its default
-    `None`, in which case this signal is simply unavailable and every wall
-    face remains a normal pairing candidate), a face whose interior_sign
-    could not be decided is excluded from PAIRING candidacy: an undecided
-    sign is exactly what a thin free-standing panel produces (the probe
-    reaches through it to interior air on both sides, a tie). It still
+    solid on one. `_is_free_standing_leaf` is a POSITIVE test for that (both
+    sides probe as majority-interior), not an absence-of-signal proxy --
+    `Face.interior_sign is None` also fires for faces `assign_interior_sides`
+    simply could not decide (grid-boundary, low probe support), which is a
+    different thing and was excluding faces it should not have. A face this
+    positive test flags is excluded from PAIRING candidacy only; it still
     surfaces as its own unpaired Wall -- excluding it from the output
     entirely would violate the accounting invariant that every wall face
     ends up in exactly one Wall.
+
+    `grid`/`interior` are optional: pass the caller's own `OccupancyGrid` and
+    `interior_by_enclosure` result to avoid recomputing them (the real
+    pipeline already has both from Task 5's `assign_interior_sides` stage).
+    When omitted, both are built here from `xyz`/`config` -- deterministic,
+    and cheap enough for small synthetic fixtures. A scene with no enclosed
+    room at all (e.g. a bare wall slab with no floor/ceiling/room around it)
+    has essentially no interior cells, so every probe fraction reads ~0 and
+    the leaf test never fires -- no separate synthetic-vs-real branch needed.
     """
     cos_tol = float(np.cos(np.radians(config["face_merge_angle_tol_deg"])))
     t_min = float(config["wall_thickness_min_m"])
@@ -216,14 +299,17 @@ def assemble_walls(
         [f for f in faces if f.role == "wall"], key=lambda f: f.face_id
     )
 
-    # interior_sign is only a meaningful discriminator when it has actually
-    # been computed for this scene; synthetic fixtures that never call
-    # assign_interior_sides leave it at its default None for every face, in
-    # which case the filter below must be a no-op.
-    signal_present = any(f.interior_sign is not None for f in wall_faces)
+    if grid is None or interior is None:
+        grid = build_occupancy(xyz, config)
+        interior = interior_by_enclosure(grid)
+
+    leaf_ids = {
+        f.face_id for f in wall_faces
+        if _is_free_standing_leaf(f, grid, interior, config, xyz)
+    }
 
     def pairing_eligible(f: Face) -> bool:
-        return (not signal_present) or (f.interior_sign is not None)
+        return f.face_id not in leaf_ids
 
     best: dict[int, tuple[float, int]] = {}
     for i, a in enumerate(wall_faces):
@@ -237,9 +323,9 @@ def assemble_walls(
             coarse = perpendicular_offset(a, b)
             if coarse > 2.0 * t_max:
                 continue
-            if _overlap_fraction(a, b) < min_overlap:
+            if _overlap_fraction(a, b, xyz) < min_overlap:
                 continue
-            t, n_pts, resid = measure_local_thickness(a, b, xyz, config)
+            t, n_pts, resid, n_bins = measure_local_thickness(a, b, xyz, config)
             if not (t_min <= t <= t_max):
                 continue
             for x, y in ((a.face_id, b.face_id), (b.face_id, a.face_id)):
@@ -268,11 +354,15 @@ def assemble_walls(
             g = by_id[other_id]
             used.add(f.face_id)
             used.add(other_id)
-            t, n_pts, resid = measure_local_thickness(f, g, xyz, config)
+            t, n_pts, resid, n_bins = measure_local_thickness(f, g, xyz, config)
             walls.append(Wall(
                 wall_id=wid, face_a=f.face_id, face_b=other_id,
                 thickness=Measurement(
-                    value=float(t), method="face-to-face perpendicular offset, local overlap median",
+                    value=float(t),
+                    method=(
+                        "face-to-face perpendicular offset, local overlap "
+                        f"median (n_bins={n_bins})"
+                    ),
                     n_points=int(n_pts), p95_residual=float(resid),
                 ),
                 length=Measurement(
