@@ -1,0 +1,284 @@
+"""Command-line entry point.
+
+    rscene patches <scan.las> <out_dir> [--max-points N] [--seed N] [--set KEY=VALUE ...]
+
+Writes scene.json (the source of truth) and report.md (human-readable).
+Determinism note: the provenance timestamp is intentionally derived from the
+scan's content hash rather than the wall clock, so two runs of the same scan
+produce byte-identical output.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import numpy as np
+
+from . import __version__
+from .config import merged_config
+from .core.graph import coplanarity_classes, patch_adjacency
+from .core.level import estimate_frame
+from .core.normals import estimate_normals
+from .core.patches import extract_patches, unassigned_count
+from .core.scene import Provenance, Scene, scene_to_json
+
+# Order in which unassigned points are classified. Each check is applied in
+# this sequence and a point is placed in the FIRST bucket it matches, so the
+# buckets are mutually exclusive by construction and always sum to the
+# unassigned total:
+#   1. high_curvature            -- curvature too high to have seeded or been
+#                                    recruited by any established patch
+#   2. no_plane_within_tolerance -- curvature is fine, but no finalised
+#                                    patch plane (agreeing in normal within
+#                                    patch_angle_tol_deg) sits within
+#                                    tau_fit_m of the point
+#   3. isolated                  -- fewer than _MIN_NEIGHBOURS neighbours
+#                                    within patch_connect_radius_m (sparse or
+#                                    at the edge of the scan)
+#   4. other                     -- anything left over
+_UNASSIGNED_BUCKET_ORDER = (
+    "high_curvature",
+    "no_plane_within_tolerance",
+    "isolated",
+    "other",
+)
+
+# Below this many neighbours within patch_connect_radius_m, a point is
+# considered isolated (sparse/edge-of-scan) rather than simply unmatched.
+_MIN_NEIGHBOURS = 3
+
+
+def _classify_unassigned(
+    xyz: np.ndarray,
+    normals: np.ndarray,
+    curvature: np.ndarray,
+    labels: np.ndarray,
+    patches: list,
+    config: dict,
+) -> dict[str, int]:
+    """Bucket every unassigned point into exactly one cause.
+
+    Buckets are mutually exclusive and sum exactly to the unassigned total:
+    each point is tested against the checks in _UNASSIGNED_BUCKET_ORDER and
+    lands in the first one that matches.
+    """
+    counts = {name: 0 for name in _UNASSIGNED_BUCKET_ORDER}
+    unassigned_idx = np.nonzero(np.asarray(labels) == -1)[0]
+    if len(unassigned_idx) == 0:
+        return counts
+
+    max_curvature = float(config["patch_max_curvature"])
+    tau = float(config["tau_fit_m"])
+    cos_tol = float(np.cos(np.radians(config["patch_angle_tol_deg"])))
+    radius = float(config["patch_connect_radius_m"])
+
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(xyz)
+
+    patch_normals = np.array([p.normal for p in patches]) if patches else np.zeros((0, 3))
+    patch_ds = np.array([p.d for p in patches]) if patches else np.zeros((0,))
+
+    for i in unassigned_idx:
+        if curvature[i] > max_curvature:
+            counts["high_curvature"] += 1
+            continue
+
+        matched = False
+        if len(patches):
+            # A plane "agrees" only if its normal is within
+            # patch_angle_tol_deg of this point's own normal -- the same
+            # gate region growth applies before ever checking distance.
+            agrees = np.abs(patch_normals @ normals[i]) >= cos_tol
+            if np.any(agrees):
+                dists = np.abs(patch_normals[agrees] @ xyz[i] + patch_ds[agrees])
+                matched = bool(np.any(dists <= tau))
+        if matched:
+            counts["no_plane_within_tolerance"] += 1
+            continue
+
+        neighbour_count = len(tree.query_ball_point(xyz[i], radius)) - 1  # exclude self
+        if neighbour_count < _MIN_NEIGHBOURS:
+            counts["isolated"] += 1
+            continue
+
+        counts["other"] += 1
+
+    return counts
+
+
+def _report(scene: Scene, n_points: int, unassigned_buckets: dict[str, int]) -> str:
+    lines = [
+        "# rscene patch extraction report",
+        "",
+        f"- Scan: `{scene.provenance.scan_path}`",
+        f"- SHA256: `{scene.provenance.scan_sha256}`",
+        f"- Pipeline version: {scene.provenance.pipeline_version}",
+        "",
+        "## Points",
+        "",
+        f"- Loaded: {n_points:,}",
+        f"- Unassigned points: {scene.unassigned_points:,} "
+        f"({scene.unassigned_points / max(n_points, 1):.1%})",
+        "",
+        "### Unassigned breakdown",
+        "",
+        "Each unassigned point is classified into exactly one bucket, checked "
+        "in this order: " + " -> ".join(_UNASSIGNED_BUCKET_ORDER) + ". "
+        "Buckets are mutually exclusive and sum to the unassigned total.",
+        "",
+        "| bucket | count | % of unassigned |",
+        "|--------|-------|------------------|",
+    ]
+    total_unassigned = max(scene.unassigned_points, 1)
+    for name in _UNASSIGNED_BUCKET_ORDER:
+        count = unassigned_buckets.get(name, 0)
+        lines.append(f"| {name} | {count:,} | {count / total_unassigned:.1%} |")
+
+    lines += [
+        "",
+        "## Patches",
+        "",
+        f"- Extracted: {len(scene.patches)}",
+        f"- Coplanarity classes: {len(scene.coplanarity_classes)}",
+        f"- Adjacent pairs: {len(scene.adjacency)}",
+        "",
+        "## Frame (measured, not applied)",
+        "",
+        f"- Gravity axis: {scene.frame.z_axis}",
+        f"- XY rotation: {scene.frame.xy_rotation_deg:.2f} deg",
+        f"- Floor Z: {scene.frame.floor_z}",
+        f"- Ceiling Z: {scene.frame.ceiling_z}",
+        "",
+        "## Largest patches",
+        "",
+        "| id | n_points | p95 residual (mm) | normal |",
+        "|----|----------|-------------------|--------|",
+    ]
+    for p in sorted(scene.patches, key=lambda q: -q.n_points)[:15]:
+        normal = ", ".join(f"{v:+.3f}" for v in p.normal)
+        lines.append(
+            f"| {p.patch_id} | {p.n_points:,} | {p.p95_residual_m * 1000:.1f} | {normal} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _parse_set_overrides(raw: list[str] | None) -> dict:
+    """Parse repeated --set KEY=VALUE options into a config override dict.
+
+    Values are parsed as JSON scalars when possible (so `64` becomes an int,
+    `1.5` a float, `true` a bool) and fall back to the raw string otherwise.
+    """
+    import json
+
+    overrides: dict = {}
+    for item in raw or []:
+        if "=" not in item:
+            raise ValueError(f"--set expects KEY=VALUE, got {item!r}")
+        key, _, value = item.partition("=")
+        try:
+            overrides[key] = json.loads(value)
+        except json.JSONDecodeError:
+            overrides[key] = value
+    return overrides
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="rscene")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    patches_cmd = sub.add_parser("patches", help="extract planar patches from a scan")
+    patches_cmd.add_argument("input", help="path to a LAS/LAZ scan")
+    patches_cmd.add_argument("out_dir", help="output directory")
+    patches_cmd.add_argument(
+        "--max-points", type=int, default=None,
+        help="randomly subsample to this many points before extraction. "
+             "WARNING: for quick previews/tests only -- see stderr warning.",
+    )
+    patches_cmd.add_argument("--seed", type=int, default=0)
+    patches_cmd.add_argument(
+        "--set", action="append", default=None, metavar="KEY=VALUE",
+        help="override a config key, e.g. --set patch_neighbor_k=64; may be repeated",
+    )
+
+    args = parser.parse_args(argv)
+
+    if not os.path.exists(args.input):
+        print(f"error: input not found: {args.input}", file=sys.stderr)
+        return 2
+
+    if args.max_points is not None:
+        print(
+            "warning: --max-points randomly subsamples the point cloud. "
+            "Random subsampling destroys the local point density that "
+            "region-growing patch extraction depends on and degrades "
+            "extraction quality (measured on real data: 13.7% unassigned "
+            "at native 6.1 mm spacing vs. 40.9% at 15.2 mm after random "
+            "thinning to the same point count). Use --max-points only for "
+            "quick previews. For real runs, bound memory by processing a "
+            "spatial subregion of the scan instead of random subsampling.",
+            file=sys.stderr,
+        )
+
+    from .io.las import file_sha256, load_las      # imported late: optional dependency
+
+    try:
+        overrides = _parse_set_overrides(args.set)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    overrides["seed"] = args.seed
+
+    try:
+        config = merged_config(overrides)
+    except KeyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    points = load_las(args.input, max_points=args.max_points, seed=args.seed)
+    if points.n < config["normal_k"]:
+        print(f"error: only {points.n} points, need at least {config['normal_k']}",
+              file=sys.stderr)
+        return 2
+
+    normals, curvature = estimate_normals(points.xyz, k=config["normal_k"])
+    patch_list, labels = extract_patches(points.xyz, normals, curvature, config)
+    unassigned_buckets = _classify_unassigned(
+        points.xyz, normals, curvature, labels, patch_list, config
+    )
+
+    scene = Scene(
+        provenance=Provenance(
+            scan_path=os.path.basename(args.input),
+            scan_sha256=file_sha256(args.input),
+            pipeline_version=__version__,
+            timestamp=f"content:{file_sha256(args.input)[:16]}",
+            config=config,
+        ),
+        frame=estimate_frame(patch_list, config),
+        patches=patch_list,
+        coplanarity_classes=coplanarity_classes(patch_list, config),
+        adjacency=patch_adjacency(patch_list, points.xyz, config),
+        unassigned_points=unassigned_count(labels),
+        diagnostics={
+            "n_input_points": points.n,
+            "p95_residual_m": float(np.percentile(
+                [p.p95_residual_m for p in patch_list], 95)) if patch_list else 0.0,
+            "unassigned_buckets": unassigned_buckets,
+        },
+    )
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    with open(os.path.join(args.out_dir, "scene.json"), "w") as handle:
+        handle.write(scene_to_json(scene))
+    with open(os.path.join(args.out_dir, "report.md"), "w") as handle:
+        handle.write(_report(scene, points.n, unassigned_buckets))
+
+    print(f"{len(patch_list)} patches, {scene.unassigned_points:,} unassigned "
+          f"-> {args.out_dir}")
+    return 0
+
+
+if __name__ == "__main__":                                  # pragma: no cover
+    raise SystemExit(main())
