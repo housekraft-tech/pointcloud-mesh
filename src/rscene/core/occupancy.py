@@ -73,6 +73,18 @@ def flood_interior(grid: OccupancyGrid, seed_xyz: np.ndarray) -> np.ndarray:
 
     Raises if the seed lands in an occupied cell -- silently returning an empty
     fill would look identical to a sealed void and hide the real problem.
+
+    WARNING: this requires a watertight occupancy envelope. Real scans do not
+    have one -- a single missing voxel from a scan hole, an occlusion, or
+    glazing that returns nothing lets the fill escape into the grid's padding
+    ring, which wraps the entire model. Measured on
+    data/isolated_structural_v2.las at 50 mm cells, flood-fill from a
+    real-scan crop filled 100.00% of free cells (the full bounding box, not
+    an interior); the full isolated scan leaked identically, so it is not a
+    cropping artefact. Use `interior_by_enclosure` for real data -- it is
+    local (per-Z-slice horizontal enclosure), needs no watertight envelope,
+    and is unaffected by leaks. Keep using `flood_interior` only for a
+    genuinely closed envelope: a synthetic sealed room, or a repaired scan.
     """
     seed = grid.index_of(np.asarray(seed_xyz, dtype=np.float64).reshape(1, 3))[0]
     si, sj, sk = int(seed[0]), int(seed[1]), int(seed[2])
@@ -98,3 +110,37 @@ def flood_interior(grid: OccupancyGrid, seed_xyz: np.ndarray) -> np.ndarray:
             interior[a, b, c] = True
             queue.append((a, b, c))
     return interior
+
+
+def interior_by_enclosure(grid: OccupancyGrid) -> np.ndarray:
+    """Mark free cells as interior when enclosed horizontally, per Z slice.
+
+    Default interior definition for real scan data. Flood-fill (`flood_interior`)
+    needs a watertight occupancy envelope, which real scans do not have -- see
+    its docstring for measured leak figures. This mechanism instead asks, for
+    every free cell independently: does a ray along -x, +x, -y and +y each hit
+    occupancy before leaving the grid, all within this cell's own Z slice? A
+    cell inside a room is walled on all four sides and passes; a cell outside
+    the building escapes in at least one direction and fails; a cell on a
+    balcony correctly reads as outside. It needs no connectivity to a seed and
+    no closed envelope, so a single missing voxel elsewhere in the grid cannot
+    leak it -- the check is local per cell. O(n) via cumulative sums along x
+    and y, and deterministic.
+    """
+    occ = grid.occupied
+
+    c = np.cumsum(occ, axis=0)
+    # c[i] = count of occupied cells at indices 0..i (inclusive) along x.
+    # For a free cell (occ[i] == 0), c[i] > 0 means an occupied cell exists
+    # at some index < i, i.e. strictly before it -- exactly "hit going -x".
+    any_neg_x = c > 0
+    # c[-1] is the total occupied count along the whole x column; c[-1] - c[i]
+    # is the count at indices strictly greater than i (since c[i] itself adds
+    # nothing extra for a free cell), i.e. "hit going +x".
+    any_pos_x = (c[-1][None, :, :] - c) > 0
+
+    c = np.cumsum(occ, axis=1)
+    any_neg_y = c > 0
+    any_pos_y = (c[:, -1][:, None, :] - c) > 0
+
+    return (~occ) & any_neg_x & any_pos_x & any_neg_y & any_pos_y
