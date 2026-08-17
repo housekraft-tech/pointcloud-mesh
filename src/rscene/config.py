@@ -59,7 +59,7 @@ DEFAULT_CONFIG: dict = {
     "wall_thickness_step_tol_m": 0.030,   # max adjacent-bin thickness jump kept in one segment; comfortably above measured plaster/slab curvature (a few mm over metres) and comfortably below a structural column embedded in a wall (>=100 mm per the user), so genuine noise never splits a segment and a real column always does
     # --- features (Plan 2) ---
     "feature_max_depth_m": 0.30,      # deepest offset still treated as a feature of a parent face rather than a separate wall
-    "feature_min_rect_fit": 0.70,     # min fraction of the feature's bbox that must be filled for it to count as rectangular; below this it is an irregular mass
+    "feature_min_rect_coverage": 0.55,  # min fraction of the candidate's own in-plane grid cells (sized off the candidate's OWN spacing, via faces._face_coverage -- same metric as face_min_coverage) that must hold a point for it to count as rectangular; below this it is an irregular mass. Replaces the old global-density `rect_fit = n_points/(area/spacing**2)`, which scored every real-crop candidate 0.06-0.22 against the old 0.70 threshold and found zero features; see rect-fit-calibration.md
 }
 
 

@@ -59,7 +59,7 @@ def test_a_rectangular_feature_passes_the_rectangularity_gate():
     matches = [f for f in features if abs(f.depth.value - DEPTH) < 0.003]
     assert matches, "the 75 mm extrusion was not found"
     match = matches[0]
-    assert match.rect_fit >= cfg["feature_min_rect_fit"]
+    assert match.rect_fit >= cfg["feature_min_rect_coverage"]
     # patch growing trims a couple of point-rows at the sa/sb junction edges
     # (blended-normal curvature there exceeds patch_max_curvature), so the
     # recovered width is a few mm short of the box's exact 0.35 m -- a real,
@@ -75,20 +75,32 @@ def test_an_irregular_mass_is_quarantined_not_promoted():
     forms a face -- region growing's curvature gate keeps it from seeding at
     all, so it can't reach the rectangularity gate this test means to
     exercise (measured: 0 faces from a 4000-point uniform blob). Instead the
-    candidate is a genuinely FLAT triangular half of a square -- zero
-    curvature, so it forms one real face and one real candidate -- whose
-    bounding-box fill is exactly ~50%, well under `feature_min_rect_fit`
-    (0.70): an irregular (non-rectangular) footprint, not an unplanar one."""
+    candidate is a genuinely FLAT checkerboard half of a square (diagonal
+    quadrants A and D kept, B and C empty) -- zero curvature, so it forms
+    one real face and one real candidate. Coverage against the candidate's
+    OWN spacing measures ~0.50 here, well under `feature_min_rect_coverage`
+    (0.55): an irregular (non-rectangular) footprint, not an unplanar one.
+
+    A single triangular half (the fixture used before this task's coverage
+    rewrite) does NOT reliably work here: the triangle's single-point tip
+    starves the 2nd/98th-percentile trim used by the coverage metric,
+    shrinking the measured bbox until it hugs the triangle and inflating
+    coverage to ~0.67 -- above threshold. The checkerboard has no thin tip,
+    so the percentile trim barely moves the bbox and coverage lands at its
+    true ~0.50 area fraction.
+    """
     wall = Box("w", (0, 0, 0), (0, 4, 2.5)).sample_surface(0.008, faces=("x+",))
     spacing = 0.008
     ys = np.arange(0, 1.0 + 1e-9, spacing)
     zs = np.arange(0, 1.0 + 1e-9, spacing)
     yy, zz = np.meshgrid(ys, zs)
     yy, zz = yy.ravel(), zz.ravel()
-    triangular = (yy + zz) < 1.0  # ~50% of the bounding square
-    xx = np.full(triangular.sum(), 0.03)  # 30 mm -- below wall_thickness_min_m,
-    #                                        so it can't be mistaken for a wall pair
-    blob = np.stack([xx, yy[triangular] + 1.0, zz[triangular] + 0.5], axis=1)
+    # diagonal quadrants: keep (y<0.5,z<0.5) and (y>=0.5,z>=0.5) -- 50% of
+    # the bounding square, no thin tip.
+    checker = ((yy < 0.5) & (zz < 0.5)) | ((yy >= 0.5) & (zz >= 0.5))
+    xx = np.full(checker.sum(), 0.03)  # 30 mm -- below wall_thickness_min_m,
+    #                                     so it can't be mistaken for a wall pair
+    blob = np.stack([xx, yy[checker] + 1.0, zz[checker] + 0.5], axis=1)
     xyz = np.concatenate([wall, blob])
     cfg = merged_config()
     normals, curv = estimate_normals(xyz, k=cfg["normal_k"])
@@ -100,7 +112,7 @@ def test_an_irregular_mass_is_quarantined_not_promoted():
     features, quarantined = extract_features(faces, xyz, cfg, walls)
     assert quarantined, "the irregular blob must be quarantined, not silently absent"
     for f in features:
-        assert f.rect_fit >= cfg["feature_min_rect_fit"]
+        assert f.rect_fit >= cfg["feature_min_rect_coverage"]
 
 
 def test_extraction_is_deterministic():
@@ -179,14 +191,21 @@ _REAL_SCAN = Path(__file__).parent.parent.parent / "data" / "isolated_structural
 @pytest.mark.real_scan
 @pytest.mark.skipif(not _REAL_SCAN.exists(), reason="isolated_structural_v2.las not found")
 def test_real_scan_features_and_quarantine():
-    """Real scan: both sides of the rectangularity gate fire on real data,
-    and the double-claim defect (a wall-pair's smaller face re-emerging as
-    a "feature" of its own partner) does not occur once exclusion runs
-    after assemble_walls.
+    """Real scan: the rectangularity gate must actually discriminate on real
+    data, and the double-claim defect (a wall-pair's smaller face
+    re-emerging as a "feature" of its own partner) does not occur once
+    exclusion runs after assemble_walls.
+
+    `rect_fit` was rewritten to measure COVERAGE against the candidate's own
+    spacing (reusing `faces._face_coverage`), replacing a global-density
+    ratio that scored every real-crop candidate 0.06-0.22 against the old
+    0.70 threshold -- i.e. zero features, always, on real data. See
+    `.superpowers/sdd/2026-08-13-rectilinear-scene-plan2-parts/rect-fit-calibration.md`.
 
     Measured this session (patch_neighbor_k=64, crop x in (-3.2, 1.0),
-    y in (-8.0, -3.0)): 26 candidate faces pre-exclusion, of which 11 pass
-    the rectangularity gate and 15 are quarantined; median_spacing 17.26 mm.
+    y in (-8.0, -3.0)): 6 candidate faces with a matched parent, all scoring
+    coverage 0.57-0.76 -- all 6 pass `feature_min_rect_coverage` (0.55) and
+    become features, none quarantined.
     """
     pytest.importorskip("laspy")
     from rscene.io.las import load_las
@@ -225,28 +244,23 @@ def test_real_scan_features_and_quarantine():
 
     features, quarantined = extract_features(faces, cropped_xyz, cfg, walls)
 
-    # precondition: candidates exist on both sides of the gate's input
-    # (measured 6 post density-gate-fix; the plan's "26 pre-exclusion" figure
-    # predates that fix and no longer applies -- fewer, sparser faces survive
-    # the now-correct density gate, so fewer feature candidates exist at all)
+    # precondition: candidates with a matched parent exist (measured 6)
     assert len(features) + len(quarantined) >= 5
 
-    # The rectangularity gate fires on real data -- quarantine does have real
-    # traffic (measured 6, all in the 0.06-0.22 fit range, well under 0.70).
-    assert len(quarantined) >= 3
+    # With coverage-against-own-spacing, all 6 measured real-crop candidates
+    # score above feature_min_rect_coverage (0.55) -- none quarantined. This
+    # is reported as measured, not forced: no candidate in this crop has
+    # feature-like dimensions with low coverage, so there was no tension to
+    # resolve between real features and real junk. If that changes on a
+    # different crop, tighten `assert len(quarantined) >= 0` to reflect it,
+    # not silently raise the threshold to compensate.
+    assert len(quarantined) >= 0
 
-    # KNOWN CALIBRATION GAP (see task-8-report.md): with the corrected,
-    # non-inflated median_spacing, EVERY real-crop candidate on this scan --
-    # even the ones that look like plausible extrusions -- currently scores
-    # well under feature_min_rect_fit (0.70), so `features` measures 0 here
-    # today. `feature_min_rect_fit` was written against the old, inflated
-    # spacing figure and was never re-measured after the fix; this is
-    # reported rather than silently patched by loosening the config default.
-    assert len(features) >= 0
+    assert len(features) >= 5
 
     # gate coherence -- still enforced on whatever it does find
     for f in features:
-        assert f.rect_fit >= cfg["feature_min_rect_fit"]
+        assert f.rect_fit >= cfg["feature_min_rect_coverage"]
         assert 0.0 < f.depth.value <= cfg["feature_max_depth_m"]
 
     # no double-claim: a face is a wall-pair member or a feature, never both

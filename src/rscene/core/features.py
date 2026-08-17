@@ -6,10 +6,14 @@ groove, an electrical box -- is a rectangular prism. An irregular lump of
 leftover concrete is not, and cannot be made to fit one.
 
 That is the whole discriminator, and it needs no heuristics about size or
-position. `rect_fit` is the fraction of the feature's own in-plane bounding box
-that its points actually fill; a rectangular face fills its box, a scattered
-mass does not. Anything below the gate is quarantined -- returned to the caller
-for the scene's `unmodeled` set, never silently deleted and never promoted.
+position. `rect_fit` is COVERAGE against the candidate's own point spacing --
+the fraction of the feature's own in-plane grid cells, sized off the
+candidate's OWN median spacing, that actually hold a point (the same metric
+`apply_density_gate` uses for faces; see `faces._face_coverage`). A
+rectangular face fills nearly all of its own cells, however sparsely it was
+scanned; a scattered mass does not. Anything below the gate is quarantined --
+returned to the caller for the scene's `unmodeled` set, never silently
+deleted and never promoted.
 
 Measured defect this module is designed around: a wall pair's own partner
 looks exactly like a feature of the other face -- the far face of a 200 mm
@@ -27,7 +31,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .faces import Face, median_spacing
+from .faces import Face, _face_coverage
 from .graph import perpendicular_offset
 from .scene import Measurement
 
@@ -46,13 +50,30 @@ class Feature:
     rect_fit: float
 
 
-def _rect_fit(face: Face, xyz: np.ndarray, spacing: float) -> float:
-    """Fraction of the face's in-plane bbox its own points fill."""
-    area = face.area_bound_m2()
-    if area <= 0 or spacing <= 0:
-        return 0.0
-    expected = area / (spacing ** 2)
-    return float(min(1.0, face.n_points / expected)) if expected > 0 else 0.0
+def _rect_fit(face: Face, xyz: np.ndarray, cell_mult: float, seed: int) -> float:
+    """Fraction of the face's own in-plane grid cells (sized off the face's
+    OWN median spacing) that hold at least one point.
+
+    This used to be `n_points / (area / global_spacing**2)` against one
+    whole-cloud `median_spacing`. That metric does not discriminate on real
+    data: SLAM point density varies eightfold or more with range and
+    incidence angle, so a legitimate far surface is genuinely sparse and
+    scores low right alongside actual junk. It also depended on
+    `median_spacing` measuring the CLOUD's spacing rather than a subsample's
+    -- the same bug already fixed for the face density gate in
+    `faces.median_spacing` -- which alone inflated this metric by roughly
+    9x on the real crop.
+
+    Reuses `faces._face_coverage`, the same fix already applied to the face
+    density gate (`apply_density_gate`): grid the candidate's own
+    percentile-trimmed in-plane bounding box into cells at a small multiple
+    of the candidate's OWN spacing, and measure the fraction of cells that
+    contain a point. A rectangular feature fills essentially all of its own
+    cells regardless of how sparsely it was scanned; an irregular mass does
+    not, because its points do not fill a rectangle -- invariant to range
+    and incidence-angle density falloff, unlike the old density ratio.
+    """
+    return _face_coverage(xyz, face, cell_mult, seed)
 
 
 def extract_features(
@@ -74,9 +95,10 @@ def extract_features(
     rather than deleted.
     """
     xyz = np.asarray(xyz, dtype=np.float64)
-    spacing = median_spacing(xyz, seed=int(config["seed"]))
+    seed = int(config["seed"])
+    cell_mult = float(config["face_coverage_cell_spacing_mult"])
     max_depth = float(config["feature_max_depth_m"])
-    min_fit = float(config["feature_min_rect_fit"])
+    min_fit = float(config["feature_min_rect_coverage"])
     cos_tol = float(np.cos(np.radians(config["face_merge_angle_tol_deg"])))
 
     pair_members: set[int] = set()
@@ -110,7 +132,7 @@ def extract_features(
         if parent is None:
             continue
 
-        fit = _rect_fit(cand, xyz, spacing)
+        fit = _rect_fit(cand, xyz, cell_mult, seed)
         if fit < min_fit:
             quarantined.append(cand.face_id)
             continue
