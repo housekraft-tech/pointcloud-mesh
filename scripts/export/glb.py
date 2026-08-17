@@ -68,3 +68,12 @@ class GLB:
             f.write(struct.pack('<II',len(js),0x4E4F534A)); f.write(js)
             f.write(struct.pack('<II',len(buf),0x004E4942)); f.write(bytes(buf))
         return total,len(self.parts),sum(len(p[3])//3 for p in self.parts)
+    def add_quads(self,name,quads,normal):
+        """A batch of coplanar quads sharing one normal, as its own part.
+        Used by the voxel surface, where a Poisson-style mesh is thousands of
+        axis-aligned faces rather than a handful of boxes."""
+        V=[];N=[];I=[]
+        for q in quads:
+            b=len(V); V+=list(q); N+=[normal]*4
+            I+=[b,b+1,b+2,b,b+2,b+3]
+        if V: self.parts.append([name,V,N,I])
