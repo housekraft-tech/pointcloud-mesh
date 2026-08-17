@@ -31,10 +31,7 @@ class Measurement:
     count, not the whole field's -- see `ThicknessField`), so a caller can
     tell a genuine multi-bin median from a single-cell or whole-overlap
     fallback without parsing `method`. `None` for measurements that were
-    never binned (length, height, ...). Deliberately left out of
-    `to_dict`/`from_dict` for now -- wiring Wall/Feature (and this field)
-    into the scene JSON is Task 9's job, not this one's; adding it here
-    would change every existing Measurement payload's key set.
+    never binned (length, height, ...).
     """
 
     value: float
@@ -49,6 +46,7 @@ class Measurement:
             "method": self.method,
             "n_points": self.n_points,
             "p95_residual": self.p95_residual,
+            "n_bins": self.n_bins,
         }
 
     @staticmethod
@@ -56,6 +54,7 @@ class Measurement:
         return Measurement(
             value=payload["value"], method=payload["method"],
             n_points=payload["n_points"], p95_residual=payload["p95_residual"],
+            n_bins=payload.get("n_bins"),
         )
 
 
@@ -136,6 +135,98 @@ def _patch_from_dict(p: dict[str, Any]) -> Patch:
     )
 
 
+def _measure_to_dict(m: Optional["Measurement"]):
+    return None if m is None else m.to_dict()
+
+
+def _measure_from_dict(p):
+    return None if p is None else Measurement.from_dict(p)
+
+
+def _face_to_dict(f) -> dict[str, Any]:
+    return {
+        "face_id": f.face_id,
+        "normal": [float(x) for x in f.normal],
+        "d": float(f.d),
+        "patch_ids": list(f.patch_ids),
+        "point_idx": [int(i) for i in f.point_idx],
+        "loose_idx": [int(i) for i in f.loose_idx],
+        "n_points": f.n_points,
+        "p95_residual_m": f.p95_residual_m,
+        "centroid": [float(x) for x in f.centroid],
+        "u_range": list(f.u_range),
+        "v_range": list(f.v_range),
+        "role": f.role,
+        "interior_sign": f.interior_sign,
+    }
+
+
+def _face_from_dict(p: dict[str, Any]):
+    from .faces import Face
+    return Face(
+        face_id=p["face_id"],
+        normal=np.array(p["normal"], dtype=np.float64),
+        d=p["d"],
+        patch_ids=list(p["patch_ids"]),
+        point_idx=np.array(p["point_idx"], dtype=np.int64),
+        loose_idx=np.array(p["loose_idx"], dtype=np.int64),
+        n_points=p["n_points"],
+        p95_residual_m=p["p95_residual_m"],
+        centroid=np.array(p["centroid"], dtype=np.float64),
+        u_range=tuple(p["u_range"]),
+        v_range=tuple(p["v_range"]),
+        role=p["role"],
+        interior_sign=p["interior_sign"],
+    )
+
+
+def _wall_to_dict(w) -> dict[str, Any]:
+    return {
+        "wall_id": w.wall_id, "face_a": w.face_a, "face_b": w.face_b,
+        "thickness": _measure_to_dict(w.thickness),
+        "thickness_field": None if w.thickness_field is None else w.thickness_field.to_dict(),
+        "length": _measure_to_dict(w.length),
+        "height": _measure_to_dict(w.height),
+        "centroid": [float(x) for x in w.centroid],
+        "normal": [float(x) for x in w.normal],
+    }
+
+
+def _wall_from_dict(p: dict[str, Any]):
+    from .parts import ThicknessField, Wall
+    return Wall(
+        wall_id=p["wall_id"], face_a=p["face_a"], face_b=p["face_b"],
+        thickness=_measure_from_dict(p["thickness"]),
+        thickness_field=(
+            None if p["thickness_field"] is None
+            else ThicknessField.from_dict(p["thickness_field"])
+        ),
+        length=_measure_from_dict(p["length"]),
+        height=_measure_from_dict(p["height"]),
+        centroid=np.array(p["centroid"], dtype=np.float64),
+        normal=np.array(p["normal"], dtype=np.float64),
+    )
+
+
+def _feature_to_dict(f) -> dict[str, Any]:
+    return {
+        "feature_id": f.feature_id, "kind": f.kind, "parent_face": f.parent_face,
+        "source_face": f.source_face,
+        "u_range": list(f.u_range), "v_range": list(f.v_range),
+        "depth": _measure_to_dict(f.depth), "rect_fit": f.rect_fit,
+    }
+
+
+def _feature_from_dict(p: dict[str, Any]):
+    from .features import Feature
+    return Feature(
+        feature_id=p["feature_id"], kind=p["kind"], parent_face=p["parent_face"],
+        source_face=p["source_face"],
+        u_range=tuple(p["u_range"]), v_range=tuple(p["v_range"]),
+        depth=_measure_from_dict(p["depth"]), rect_fit=p["rect_fit"],
+    )
+
+
 @dataclass
 class Scene:
     """The whole scene document. Plan 1 populates patches; parts arrive in Plan 2."""
@@ -147,6 +238,10 @@ class Scene:
     adjacency: list[tuple[int, int]] = field(default_factory=list)
     unassigned_points: int = 0
     diagnostics: dict = field(default_factory=dict)
+    faces: list = field(default_factory=list)
+    walls: list = field(default_factory=list)
+    features: list = field(default_factory=list)
+    unmodeled: list[int] = field(default_factory=list)
 
 
 def scene_to_json(scene: Scene) -> str:
@@ -155,10 +250,14 @@ def scene_to_json(scene: Scene) -> str:
         "adjacency": [list(pair) for pair in scene.adjacency],
         "coplanarity_classes": scene.coplanarity_classes,
         "diagnostics": scene.diagnostics,
+        "faces": [_face_to_dict(f) for f in scene.faces],
+        "features": [_feature_to_dict(f) for f in scene.features],
         "frame": scene.frame.to_dict(),
         "patches": [_patch_to_dict(p) for p in scene.patches],
         "provenance": scene.provenance.to_dict(),
         "unassigned_points": scene.unassigned_points,
+        "unmodeled": list(scene.unmodeled),
+        "walls": [_wall_to_dict(w) for w in scene.walls],
     }
     return json.dumps(payload, sort_keys=True, indent=2)
 
@@ -173,4 +272,8 @@ def scene_from_json(text: str) -> Scene:
         adjacency=[tuple(pair) for pair in payload["adjacency"]],
         unassigned_points=payload["unassigned_points"],
         diagnostics=payload["diagnostics"],
+        faces=[_face_from_dict(p) for p in payload["faces"]],
+        walls=[_wall_from_dict(p) for p in payload["walls"]],
+        features=[_feature_from_dict(p) for p in payload["features"]],
+        unmodeled=list(payload["unmodeled"]),
     )
