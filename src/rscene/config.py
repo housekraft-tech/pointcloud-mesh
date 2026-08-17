@@ -57,6 +57,9 @@ DEFAULT_CONFIG: dict = {
     "wall_thickness_bin_max_m": 0.50,   # coarsest bin size (also the single-cell fallback size for a sparse overlap); large overlaps with few points degrade to this rather than fragmenting into empty bins
     "wall_thickness_bin_target_pts": 12,  # target points per bin from the SPARSER face's overlap population; bin size is chosen so bins average this many points, comfortably above the 3-point-per-face qualification floor
     "wall_thickness_step_tol_m": 0.030,   # max adjacent-bin thickness jump kept in one segment; comfortably above measured plaster/slab curvature (a few mm over metres) and comfortably below a structural column embedded in a wall (>=100 mm per the user), so genuine noise never splits a segment and a real column always does
+    # --- features (Plan 2) ---
+    "feature_max_depth_m": 0.30,      # deepest offset still treated as a feature of a parent face rather than a separate wall
+    "feature_min_rect_fit": 0.70,     # min fraction of the feature's bbox that must be filled for it to count as rectangular; below this it is an irregular mass
 }
 
 
