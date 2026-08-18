@@ -13,7 +13,13 @@ import numpy as np, laspy, json
 TARGET = 4_000_000
 CUT = 0.12                     # metres of ceiling slab removed, from the top down
 
-with laspy.open("output/mujammel_structural_v6.las") as r: p = r.read()
+# The UNCLEANED aligned scan on purpose. The structural cleanup deletes any
+# point below 1300 mm that is not beside a floor-to-ceiling column of points --
+# and a balcony parapet or half-height wall has no such column, so it is removed
+# entirely. Measured: 8 wall-like regions, 1.6-2.1 m long, standing to 1270 mm,
+# 0.5 m2 of real wall footprint. This view is meant to BE the scan, so it uses
+# the scan. Loose clutter is the price and it is the right trade here.
+with laspy.open("output/mujammel_aligned_z0.las") as r: p = r.read()
 P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
 rgb = np.column_stack([p.red, p.green, p.blue]).astype(np.float64)
 H = json.load(open("output/fp_walls.json"))['clear_height']

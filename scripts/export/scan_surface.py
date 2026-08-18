@@ -34,7 +34,13 @@ MIN_BLOB = 60          # voxels before a connected blob counts as structure
 CUT = 0.12             # ceiling slab removed from the top down
 
 H = json.load(open("output/fp_walls.json"))['clear_height']
-with laspy.open("output/mujammel_structural_v6.las") as r: p = r.read()
+# The UNCLEANED aligned scan on purpose. The structural cleanup deletes any
+# point below 1300 mm that is not beside a floor-to-ceiling column of points --
+# and a balcony parapet or half-height wall has no such column, so it is removed
+# entirely. Measured: 8 wall-like regions, 1.6-2.1 m long, standing to 1270 mm,
+# 0.5 m2 of real wall footprint. This view is meant to BE the scan, so it uses
+# the scan. Loose clutter is the price and it is the right trade here.
+with laspy.open("output/mujammel_aligned_z0.las") as r: p = r.read()
 P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
 print(f"input: {len(P):,} points read from the LAS -- the FULL cloud, not the "
       f"thinned copy the viewer displays")
