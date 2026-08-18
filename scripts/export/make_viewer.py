@@ -5,8 +5,6 @@ import base64, json, os
 
 GLB = "output/model/shell_fp.glb"
 b64 = base64.b64encode(open(GLB, 'rb').read()).decode()
-cloud = base64.b64encode(open("output/cloud.bin", 'rb').read()).decode()
-surf = base64.b64encode(open("output/model/scan_surface.glb", 'rb').read()).decode()
 CM = json.load(open("output/cloud_meta.json"))
 meta = json.load(open("output/model/shell_fp.json"))
 rows = [dict(id=w["id"], length=w["length_mm"], thick=w["thickness_mm"],
@@ -61,7 +59,7 @@ HTML = r"""<!doctype html>
     <div><button id="pcOnly">Cloud only</button><button id="modelOnly">Model only</button>
          <button id="both">Both</button></div>
     <h2>Scan surface</h2>
-    <label><input type="checkbox" id="sfOn"><span>Show meshed scan (30 mm voxel
+    <label><input type="checkbox" id="sfOn"><span>Show meshed scan (20 mm voxel
       isosurface of the LiDAR)</span></label>
     <div class="k">opacity</div><input type="range" id="sfOp" min="10" max="100" value="100">
     <h2>Model layers</h2><div id="toggles"></div>
@@ -138,19 +136,21 @@ new GLTFLoader().parse(b64ToBuf("__B64__"),"",g=>addObject(g.scene));
 
 // ---- the scan meshed: the LiDAR's own surface, to overlay on the model ----
 let surf=null;
-new GLTFLoader().parse(b64ToBuf("__SURF__"),"",g=>{
+fetch('model/scan_surface.glb').then(r=>r.arrayBuffer()).then(buf=>
+new GLTFLoader().parse(buf,"",g=>{
   surf=g.scene; surf.visible=false;
   surf.traverse(o=>{ if(o.isMesh) o.material=new THREE.MeshStandardMaterial(
     {color:0x4fa88a,roughness:0.95,metalness:0.0,side:THREE.DoubleSide}); });
   scene.add(surf);
-});
+}));
 document.getElementById('sfOn').onchange=e=>{if(surf)surf.visible=e.target.checked;};
 document.getElementById('sfOp').oninput=e=>{const f=e.target.value/100;
   if(surf)surf.traverse(o=>{if(o.isMesh){o.material.transparent=f<1;
     o.material.opacity=f; o.material.depthWrite=f>=1;}});};
 
 // ---- LiDAR: Int16 positions dequantised against the cloud's own bbox ----
-const cb=new Uint8Array(b64ToBuf("__CLOUD__"));
+fetch('cloud.bin').then(r=>r.arrayBuffer()).then(cbuf=>{
+const cb=new Uint8Array(cbuf);
 const N=CM.n, q=new Int16Array(cb.buffer,0,N*3), rgb=cb.subarray(N*6,N*9);
 const pos=new Float32Array(N*3), col=new Float32Array(N*3);
 for(let i=0;i<N*3;i++){
@@ -173,6 +173,7 @@ function setBoth(c,m){cloud.visible=c; pcOn.checked=c; if(root) root.visible=m;}
 document.getElementById('pcOnly').onclick=()=>setBoth(true,false);
 document.getElementById('modelOnly').onclick=()=>setBoth(false,true);
 document.getElementById('both').onclick=()=>setBoth(true,true);
+});
 document.getElementById('fit').onclick=()=>fit();
 document.getElementById('wire').onclick=e=>{wire=!wire; e.target.classList.toggle('on',wire);
   root.traverse(o=>{if(o.isMesh)o.material.wireframe=wire;});};
@@ -207,9 +208,9 @@ addEventListener('resize',resize); resize();
 (function loop(){requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera);})();
 </script>
 """
-HTML = (HTML.replace("__B64__", b64).replace("__CLOUD__", cloud)
+HTML = (HTML.replace("__B64__", b64)
             .replace("__WALLS__", json.dumps(rows)).replace("__SUM__", json.dumps(SUM))
-            .replace("__CM__", json.dumps(CM)).replace("__SURF__", surf))
+            .replace("__CM__", json.dumps(CM)))
 open("output/viewer.html", "w").write(HTML)
 print(f"wrote output/viewer.html  {os.path.getsize('output/viewer.html')/1e6:.1f} MB")
 print(f"  model {os.path.getsize(GLB)/1024:.0f} KB, {SUM['walls']} walls, "

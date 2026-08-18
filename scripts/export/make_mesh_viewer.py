@@ -40,7 +40,7 @@ HTML = r"""<!doctype html>
   <div id="side">
     <h1>Meshed scan</h1>
     <div style="color:#8fa3bb">The LiDAR only. No walls, no model, nothing
-    inferred &mdash; a 30&nbsp;mm isosurface of the scan's own occupancy.</div>
+    inferred &mdash; a 20&nbsp;mm isosurface of the scan's own occupancy.</div>
     <h2>Stats</h2><div id="stats"></div>
     <h2>Show</h2>
     <label><input type="checkbox" id="mOn" checked><span>Meshed scan</span></label>
@@ -101,7 +101,7 @@ new GLTFLoader().parse(buf,"",g=>{
   buildDepthCues(mesh);
   const b=new THREE.Box3().setFromObject(mesh), s=b.getSize(new THREE.Vector3());
   document.getElementById('stats').innerHTML=
-    rowh('Voxel','30 mm')+rowh('Triangles',Math.round(tris).toLocaleString())+
+    rowh('Voxel','20 mm')+rowh('Triangles',Math.round(tris).toLocaleString())+
     rowh('Extent X',(s.x*1000).toFixed(0)+' mm')+
     rowh('Extent Y',(s.z*1000).toFixed(0)+' mm')+
     rowh('Height',(s.y*1000).toFixed(0)+' mm');
