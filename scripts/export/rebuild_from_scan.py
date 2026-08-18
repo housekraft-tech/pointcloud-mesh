@@ -37,8 +37,18 @@ MIN_LEN = 0.45          # a wall shorter than this is not a wall
 
 H = json.load(open("output/fp_walls.json"))['clear_height']
 mins = np.array(json.load(open("output/fp_walls.json"))['mins'])
-with laspy.open("output/mujammel_structural_v6.las") as r: p = r.read()
-P = np.column_stack([p.x, p.y, p.z]).astype(np.float64); z = P[:, 2]
+# The aligned scan with the connectivity declutter, not the v6 structural
+# cleanup -- v6 deletes parapets and any half-height wall outright, because it
+# keeps low points only beside a floor-to-ceiling column of points.
+with laspy.open("output/mujammel_aligned_z0.las") as r: p = r.read()
+P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
+import os
+if os.path.exists("output/keep_mask.npy"):
+    _k = np.load("output/keep_mask.npy")
+    if len(_k) == len(P):
+        P = P[_k]
+        print(f"declutter: {(~_k).sum():,} free-standing points dropped")
+z = P[:, 2]
 XY = P[:, :2] - mins
 nx = int(np.ceil((XY[:, 0].max() + CELL) / CELL))
 ny = int(np.ceil((XY[:, 1].max() + CELL) / CELL))
@@ -277,6 +287,74 @@ for w in walls:
             w['length'] = w['hi']-w['lo']
 print(f"closed {nclosed} wall ends onto a perpendicular wall")
 
+# ------------------------------------- columns, from the THICKNESS profile
+# A column is not a feature of a wall's face, it is the wall being thicker where
+# a pillar sits in it -- your rule that thickness varies in steps rather than
+# continuously. So it is measured as thickness, station by station.
+#
+# It cannot be measured off the raster. The scan only ever sees the two faces
+# and nothing between them, so a 200 mm wall shows up as two separate 1-cell
+# runs, and raster thickness reads 50 mm for almost every wall. Both faces are
+# located per station in the raw points instead.
+STEP_MIN = 25          # mm of extra thickness before it counts as a step;
+                       # steps here go below 50 mm, so this stays low
+BIN = 0.10             # along-wall station for a local thickness reading
+
+def thickness_profile(w):
+    """Local wall thickness every 100 mm along the wall, from raw points."""
+    ax = w['axis']
+    m = ok & (np.abs(XY[:, ax]-w['c']) < 0.28) & (XY[:, 1-ax] > w['lo']) & \
+        (XY[:, 1-ax] < w['hi']) & (z > 0.40) & (z < H-0.20)
+    if m.sum() < 800: return None, None
+    off = XY[m, ax]-w['c']; al = XY[m, 1-ax]
+    nb = max(int(round((w['hi']-w['lo'])/BIN)), 1)
+    kb = np.clip(((al-w['lo'])/BIN).astype(int), 0, nb-1)
+    prof = np.full(nb, np.nan)
+    order = np.argsort(kb, kind='stable')
+    ks = kb[order]; os_ = off[order]
+    for grp in np.split(np.arange(len(ks)), np.flatnonzero(np.diff(ks))+1):
+        d = os_[grp]
+        if len(d) < 60: continue
+        h, e = np.histogram(d, bins=56, range=(-0.28, 0.28))
+        pk = np.flatnonzero(h > h.max()*0.28)
+        if len(pk) < 2: continue
+        lo_, hi_ = e[pk[0]], e[pk[-1]+1]
+        t = hi_-lo_
+        if 0.08 <= t <= 0.55: prof[ks[grp[0]]] = t
+    fin = np.isfinite(prof)
+    if fin.sum() < 4: return None, None
+    return prof, float(np.median(prof[fin]))
+
+COLS = []
+for wi, w in enumerate(walls, 1):
+    prof, base = thickness_profile(w)
+    if prof is None: continue
+    w['t_base'] = base
+    extra = (prof-base)*1000
+    hot = np.isfinite(extra) & (extra >= STEP_MIN)
+    q = 0
+    while q < len(hot):
+        if not hot[q]: q += 1; continue
+        j = q
+        while j+1 < len(hot) and hot[j+1]: j += 1
+        L = (j-q+1)*BIN
+        if 0.15 <= L <= 2.0:
+            d = float(np.median(extra[q:j+1]))
+            if STEP_MIN <= d <= 400:
+                COLS.append(dict(kind="COLUMN", wall=wi, axis=int(w['axis']),
+                                 c=float(w['c']), t=float(base+d/1000),
+                                 a=float(w['lo']+q*BIN), b=float(w['lo']+(j+1)*BIN),
+                                 z0=0.0, z1=float(H), length_mm=round(L*1000),
+                                 depth_mm=round(d), base_mm=round(base*1000)))
+        q = j+1
+if COLS:
+    dd = [r['depth_mm'] for r in COLS]; bb = [r['base_mm'] for r in COLS]
+    print(f"columns from thickness steps: {len(COLS)}   step median {np.median(dd):.0f} mm "
+          f"(range {min(dd)}-{max(dd)}), wall base median {np.median(bb):.0f} mm")
+    print(f"  site rule: thickness steps at pillars, about 75 mm")
+else:
+    print("columns from thickness steps: none found")
+
 # ------------------------------- what is on each wall FACE, resolved in height
 # The previous pass averaged the face offset over every height at once. That
 # collapses the vertical dimension, so a beam running along a wall -- proud near
@@ -354,16 +432,14 @@ for wi, w in enumerate(walls, 1):
                         v['axis'] != w['axis'] and a-0.10 <= v['c'] <= b+0.10 and
                         v['lo']-0.25 <= w['c'] <= v['hi']+0.25 for v in walls):
                     continue
-                full = zlo <= 0.35 and zhi >= H-0.25
                 if kind == "recess": tag = "NICHE"
-                elif zhi >= H-0.25 and L >= 0.55*w['length'] and Hh <= 1.20: tag = "BEAM"
-                # A proud run metres long and full height is not a column, it is
-                # the wall being thicker over that stretch -- your rule that
-                # thickness varies in steps rather than continuously.
-                elif full and L > 1.50: tag = "STEP"
-                elif full: tag = "COLUMN"
-                elif L > 1.50: tag = "STEP"
-                else: tag = "PILASTER"
+                elif zhi >= H-0.25 and Hh <= 1.20: tag = "BEAM"
+                # Anything else proud is the wall being locally thicker, which
+                # is a column -- and columns are measured properly above, from
+                # the thickness profile, not from one face's relief. Dropping
+                # them here is what stops the same pillar being reported twice,
+                # once per face, as a "pilaster".
+                else: continue
                 FEAT.append(dict(kind=tag, wall=wi, face=side, axis=int(w['axis']),
                                  f=float(f), c=float(w['c']), t=float(w['t']),
                                  a=float(a), b=float(b), z0=float(zlo), z1=float(zhi),
@@ -382,10 +458,10 @@ def dedupe(arr):
                min(q['z1'], r['z1'])-max(q['z0'], r['z0']) > 0.10 for q in out): continue
         out.append(r)
     return out
-FEAT = dedupe(FEAT)
+FEAT = dedupe(FEAT) + COLS
 from collections import Counter
 print("wall features:", dict(Counter(r['kind'] for r in FEAT)))
-for t in ("BEAM", "COLUMN", "PILASTER", "STEP", "NICHE"):
+for t in ("BEAM", "COLUMN", "NICHE"):
     g = [r for r in FEAT if r['kind'] == t]
     if g:
         d = [r['depth_mm'] for r in g]
@@ -401,56 +477,75 @@ def yup(axis, c, t, A, B, z0, z1):
 def kindof(o):
     return "window" if o['sill'] >= 0.60 else "door" if o['width'] <= 1050 else "opening"
 
-narch = 0
+# Each wall is a PARENT node owning its own parts: every solid panel, every
+# arch, every column, niche and beam that sits on it. Panels are no longer
+# merged into one mesh per wall -- a pier beside a door and the spandrel under a
+# window are different pieces of masonry, and a cutlist needs them separately.
+narch = 0; npanel = 0
+byWall = {}
+for r in FEAT: byWall.setdefault(r.get('wall'), []).append(r)
+
+def emit_feature(r, wi):
+    nseq[r['kind']] = nseq.get(r['kind'], 0)+1
+    tag = f"{r['kind']}_{wi:02d}_{nseq[r['kind']]:02d}"
+    if r['kind'] == "COLUMN":
+        # A thickness step straddles the wall's centreline: the pillar IS the
+        # wall, locally fatter, so it is drawn full-thickness on the centreline
+        # rather than hung off one face.
+        G.add_box(f"{tag}_t{round(r['t']*1000)}_step{r['depth_mm']}"
+                  f"_L{r['length_mm']}",
+                  *yup(r['axis'], r['c'], r['t'], r['a'], r['b'], r['z0'], r['z1']))
+        return
+    out = 1.0 if r['f'] > r['c'] else -1.0
+    d = r['depth_mm']/1000
+    off = (r['t']/2 - d/2) if r['kind'] == "NICHE" else (r['t']/2 + d/2)
+    G.add_box(f"{tag}_d{r['depth_mm']}_L{r['length_mm']}_h{r['height_mm']}",
+              *yup(r['axis'], r['c']+out*off, d, r['a'], r['b'], r['z0'], r['z1']))
+
+nseq = {}
+LEAF = 0.040
+ndoor = 0; nwin = 0
 for wi, w in enumerate(walls, 1):
+    first = len(G.parts)
     axis, c, t = w['axis'], w['c'], w['t']
     ops = sorted(w['ops'], key=lambda o: o['a'])
-    acc = G.new_group()
     xs = sorted({w['lo'], w['hi']} | {v for o in ops for v in (o['a'], o['b'])})
     for q in range(len(xs)-1):
         A, B = xs[q], xs[q+1]
         if B-A < 0.02: continue
         cov = [o for o in ops if o['a'] < B-1e-6 and o['b'] > A+1e-6]
         if not cov:
-            G.add_box("", *yup(axis, c, t, A, B, 0.0, H), acc)
+            npanel += 1
+            G.add_box(f"PANEL_{wi:02d}_{npanel:03d}_L{(B-A)*1000:.0f}_t{t*1000:.0f}",
+                      *yup(axis, c, t, A, B, 0.0, H))
         elif cov[0]['sill'] > 0.02:
-            G.add_box("", *yup(axis, c, t, A, B, 0.0, cov[0]['sill']), acc)
-    G.add_group(f"WALL_{wi:02d}_{'X' if axis==0 else 'Y'}"
-                f"_L{w['length']*1000:.0f}_t{t*1000:.0f}", acc)
+            npanel += 1
+            G.add_box(f"SILL_{wi:02d}_{npanel:03d}_L{(B-A)*1000:.0f}"
+                      f"_h{cov[0]['sill']*1000:.0f}",
+                      *yup(axis, c, t, A, B, 0.0, cov[0]['sill']))
     for o in ops:
         narch += 1
-        G.add_box(f"ARCH_{wi:02d}_{kindof(o)}_w{o['width']}"
+        k = kindof(o)
+        G.add_box(f"ARCH_{wi:02d}_{narch:02d}_{k}_w{o['width']}"
                   f"_head{o['head']*1000:.0f}_drop{o['arch']*1000:.0f}",
                   *yup(axis, c, t, o['a'], o['b'], o['head'], H))
-# Every feature hangs off its own wall face, so it moves with the wall and
-# cannot end up floating. A NICHE is cut back INTO the wall; everything else
-# steps OUT of it.
-nseq = {}
-for r in FEAT:
-    nseq[r['kind']] = nseq.get(r['kind'], 0)+1
-    out = 1.0 if r['f'] > r['c'] else -1.0
-    d = r['depth_mm']/1000
-    off = (r['t']/2 - d/2) if r['kind'] == "NICHE" else (r['t']/2 + d/2)
-    G.add_box(f"{r['kind']}_{nseq[r['kind']]:02d}_d{r['depth_mm']}"
-              f"_L{r['length_mm']}_h{r['height_mm']}",
-              *yup(r['axis'], r['c']+out*off, d, r['a'], r['b'], r['z0'], r['z1']))
-
-# Door leaves. The opening is the hole in the wall; the door is the thing that
-# fills it, and the designer's cutlist needs it as its own part.
-LEAF = 0.040
-ndoor = 0
-for wi, w in enumerate(walls, 1):
-    for o in w['ops']:
-        k = kindof(o)
         if k == "door":
             ndoor += 1
-            G.add_box(f"DOOR_{ndoor:02d}_w{o['width']}_h{(o['head']-o['sill'])*1000:.0f}",
-                      *yup(w['axis'], w['c'], LEAF, o['a'], o['b'], o['sill'], o['head']))
+            G.add_box(f"DOOR_{wi:02d}_{ndoor:02d}_w{o['width']}"
+                      f"_h{(o['head']-o['sill'])*1000:.0f}",
+                      *yup(axis, c, LEAF, o['a'], o['b'], o['sill'], o['head']))
         elif k == "window":
-            G.add_box(f"WINDOW_{wi:02d}_w{o['width']}"
+            nwin += 1
+            G.add_box(f"WINDOW_{wi:02d}_{nwin:02d}_w{o['width']}"
                       f"_sill{o['sill']*1000:.0f}_h{(o['head']-o['sill'])*1000:.0f}",
-                      *yup(w['axis'], w['c'], LEAF, o['a'], o['b'], o['sill'], o['head']))
-print(f"door leaves {ndoor}")
+                      *yup(axis, c, LEAF, o['a'], o['b'], o['sill'], o['head']))
+    for r in byWall.get(wi, []):
+        emit_feature(r, wi)
+    G.parent(f"WALL_{wi:02d}_{'X' if axis==0 else 'Y'}"
+             f"_L{w['length']*1000:.0f}_t{t*1000:.0f}", first)
+for r in byWall.get(None, []):
+    emit_feature(r, 0)
+print(f"door leaves {ndoor}   windows {nwin}   panels {npanel}")
 fx0, fx1 = float(XY[:, 0].min()+mins[0]), float(XY[:, 0].max()+mins[0])
 fy0, fy1 = float(XY[:, 1].min()+mins[1]), float(XY[:, 1].max()+mins[1])
 G.add_box("FLOOR", (fx0, -0.05, -fy1), (fx1, 0.0, -fy0))
