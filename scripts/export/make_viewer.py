@@ -13,8 +13,13 @@ rows = [dict(id=w["id"], length=w["length_mm"], thick=w["thickness_mm"],
              ops=[dict(k=o["kind"], w=o["width_mm"], s=o["sill_mm"],
                        h=o["head_mm"], a=o["arch_mm"]) for o in w.get("openings", [])])
         for w in meta.get("walls", [])]
+FEAT = meta.get('features', [])
+_fc = {}
+for r in FEAT: _fc[r['kind']] = _fc.get(r['kind'], 0)+1
 SUM = dict(walls=len(rows), openings=sum(len(r['ops']) for r in rows),
-           niches=len(meta.get('niches', [])), columns=len(meta.get('columns', [])),
+           beams=_fc.get('BEAM', 0), columns=_fc.get('COLUMN', 0),
+           pilasters=_fc.get('PILASTER', 0), steps=_fc.get('STEP', 0),
+           niches=_fc.get('NICHE', 0),
            ceiling=meta.get('clear_height_mm'), pts=CM['n'], cut=CM['cut_mm'])
 
 HTML = r"""<!doctype html>
@@ -90,7 +95,8 @@ const dl=new THREE.DirectionalLight(0xffffff,1.5); dl.position.set(6,12,8); scen
 const dl2=new THREE.DirectionalLight(0xffffff,0.6); dl2.position.set(-7,6,-5); scene.add(dl2);
 scene.add(new THREE.GridHelper(30,60,0x2b3949,0x1b2430));
 let root=null, groups={}, wire=false, edgesOn=true, xray=false;
-const COL={WALL:0xb9c6d4,ARCH:0x8f6fc4,COLUMN:0xcc7a3d,NICHE:0x3d7fc1,
+const COL={WALL:0xb9c6d4,ARCH:0x8f6fc4,BEAM:0xb0577f,COLUMN:0xcc7a3d,
+           PILASTER:0xd9a441,STEP:0x9c8ab0,NICHE:0x3d7fc1,DOOR:0x2f9e6e,WINDOW:0x4fc3d9,
            FLOOR:0x6f7b88,CEILING:0x8a97a6};
 function kindOf(n){for(const k in COL) if(n.startsWith(k)) return k; return 'OTHER';}
 function b64ToBuf(b){const s=atob(b),u=new Uint8Array(s.length);
@@ -180,7 +186,8 @@ document.getElementById('xray').onclick=e=>{xray=!xray; e.target.classList.toggl
 // ---- panel ----
 const rowh=(k,v)=>`<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
 document.getElementById('summary').innerHTML=
-  rowh('Walls',SUM.walls)+rowh('Openings',SUM.openings)+rowh('Columns',SUM.columns)+
+  rowh('Walls',SUM.walls)+rowh('Openings',SUM.openings)+rowh('Beams',SUM.beams)+
+  rowh('Columns',SUM.columns)+rowh('Pilasters',SUM.pilasters)+rowh('Thickness steps',SUM.steps)+
   rowh('Niches',SUM.niches)+rowh('Clear height',SUM.ceiling+' mm');
 document.getElementById('pcN').textContent=(SUM.pts/1000).toFixed(0)+'k';
 document.getElementById('pcCut').textContent=SUM.cut;
@@ -206,6 +213,7 @@ HTML = (HTML.replace("__B64__", b64).replace("__CLOUD__", cloud)
 open("output/viewer.html", "w").write(HTML)
 print(f"wrote output/viewer.html  {os.path.getsize('output/viewer.html')/1e6:.1f} MB")
 print(f"  model {os.path.getsize(GLB)/1024:.0f} KB, {SUM['walls']} walls, "
-      f"{SUM['openings']} openings, {SUM['columns']} columns, {SUM['niches']} niches")
+      f"{SUM['openings']} openings, {SUM['beams']} beams, {SUM['columns']} columns, "
+      f"{SUM['pilasters']} pilasters, {SUM['niches']} niches")
 print(f"  LiDAR {SUM['pts']:,} points, top {SUM['cut']} mm of ceiling cut off")
 print(f"  scan surface {os.path.getsize('output/model/scan_surface.glb')/1e6:.1f} MB")

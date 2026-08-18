@@ -29,11 +29,11 @@ sys.path.insert(0, SC)
 from glb import GLB
 
 CELL = 0.05
-MIN_PTS = 12
+MIN_PTS = 6            # a cell is real material, not a stray return
 MAX_T_CELLS = 8         # 400 mm: longer than this is a wall seen face-on
 BRIDGE = 0.30           # occlusion gaps this short are bridged unconditionally
-OPEN_MIN, OPEN_MAX = 0.55, 3.60
-MIN_LEN = 0.60          # a wall shorter than this is not a wall
+OPEN_MIN, OPEN_MAX = 0.55, 4.50
+MIN_LEN = 0.45          # a wall shorter than this is not a wall
 
 H = json.load(open("output/fp_walls.json"))['clear_height']
 mins = np.array(json.load(open("output/fp_walls.json"))['mins'])
@@ -87,14 +87,29 @@ walls = []
 for axis in (0, 1):
     secs = sections(axis)
     n_along = ny if axis == 0 else nx
-    # bucket by centreline; a wall wanders by at most a cell along its length
-    buckets = {}
-    for (cc, L, a) in secs: buckets.setdefault(int(round(cc)), []).append((cc, L, a))
-    for key in sorted(buckets):
-        for nb in (key-1,):                       # merge with the bucket below
-            if nb in buckets: buckets[key] = buckets.pop(nb) + buckets[key]
-    for key in sorted(buckets):
-        recs = buckets[key]
+    # Group cross-sections into wall lines. Bucketing by rounded centreline and
+    # merging each bucket into the one below chains ALL consecutive buckets
+    # together, so unrelated parallel walls collapsed into one and a 300 mm wall
+    # running 4.7 m went missing entirely. Cluster by centreline proximity
+    # instead: a wall wanders by at most a cell over its length, and two real
+    # walls are never one cell apart.
+    n_perp = nx if axis == 0 else ny
+    S = np.zeros((n_perp+2, n_along), bool)
+    for (cc, L, a) in secs: S[int(round(cc)), a] = True
+    comp, ncomp = ndimage.label(S, np.ones((3, 3), bool))
+    lines = []
+    for ci in range(1, ncomp+1):
+        cells = np.argwhere(comp == ci)
+        lines.append((float(np.median(cells[:, 0])), set(cells[:, 1].tolist())))
+    lines.sort()
+    groups = []
+    for (cen, st) in lines:
+        if groups and abs(cen-groups[-1][0]) <= 1.0:
+            groups[-1] = (groups[-1][0], groups[-1][1] | st)
+        else:
+            groups.append((cen, st))
+    for (gcen, gst) in groups:
+        recs = [(cc, L, a) for (cc, L, a) in secs if a in gst and abs(cc-gcen) <= 1.5]
         if len(recs) < MIN_LEN/CELL: continue
         occ_a = np.zeros(n_along, bool); th = np.zeros(n_along); ctr = np.zeros(n_along)
         for (cc, L, a) in recs:
@@ -117,7 +132,7 @@ for axis in (0, 1):
             if cur is not None and j+1 < n_along:
                 if glen <= BRIDGE:
                     bridged = True                                  # occlusion
-                elif OPEN_MIN <= glen <= OPEN_MAX and lint[kk:j+1].mean() >= 0.50:
+                elif OPEN_MIN <= glen <= OPEN_MAX and lint[kk:j+1].mean() >= 0.35:
                     s, h = zmeasure(axis, c, kk*CELL, (j+1)*CELL)
                     if s is not None:
                         ops.append(dict(a=kk*CELL, b=(j+1)*CELL, sill=s, head=h,
@@ -145,6 +160,51 @@ for w in walls:
         continue
     keep.append(w)
 walls = keep
+# ---------------------------------------------------- rejoin collinear walls
+# A wall interrupted by a door arrives here as two fragments, because the
+# cross-section walk sees no material across the opening. Left alone that both
+# inflates the wall count -- structure the building does not have -- and loses
+# the opening, since a gap only becomes an opening when it falls INSIDE a wall.
+# Rejoin collinear neighbours: a short gap is occlusion, and a door-sized gap
+# with an arch over it is an opening. "Connected like honey unless there is a
+# doorway."
+def lintel_frac(axis, c, a, b):
+    ci = int(round(c/CELL))
+    k0, k1 = int(a/CELL), int(np.ceil(b/CELL))
+    if k1 <= k0: return 0.0
+    sl = above[max(ci-2, 0):ci+3, k0:k1] if axis == 0 else above[k0:k1, max(ci-2, 0):ci+3]
+    return float(sl.any(axis=axis).mean()) if sl.size else 0.0
+
+def rejoin(walls):
+    joined = 0
+    while True:
+        walls.sort(key=lambda w: (w['axis'], round(w['c'], 3), w['lo']))
+        hit = None
+        for i in range(len(walls)-1):
+            a, b = walls[i], walls[i+1]
+            if a['axis'] != b['axis'] or abs(a['c']-b['c']) > 0.08: continue
+            gap = b['lo']-a['hi']
+            if gap < -0.02: continue
+            if gap <= BRIDGE:
+                hit = (i, None); break
+            if OPEN_MIN <= gap <= OPEN_MAX and \
+               lintel_frac(a['axis'], a['c'], a['hi'], b['lo']) >= 0.35:
+                sh = zmeasure(a['axis'], a['c'], a['hi'], b['lo'])
+                if sh[0] is not None:
+                    hit = (i, dict(a=a['hi'], b=b['lo'], sill=sh[0], head=sh[1],
+                                   arch=H-sh[1], width=round(gap*1000)))
+                    break
+        if hit is None: break
+        i, op = hit
+        a, b = walls[i], walls[i+1]
+        a['ops'] = a['ops'] + ([op] if op else []) + b['ops']
+        a['hi'] = b['hi']; a['length'] = a['hi']-a['lo']
+        a['t'] = max(a['t'], b['t'])
+        walls.pop(i+1); joined += 1
+    return joined
+
+nj = rejoin(walls)
+print(f"rejoined {nj} collinear fragments into their parent walls")
 nop = sum(len(w['ops']) for w in walls)
 ts = [w['t']*1000 for w in walls]
 print(f"{len(walls)} walls  ({sum(1 for w in walls if w['axis']==0)} X-const, "
@@ -217,55 +277,120 @@ for w in walls:
             w['length'] = w['hi']-w['lo']
 print(f"closed {nclosed} wall ends onto a perpendicular wall")
 
-# ------------------------------------------------------ niches and columns
-NICHE = []; COL = []
+# ------------------------------- what is on each wall FACE, resolved in height
+# The previous pass averaged the face offset over every height at once. That
+# collapses the vertical dimension, so a beam running along a wall -- proud near
+# the ceiling, wall set back below it -- was invisible, and every feature came
+# back spanning 350-2550 mm because its height was taken from the points in the
+# along-band rather than from where the step actually is.
+#
+# Each face now gets a RELIEF MAP: face offset as a function of (along, height).
+# A step is a rectangle in that map, so it has real bounds both ways:
+#
+#   proud, hugging the ceiling, running most of the wall  -> BEAM
+#   proud, floor to ceiling                               -> COLUMN
+#   proud, bounded                                        -> PILASTER
+#   recessed                                              -> NICHE
+Z0 = 0.10
+def relief(w, f):
+    """(along, height) map of how far the face steps in or out, in mm.
+    +ve = recessed into the wall, -ve = proud of it."""
+    ax = w['axis']; inward = np.sign(w['c']-f)
+    depth_lim = min(0.18, w['t']-0.06)
+    m = ok & (XY[:, 1-ax] > w['lo']+0.03) & (XY[:, 1-ax] < w['hi']-0.03) & \
+        (z > Z0) & (z < H-0.06)
+    if m.sum() < 2000: return None, None, None
+    d = (XY[m, ax]-f)*inward
+    keep = (d > -0.30) & (d < depth_lim)     # room side out to 300 mm, and into
+    if keep.sum() < 2000: return None, None, None   # the wall only as far as its
+    d = d[keep]                                     # own far face, never past it
+    al = XY[m, 1-ax][keep]; zz = z[m][keep]
+    na = int(round((w['hi']-w['lo'])/CELL)); nz = int((H-0.06-Z0)/CELL)+1
+    if na < 4 or nz < 4: return None, None, None
+    ka = np.clip(((al-w['lo'])/CELL).astype(int), 0, na-1)
+    kz = np.clip(((zz-Z0)/CELL).astype(int), 0, nz-1)
+    k = ka*nz + kz
+    srt = np.argsort(k, kind='stable'); ks = k[srt]; ds = d[srt]
+    R = np.full(na*nz, np.nan)
+    for grp in np.split(np.arange(len(ks)), np.flatnonzero(np.diff(ks))+1):
+        R[ks[grp[0]]] = np.median(ds[grp])
+    R = R.reshape(na, nz)
+    fin = np.isfinite(R)
+    if fin.sum() < 40: return None, None, None
+    return (R-np.median(R[fin]))*1000, fin, (na, nz)
+
+FEAT = []
 for wi, w in enumerate(walls, 1):
-    ax = w['axis']
-    for side, f in (('A', w['c']-w['t']/2), ('B', w['c']+w['t']/2)):
-        near = ok & (np.abs(XY[:, ax]-f) < 0.14) & (XY[:, 1-ax] > w['lo']) & \
-               (XY[:, 1-ax] < w['hi']) & (z > 0.30) & (z < H-0.15)
-        if near.sum() < 3000: continue
-        al = XY[near, 1-ax]; offs = XY[near, ax]-f
-        n = int(round((w['hi']-w['lo'])/CELL))
-        if n < 4: continue
-        k = np.floor((al-w['lo'])/CELL).astype(int)
-        good = (k >= 0) & (k < n)
-        prof = np.full(n, np.nan)
-        srt = np.argsort(k[good]); ks = k[good][srt]; os_ = offs[good][srt]
-        for grp in np.split(np.arange(len(ks)), np.flatnonzero(np.diff(ks))+1):
-            prof[ks[grp[0]]] = np.median(os_[grp])
-        rel = (prof-np.nanmedian(prof))*1000 * np.sign(w['c']-f)     # +ve = into wall
-        fin = np.isfinite(rel)
-        for kind, mask in (("niche", fin & (rel > 45)), ("column", fin & (rel < -45))):
-            q = 0
-            while q < n:
-                if not mask[q]: q += 1; continue
-                j = q
-                while j+1 < n and mask[j+1]: j += 1
-                L = (j-q+1)*CELL
-                if 0.20 <= L <= 3.0:
-                    dpt = float(np.nanmedian(np.abs(rel[q:j+1])))
-                    if 45 <= dpt <= 350:
-                        a0 = w['lo']+q*CELL; a1 = w['lo']+(j+1)*CELL
-                        m2 = near & (XY[:, 1-ax] >= a0) & (XY[:, 1-ax] < a1)
-                        zr = z[m2]
-                        z0, z1 = ((float(np.percentile(zr, 2)), float(np.percentile(zr, 98)))
-                                  if m2.sum() > 50 else (0.0, H))
-                        (NICHE if kind == "niche" else COL).append(
-                            dict(wall=wi, face=side, axis=ax, f=float(f), c=float(w['c']),
-                                 t=float(w['t']), a=float(a0), b=float(a1),
-                                 length_mm=round(L*1000), depth_mm=round(dpt),
-                                 z0=float(max(z0, 0.0)), z1=float(min(z1, H))))
-                q = j+1
-def dedupe(arr):            # the same step is seen from both faces of a wall
+    faces = [('A', w['c']-w['t']/2)] + ([('B', w['c']+w['t']/2)] if w['measured'] else [])
+    for side, f in faces:
+        rel, fin, shp = relief(w, f)
+        if rel is None: continue
+        na, nz = shp
+        for kind, mask in (("recess", fin & (rel > 45)), ("proud", fin & (rel < -45))):
+            mask = ndimage.binary_opening(mask, np.ones((2, 2), bool))
+            lab, n = ndimage.label(mask, np.ones((3, 3), bool))
+            for li in range(1, n+1):
+                cells = np.argwhere(lab == li)
+                if len(cells) < 12: continue                 # under 0.03 m2
+                a0c, z0c = cells.min(0); a1c, z1c = cells.max(0)
+                L = (a1c-a0c+1)*CELL; Hh = (z1c-z0c+1)*CELL
+                if L < 0.20 or Hh < 0.20 or L > 6.0: continue
+                dpt = float(np.median(np.abs(rel[lab == li])))
+                if not (45 <= dpt <= 350): continue
+                # A recess cannot be deeper than the wall it is cut into --
+                # that would be a hole, and it means the base plane was taken
+                # off the wrong side of the face.
+                if kind == "recess" and dpt > w['t']*1000-50: continue
+                zlo = Z0+z0c*CELL; zhi = min(Z0+(z1c+1)*CELL, H)
+                a = w['lo']+a0c*CELL; b = w['lo']+(a1c+1)*CELL
+                # A wall butting into this face is a T-junction, not a step in
+                # it: the other wall's cross-section reads as a proud region
+                # ~200 mm long and a full wall thick, which is why "pilasters"
+                # were coming out 257 mm deep against a ~75 mm site rule.
+                # A junction is one wall thick. Anything longer running along
+                # the face is a real step, and a beam necessarily crosses the
+                # walls it spans, so only short regions are tested.
+                if kind == "proud" and L < 0.60 and any(
+                        v['axis'] != w['axis'] and a-0.10 <= v['c'] <= b+0.10 and
+                        v['lo']-0.25 <= w['c'] <= v['hi']+0.25 for v in walls):
+                    continue
+                full = zlo <= 0.35 and zhi >= H-0.25
+                if kind == "recess": tag = "NICHE"
+                elif zhi >= H-0.25 and L >= 0.55*w['length'] and Hh <= 1.20: tag = "BEAM"
+                # A proud run metres long and full height is not a column, it is
+                # the wall being thicker over that stretch -- your rule that
+                # thickness varies in steps rather than continuously.
+                elif full and L > 1.50: tag = "STEP"
+                elif full: tag = "COLUMN"
+                elif L > 1.50: tag = "STEP"
+                else: tag = "PILASTER"
+                FEAT.append(dict(kind=tag, wall=wi, face=side, axis=int(w['axis']),
+                                 f=float(f), c=float(w['c']), t=float(w['t']),
+                                 a=float(a), b=float(b), z0=float(zlo), z1=float(zhi),
+                                 length_mm=round(L*1000), height_mm=round(Hh*1000),
+                                 depth_mm=round(dpt)))
+
+def dedupe(arr):
+    """A step that thickens the wall shows on BOTH faces -- one feature, not two.
+    Only same-kind pairs are merged: a recess on one face and a proud step on the
+    other are different features, not two views of one."""
     out = []
-    for r in sorted(arr, key=lambda q: -(q['b']-q['a'])):
-        if any(q['axis'] == r['axis'] and abs(q['c']-r['c']) < 0.35 and
-               min(q['b'], r['b'])-max(q['a'], r['a']) > 0.10 for q in out): continue
+    for r in sorted(arr, key=lambda q: -(q['b']-q['a'])*(q['z1']-q['z0'])):
+        if any(q['kind'] == r['kind'] and q['axis'] == r['axis'] and
+               abs(q['c']-r['c']) < 0.35 and
+               min(q['b'], r['b'])-max(q['a'], r['a']) > 0.10 and
+               min(q['z1'], r['z1'])-max(q['z0'], r['z0']) > 0.10 for q in out): continue
         out.append(r)
     return out
-NICHE, COL = dedupe(NICHE), dedupe(COL)
-print(f"niches {len(NICHE)}   columns {len(COL)}   (paired across both faces, counted once)")
+FEAT = dedupe(FEAT)
+from collections import Counter
+print("wall features:", dict(Counter(r['kind'] for r in FEAT)))
+for t in ("BEAM", "COLUMN", "PILASTER", "STEP", "NICHE"):
+    g = [r for r in FEAT if r['kind'] == t]
+    if g:
+        d = [r['depth_mm'] for r in g]
+        print(f"  {t:<9} {len(g):>3}   depth median {np.median(d):>3.0f} mm "
+              f"(range {min(d)}-{max(d)}), site rule is a ~75 mm rectangular step")
 
 # ----------------------------------------------------------------- build
 G = GLB()
@@ -297,14 +422,35 @@ for wi, w in enumerate(walls, 1):
         G.add_box(f"ARCH_{wi:02d}_{kindof(o)}_w{o['width']}"
                   f"_head{o['head']*1000:.0f}_drop{o['arch']*1000:.0f}",
                   *yup(axis, c, t, o['a'], o['b'], o['head'], H))
-for i, r in enumerate(COL, 1):
-    out = 1.0 if r['f'] > r['c'] else -1.0; d = r['depth_mm']/1000
-    G.add_box(f"COLUMN_{i:02d}_d{r['depth_mm']}_L{r['length_mm']}",
-              *yup(r['axis'], r['c']+out*(r['t']/2+d/2), d, r['a'], r['b'], r['z0'], r['z1']))
-for i, r in enumerate(NICHE, 1):
-    out = 1.0 if r['f'] > r['c'] else -1.0; d = r['depth_mm']/1000
-    G.add_box(f"NICHE_{i:02d}_d{r['depth_mm']}_L{r['length_mm']}",
-              *yup(r['axis'], r['c']+out*(r['t']/2-d/2), d, r['a'], r['b'], r['z0'], r['z1']))
+# Every feature hangs off its own wall face, so it moves with the wall and
+# cannot end up floating. A NICHE is cut back INTO the wall; everything else
+# steps OUT of it.
+nseq = {}
+for r in FEAT:
+    nseq[r['kind']] = nseq.get(r['kind'], 0)+1
+    out = 1.0 if r['f'] > r['c'] else -1.0
+    d = r['depth_mm']/1000
+    off = (r['t']/2 - d/2) if r['kind'] == "NICHE" else (r['t']/2 + d/2)
+    G.add_box(f"{r['kind']}_{nseq[r['kind']]:02d}_d{r['depth_mm']}"
+              f"_L{r['length_mm']}_h{r['height_mm']}",
+              *yup(r['axis'], r['c']+out*off, d, r['a'], r['b'], r['z0'], r['z1']))
+
+# Door leaves. The opening is the hole in the wall; the door is the thing that
+# fills it, and the designer's cutlist needs it as its own part.
+LEAF = 0.040
+ndoor = 0
+for wi, w in enumerate(walls, 1):
+    for o in w['ops']:
+        k = kindof(o)
+        if k == "door":
+            ndoor += 1
+            G.add_box(f"DOOR_{ndoor:02d}_w{o['width']}_h{(o['head']-o['sill'])*1000:.0f}",
+                      *yup(w['axis'], w['c'], LEAF, o['a'], o['b'], o['sill'], o['head']))
+        elif k == "window":
+            G.add_box(f"WINDOW_{wi:02d}_w{o['width']}"
+                      f"_sill{o['sill']*1000:.0f}_h{(o['head']-o['sill'])*1000:.0f}",
+                      *yup(w['axis'], w['c'], LEAF, o['a'], o['b'], o['sill'], o['head']))
+print(f"door leaves {ndoor}")
 fx0, fx1 = float(XY[:, 0].min()+mins[0]), float(XY[:, 0].max()+mins[0])
 fy0, fy1 = float(XY[:, 1].min()+mins[1]), float(XY[:, 1].max()+mins[1])
 G.add_box("FLOOR", (fx0, -0.05, -fy1), (fx1, 0.0, -fy0))
@@ -330,6 +476,6 @@ json.dump(dict(clear_height_mm=round(H*1000),
                                           head_mm=round(o['head']*1000),
                                           arch_mm=round(o['arch']*1000)) for o in w['ops']])
                       for i, w in enumerate(walls)],
-               niches=NICHE, columns=COL),
+               features=FEAT),
           open("output/model/shell_fp.json", "w"), indent=1)
 print("wrote output/model/shell_fp.json")
