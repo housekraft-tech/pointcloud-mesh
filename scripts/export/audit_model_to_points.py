@@ -49,6 +49,7 @@ def tris(path):
     return np.concatenate(V) if V else np.zeros((0,3,3))
 
 for label,path in (("MODULAR model","output/model/shell_fp.glb"),
+                   ("CELL COMPLEX","output/model/cellcomplex.glb"),
                    ("VOXEL surface","output/model/scan_surface.glb")):
     T=tris(path)
     if not len(T): print(f"{label}: none"); continue

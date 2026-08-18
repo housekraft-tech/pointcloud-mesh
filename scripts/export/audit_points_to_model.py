@@ -44,6 +44,7 @@ def dist_to_boxes(Q, lo, hi, chunk=20000):
     return best
 
 for label,path in (("MODULAR model","output/model/shell_fp.glb"),
+                   ("CELL COMPLEX","output/model/cellcomplex.glb"),
                    ("VOXEL surface","output/model/scan_surface.glb")):
     try:
         lo,hi,names=boxes(path)
@@ -51,7 +52,7 @@ for label,path in (("MODULAR model","output/model/shell_fp.glb"),
         print(f"{label}: {e}"); continue
     if len(lo)==0: print(f"{label}: no boxes"); continue
     # the voxel mesh is 6 huge parts, so its AABBs are meaningless -- skip
-    if len(lo) < 20:
+    if len(lo) < 20 and 'cell' not in path:
         print(f"\n{label}: {len(lo)} parts -- AABBs are whole-scene, not "
               f"per-element, so a box test says nothing. Skipped.")
         continue
