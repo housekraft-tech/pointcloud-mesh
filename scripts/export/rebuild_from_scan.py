@@ -220,7 +220,15 @@ def rejoin(walls):
             dc = abs(a['c']-b['c'])
             if dc > 0.12: continue
             gap = b['lo']-a['hi']
-            if gap < -0.02: continue
+            if gap < -0.02:
+                # Overlapping, not merely adjacent: the same stretch of wall
+                # found twice. Three walls sat on one line here -- span
+                # -0.19..5.01 with 1.53..3.33 and -0.19..0.83 inside it -- and
+                # skipping overlaps left all three. Absorb the shorter into the
+                # longer; the union is the wall.
+                if dc <= 0.08:
+                    hit = (i, None); break
+                continue
             if gap <= BRIDGE:
                 hit = (i, None); break
             # solid all the way across -- the walk lost it at a column, not a door
@@ -237,7 +245,10 @@ def rejoin(walls):
         i, op = hit
         a, b = walls[i], walls[i+1]
         a['ops'] = a['ops'] + ([op] if op else []) + b['ops']
-        a['hi'] = b['hi']; a['length'] = a['hi']-a['lo']
+        # the union: with an absorbed wall b sits INSIDE a, and assigning
+        # b's end outright was truncating a to the shorter of the two
+        a['lo'] = min(a['lo'], b['lo']); a['hi'] = max(a['hi'], b['hi'])
+        a['length'] = a['hi']-a['lo']
         a['t'] = max(a['t'], b['t'])
         walls.pop(i+1); joined += 1
     return joined
