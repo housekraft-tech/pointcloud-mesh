@@ -201,7 +201,7 @@ def solid_frac(axis, c, a, b):
     sl = wallr[max(ci-3, 0):ci+4, k0:k1] if axis == 0 else wallr[k0:k1, max(ci-3, 0):ci+4]
     return float(sl.any(axis=axis).mean()) if sl.size else 0.0
 
-def rejoin(walls):
+def rejoin(walls, dcmax=0.15, ovmax=0.08):
     joined = 0
     while True:
         walls.sort(key=lambda w: (w['axis'], round(w['c'], 3), w['lo']))
@@ -226,7 +226,7 @@ def rejoin(walls):
                 # -0.19..5.01 with 1.53..3.33 and -0.19..0.83 inside it -- and
                 # skipping overlaps left all three. Absorb the shorter into the
                 # longer; the union is the wall.
-                if dc <= 0.08:
+                if dc <= ovmax:
                     hit = (i, None); break
                 continue
             if gap <= BRIDGE:
@@ -326,6 +326,20 @@ for w in walls:
             w[end] += best; nclosed += 1
             w['length'] = w['hi']-w['lo']
 print(f"closed {nclosed} wall ends onto a perpendicular wall")
+
+DC2 = 0.03      # after refine a true duplicate sits at dc ~ 0
+# Rejoin AGAIN, now that the walls sit on the raw points.
+#
+# The first pass runs on raster centrelines, where two records of one wall still
+# differ by a few centimetres and so look like neighbours rather than the same
+# thing. refine() is what snaps each wall onto its measured faces -- and that is
+# exactly when duplicates collapse onto an identical centreline. Ten pairs were
+# reaching the output with dc = 0 and spans overlapping by up to 10.2 m, two of
+# them the same span to the millimetre. Deduplicating before the step that makes
+# duplicates identical could never have caught them.
+nj2 = rejoin(walls, dcmax=DC2, ovmax=DC2)
+print(f"rejoined {nj2} more once the walls sat on the raw points; "
+      f"{len(walls)} walls remain")
 
 # ------------------------------------------------- openings, one last pass
 # Openings were only ever found as a gap BETWEEN two fragments of a wall, which
