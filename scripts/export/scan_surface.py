@@ -137,7 +137,11 @@ for axis in (0, 1, 2):
                     mu = float(MEAN[ids, axis].mean())
                     # the face is half a voxel off the points' mean, on the
                     # outward side; clamp so a bad cell cannot fling it away
-                    cand = mu + sgn*VOX*0.5
+                    # AT the points, not half a voxel outside them. Offsetting
+                    # to the voxel boundary put every face 15 mm proud and made
+                    # every wall 30 mm too thick, which is what made the model
+                    # look wrong when it was the surface that was inflated.
+                    cand = mu
                     if abs(cand-lat) <= VOX: 
                         resid.append(abs(cand-lat)); lat = cand; snapped += 1
                 pv = (lat - lo[axis])/VOX
@@ -154,6 +158,6 @@ for axis in (0, 1, 2):
         G.add_quads(f"SCAN_{'XYZ'[axis]}{'+' if sgn>0 else '-'}", quads, tuple(nrm))
         nq += len(quads)
 sz, parts, tris = G.write("output/model/scan_surface.glb")
-print(f"{nq:,} merged quads -> {tris:,} triangles; {snapped:,} faces snapped "
-      f"off the lattice by a median {np.median(resid)*1000:.1f} mm")
+print(f"{nq:,} merged quads -> {tris:,} triangles; {snapped:,} faces moved off "
+      f"the lattice onto the points by a median {np.median(resid)*1000:.1f} mm")
 print(f"wrote output/model/scan_surface.glb  {sz/1e6:.2f} MB, {parts} parts")
