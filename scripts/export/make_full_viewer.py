@@ -27,7 +27,7 @@ HTML = r"""<!doctype html>
 <div id="app">
   <div id="view">
     <div id="hud">drag to orbit &middot; scroll to zoom &middot; right-drag to pan</div>
-    <div id="load">loading 243 MB&hellip; <span id="pct">0%</span></div>
+    <div id="load">loading 232 MB&hellip; <span id="pct">0%</span></div>
   </div>
   <div id="side">
     <h1>Full cloud</h1>
@@ -76,7 +76,7 @@ async function grab(url,tag){
   const rd=r.body.getReader();
   for(;;){const {done:d,value}=await rd.read(); if(d)break;
     chunks.push(value); got+=value.length;
-    if(len){pct.textContent=Math.round((done+got)/243e6*100)+'%';}}
+    if(len){pct.textContent=Math.round((done+got)/232e6*100)+'%';}}
   done+=got;
   const out=new Uint8Array(got); let o=0;
   for(const c of chunks){out.set(c,o); o+=c.length;}
@@ -106,7 +106,7 @@ Promise.all([grab('full_pos.bin'),grab('full_col.bin')]).then(([pb,cb])=>{
     rowh('Extent X',span[0].toFixed(1)+' m')+
     rowh('Extent Z',span[2].toFixed(1)+' m')+
     rowh('Height',span[1].toFixed(1)+' m')+
-    rowh('Buffers','243 MB');
+    rowh('Buffers','232 MB');
   const clip=document.getElementById('clip'), cv=document.getElementById('clipV');
   function setClip(){const t=clip.value/100;
     const y=M.lo[1]+t*span[1]; clipPlane.constant=y; cv.textContent=y.toFixed(1);}
