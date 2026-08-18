@@ -316,6 +316,109 @@ for w in walls:
             w['length'] = w['hi']-w['lo']
 print(f"closed {nclosed} wall ends onto a perpendicular wall")
 
+# ------------------------------------------------- openings, one last pass
+# Openings were only ever found as a gap BETWEEN two fragments of a wall, which
+# means a door was invisible unless the wall walk happened to split there. It
+# usually did not: rescanning every wall end to end turned up 3 voids in 52
+# walls, because the walk had already bridged the rest.
+#
+# So stop looking at walls and look for the thing itself. A door or a balcony is
+# masonry overhead with nothing underneath -- that is what an opening IS, and it
+# shows up in the rasters directly: `above & ~wallr`. There are 23 such regions
+# of door or balcony proportions, against 8 found the old way. Each is then
+# attached to the collinear wall it belongs to, and a candidate that matches no
+# wall is dropped, which is what filters the spurious ones.
+hole = above & ~wallr
+hlab, hn = ndimage.label(hole, np.ones((3, 3), bool))
+
+def zmeasure_cells(region_id):
+    """Sill and head measured from the candidate's OWN cells.
+
+    The wall-centred version sampled a fixed +/-90 mm slab at the wall's
+    centreline, which is the wrong place: the region has its own position and
+    width, and a lintel that sits off-centre or a slab wider than 180 mm both
+    read as empty. Using the region's cells fixed 13 of 23 candidates."""
+    sel = np.zeros(nx*ny, bool)
+    sel[np.flatnonzero((hlab == region_id).ravel())] = True
+    m = ok & sel[flat]
+    if m.sum() < 40: return None, None
+    zz = z[m]; hz = zz[zz > 1.95]
+    if len(hz) < 25: return None, None
+    head = float(np.percentile(hz, 3))
+    lz = zz[zz < 1.95]
+    sill = float(np.percentile(lz, 97)) if len(lz) >= 50 else 0.0
+    if sill < 0.30: sill = 0.0
+    if head - sill < 0.75: return None, None
+    return sill, head
+cands = []
+for i in range(1, hn+1):
+    cl = np.argwhere(hlab == i)
+    if len(cl) < 6: continue
+    i0, j0 = cl.min(0); i1, j1 = cl.max(0)
+    di, dj = (i1-i0+1)*CELL, (j1-j0+1)*CELL
+    L, T = max(di, dj), min(di, dj)
+    if T > 0.60 or not (OPEN_MIN <= L <= OPEN_MAX): continue
+    ax = 0 if dj > di else 1                       # axis-0 wall: gap runs along Y
+    c = ((i0+i1+1)/2*CELL) if ax == 0 else ((j0+j1+1)/2*CELL)
+    a = (j0*CELL) if ax == 0 else (i0*CELL)
+    b = ((j1+1)*CELL) if ax == 0 else ((i1+1)*CELL)
+    cands.append((ax, c, a, b, L, i))
+
+nfound = 0; nowall = 0; ndup = 0; nzm = 0
+for (ax, c, a, b, L, rid) in cands:
+    best = None
+    for w in walls:
+        if w['axis'] != ax or abs(w['c']-c) > 0.25: continue
+        if w['lo'] > a+0.15 or w['hi'] < b-0.15: continue
+        if best is None or abs(w['c']-c) < abs(best['c']-c): best = w
+    if best is None:
+        nowall += 1
+        if os.environ.get("OP_DEBUG"):
+            near=[(abs(w['c']-c),w['lo'],w['hi']) for w in walls if w['axis']==ax
+                  and abs(w['c']-c)<=0.40]
+            print(f"   NOWALL ax{ax} c={c:+.2f} {a:+.2f}..{b:+.2f} L={L*1000:.0f} "
+                  f"near={sorted(near)[:2]}")
+        continue
+    if any(a < e['b']-0.05 and b > e['a']+0.05 for e in best['ops']):
+        ndup += 1; continue
+    sh = zmeasure_cells(rid)
+    if sh[0] is None:
+        nzm += 1
+        if os.environ.get("OP_DEBUG"):
+            mm = ok & (np.abs(XY[:, ax]-best['c'])<0.09) & (XY[:,1-ax]>a+0.05) & \
+                 (XY[:,1-ax]<b-0.05)
+            zz=z[mm]
+            print(f"   ZMEAS  ax{ax} c={best['c']:+.2f} {a:+.2f}..{b:+.2f} "
+                  f"L={L*1000:.0f} pts={mm.sum()} hi={int((zz>1.95).sum())}")
+        continue
+    best['ops'].append(dict(a=a, b=b, sill=sh[0], head=sh[1],
+                            arch=H-sh[1], width=round((b-a)*1000)))
+    nfound += 1
+# One physical opening can land on two collinear wall fragments -- the same
+# doorway seen from either side of a split. Keep it once, on the longer wall.
+ndd = 0
+for i, w in enumerate(walls):
+    for v in walls[i+1:]:
+        if v['axis'] != w['axis'] or abs(v['c']-w['c']) > 0.40: continue
+        keep, drop = (w, v) if w['length'] >= v['length'] else (v, w)
+        for o in list(drop['ops']):
+            # Same width as well as same place. A 600 mm door overlapping a
+            # 3350 mm opening is two different things, not one counted twice,
+            # and collapsing them loses the door.
+            same = [e for e in keep['ops']
+                    if min(o['b'], e['b'])-max(o['a'], e['a']) > 0.20
+                    and abs((e['b']-e['a'])-(o['b']-o['a'])) <= 0.30*(o['b']-o['a'])]
+            if same:
+                drop['ops'].remove(o); ndd += 1
+
+for w in walls: w['ops'].sort(key=lambda o: o['a'])
+nop = sum(len(w['ops']) for w in walls)
+if ndd: print(f"  dropped {ndd} openings counted twice on collinear fragments")
+print(f"openings: {len(cands)} lintel-with-nothing-under-it candidates, "
+      f"{nfound} new, {ndup} already known, {nzm} no sill/head, "
+      f"{nowall} matched no wall")
+print(f"  {nop} openings in total")
+
 # ------------------------------------- columns, from the THICKNESS profile
 # A column is not a feature of a wall's face, it is the wall being thicker where
 # a pillar sits in it -- your rule that thickness varies in steps rather than
@@ -596,6 +699,7 @@ json.dump(dict(clear_height_mm=round(H*1000),
                            length_mm=round(w['length']*1000),
                            thickness_mm=round(w['t']*1000), both_faces=bool(w['measured']),
                            openings=[dict(kind=kindof(o), width_mm=o['width'],
+                           a_mm=round(o['a']*1000), b_mm=round(o['b']*1000),
                                           sill_mm=round(o['sill']*1000),
                                           head_mm=round(o['head']*1000),
                                           arch_mm=round(o['arch']*1000)) for o in w['ops']])
