@@ -28,7 +28,7 @@ SC = "scripts/export"
 sys.path.insert(0, SC)
 from glb import GLB
 
-VOX = 0.020            # lattice pitch
+VOX = 0.030            # lattice pitch
 MINP = 2               # points before a voxel counts as surface
 MIN_BLOB = 60          # voxels before a connected blob counts as structure
 CUT = 0.12             # ceiling slab removed from the top down
@@ -74,16 +74,19 @@ dropped = int(V.sum() - keep[lab].sum())
 V = keep[lab]
 print(f"cleaned: {nb:,} blobs, dropped {dropped:,} voxels in blobs under "
       f"{MIN_BLOB} ({dropped/max(dropped+V.sum(),1)*100:.1f}% of surface)")
-# Closing bridges any gap up to its own reach, and it cannot tell a pinhole
-# from a real gap. A 5x5x5 pass reaches 2 voxels each way -- at 30 mm that
-# welded shut every gap under 120 mm, so thin walls filled solid, a narrow
-# reveal closed over, and two surfaces 100 mm apart merged into one. It was
-# adding 24% more voxels than the scan actually contains. One 3x3x3 pass only,
-# which reaches a single voxel and closes genuine pinholes.
+# Two closing passes, 3x3x3 then 5x5x5. This is a DELIBERATE trade, chosen for
+# how the surface reads rather than for fidelity. The 5x5x5 pass reaches two
+# voxels each way, so it welds shut every gap under 120 mm: thin walls fill
+# solid, narrow reveals close over, and two surfaces 100 mm apart merge into
+# one. It adds roughly 24% more voxels than the scan contains. What it buys is
+# a continuous, solid-looking surface instead of one broken by real gaps, and
+# that is the version worth looking at side by side with the model.
+# Drop the 5x5x5 line to get the faithful surface back.
 _pre = V.sum()
 V = ndimage.binary_closing(V, np.ones((3, 3, 3), bool))
+V = ndimage.binary_closing(V, np.ones((5, 5, 5), bool))
 print(f"after closing pinholes: {V.sum():,} voxels "
-      f"(+{(V.sum()-_pre)/max(_pre,1)*100:.1f}%)")
+      f"(+{(V.sum()-_pre)/max(_pre,1)*100:.1f}% -- invented, see comment)")
 
 # ---- sub-voxel face positions: the mean point position inside each voxel ----
 # Computed only for occupied voxels, so the whole volume is never held as floats.

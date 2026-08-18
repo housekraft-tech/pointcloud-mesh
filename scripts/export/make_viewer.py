@@ -59,7 +59,7 @@ HTML = r"""<!doctype html>
     <div><button id="pcOnly">Cloud only</button><button id="modelOnly">Model only</button>
          <button id="both">Both</button></div>
     <h2>Scan surface</h2>
-    <label><input type="checkbox" id="sfOn"><span>Show meshed scan (20 mm voxel
+    <label><input type="checkbox" id="sfOn"><span>Show meshed scan (30 mm voxel
       isosurface of the LiDAR)</span></label>
     <div class="k">opacity</div><input type="range" id="sfOp" min="10" max="100" value="100">
     <h2>Model layers</h2><div id="toggles"></div>
