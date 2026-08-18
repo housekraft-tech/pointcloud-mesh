@@ -185,6 +185,22 @@ def lintel_frac(axis, c, a, b):
     sl = above[max(ci-2, 0):ci+3, k0:k1] if axis == 0 else above[k0:k1, max(ci-2, 0):ci+3]
     return float(sl.any(axis=axis).mean()) if sl.size else 0.0
 
+def solid_frac(axis, c, a, b):
+    """How much of this gap is still WALL at body height.
+
+    A gap in a wall line is not automatically an opening. The cross-section walk
+    discards any section thicker than MAX_T_CELLS, so wherever a column makes the
+    wall locally fatter the walk drops those stations and the wall arrives here
+    split in two -- with a "gap" that is in fact solid masonry. Measured: gaps of
+    650-2300 mm between perfectly collinear fragments holding 47,000+ points
+    spread floor to ceiling. Those must be rejoined with NO opening; treating
+    them as doorways is what was inventing walls around the columns."""
+    ci = int(round(c/CELL))
+    k0, k1 = int(np.ceil(a/CELL)), int(b/CELL)
+    if k1 <= k0: return 1.0
+    sl = wallr[max(ci-3, 0):ci+4, k0:k1] if axis == 0 else wallr[k0:k1, max(ci-3, 0):ci+4]
+    return float(sl.any(axis=axis).mean()) if sl.size else 0.0
+
 def rejoin(walls):
     joined = 0
     while True:
@@ -192,12 +208,25 @@ def rejoin(walls):
         hit = None
         for i in range(len(walls)-1):
             a, b = walls[i], walls[i+1]
-            if a['axis'] != b['axis'] or abs(a['c']-b['c']) > 0.08: continue
+            # Two tolerances, because the two merges are different claims.
+            # Across a COLUMN the wall genuinely gets thicker, which moves the
+            # centreline (it is the midpoint of the cross-section), so 150 mm
+            # of drift is expected and merging is still correct. Across a
+            # DOORWAY nothing about the wall changes, so a centreline that has
+            # moved means these are two different walls -- merging them anyway
+            # forces one plane through both and was pushing the worst face
+            # error from 35 mm to 115 mm.
+            if a['axis'] != b['axis']: continue
+            dc = abs(a['c']-b['c'])
+            if dc > 0.12: continue
             gap = b['lo']-a['hi']
             if gap < -0.02: continue
             if gap <= BRIDGE:
                 hit = (i, None); break
-            if OPEN_MIN <= gap <= OPEN_MAX and \
+            # solid all the way across -- the walk lost it at a column, not a door
+            if gap <= 3.00 and solid_frac(a['axis'], a['c'], a['hi'], b['lo']) >= 0.60:
+                hit = (i, None); break
+            if dc <= 0.08 and OPEN_MIN <= gap <= OPEN_MAX and \
                lintel_frac(a['axis'], a['c'], a['hi'], b['lo']) >= 0.35:
                 sh = zmeasure(a['axis'], a['c'], a['hi'], b['lo'])
                 if sh[0] is not None:
