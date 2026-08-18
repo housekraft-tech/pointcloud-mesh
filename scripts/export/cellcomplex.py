@@ -32,6 +32,7 @@ MIN_AREA   = 0.60      # m2 of scanned surface before a plane is real
 MAX_WALL   = 0.45      # a cell thinner than this, between two faces, is masonry
 FACE_SUP   = 0.25      # fraction of a cell face that must be scanned to block
 CUT        = 0.12
+SLAB       = 0.15      # assumed depth of the floor and ceiling slabs
 
 J = json.load(open("output/fp_walls.json")); H = J['clear_height']
 with laspy.open("output/mujammel_aligned_z0.las") as r: p = r.read()
@@ -75,6 +76,13 @@ def planes(ax):
 PL = []
 for ax in (0, 1, 2):
     q = planes(ax)
+    # No slab planes below the floor or above the ceiling. Adding them forces
+    # the slabs solid and then DRAWS their outer faces -- 570 m2 of underside
+    # and roof that the scanner can never see, which took unsupported surface
+    # from 2.1% to 53%. The floor's top face is scanned and gets drawn as the
+    # boundary of the masonry above it; its underside is outside the domain.
+    # This is what CGAL handles by labelling the bounding box external rather
+    # than extracting boundary there.
     q = [lo[ax]-1e-3] + q + [hi[ax]+1e-3]            # bound the volume
     q = sorted(set(round(v, 4) for v in q))
     PL.append(np.array(q))
@@ -87,24 +95,104 @@ def gidx(ax, v):                                     # world -> support grid
     return int(np.clip(round((v-lo[ax])/G), 0, n[ax]-1))
 
 # ---- how much of each cell face is actually scanned ------------------------
-def face_support(ax, pi, b0, b1, c0, c1):
-    """Fraction of this face's area carrying scanned surface."""
+# Precomputed for every face in the complex, not per query: for each plane take
+# the thin slab of occupancy at it, collapse along the plane normal, then
+# aggregate to cell resolution. A face carrying scanned surface is masonry and
+# nothing propagates across it.
+def cell_edges(ax):
+    return np.array([int(np.clip(round((v-lo[ax])/G), 0, n[ax])) for v in PL[ax]])
+EDG = [cell_edges(ax) for ax in (0, 1, 2)]
+
+def face_support_all(ax):
     o = [a for a in (0, 1, 2) if a != ax]
-    i = gidx(ax, PL[ax][pi])
-    sl = [slice(None)]*3
-    sl[ax] = slice(max(i-1, 0), i+2)
-    sl[o[0]] = slice(gidx(o[0], b0), max(gidx(o[0], b1), gidx(o[0], b0)+1))
-    sl[o[1]] = slice(gidx(o[1], c0), max(gidx(o[1], c1), gidx(o[1], c0)+1))
-    blk = OCC[tuple(sl)]
-    if blk.size == 0: return 0.0
-    return float(blk.any(axis=ax).mean())
+    e0, e1 = EDG[o[0]], EDG[o[1]]
+    nb, nc = len(e0)-1, len(e1)-1
+    out = np.zeros((len(PL[ax]), nb, nc), np.float32)
+    for pi, v in enumerate(PL[ax]):
+        i = int(np.clip(round((v-lo[ax])/G), 0, n[ax]-1))
+        sl = [slice(None)]*3
+        sl[ax] = slice(max(i-1, 0), i+2)
+        blk = OCC[tuple(sl)].any(axis=ax).astype(np.float32)   # (o0, o1) at grid res
+        cs = blk.cumsum(0).cumsum(1)
+        cs = np.pad(cs, ((1, 0), (1, 0)))
+        b0 = np.clip(e0, 0, cs.shape[0]-1); c0 = np.clip(e1, 0, cs.shape[1]-1)
+        S = (cs[np.ix_(b0[1:], c0[1:])] - cs[np.ix_(b0[:-1], c0[1:])]
+             - cs[np.ix_(b0[1:], c0[:-1])] + cs[np.ix_(b0[:-1], c0[:-1])])
+        area = np.maximum(np.outer(np.diff(b0), np.diff(c0)), 1)
+        out[pi] = S/area
+    return out
+
+SUP = [face_support_all(ax) for ax in (0, 1, 2)]
+for ax in (0, 1, 2):
+    print(f"  axis {'XYZ'[ax]}: face support computed, "
+          f"{(SUP[ax] >= FACE_SUP).sum():,} faces carry scanned surface")
 
 # ---- label cells ----------------------------------------------------------
 # A room and a wall interior both hold no points -- the scanner sees neither.
-# What separates them is thickness. A cell thin in one axis, with scanned
-# surface on BOTH of its bounding faces, is the inside of a wall.
-solid = np.zeros((nx, ny, nz), bool)
-thin_ax = np.full((nx, ny, nz), -1, np.int8)
+# What separates them is whether the scanner ever saw THROUGH the space. Rays
+# cast from the recovered trajectory carve out everything that was looked
+# through; what is left is either masonry or the world outside the building.
+# Flooding inward from the bounding box separates those two: anything enclosed
+# and never seen through is solid.
+#
+# This replaces the old rule, which called a cell solid only when BOTH of its
+# faces were >=25% scanned and it was under 450 mm thick. That is true of an
+# internal partition and false of every external wall, which is why recall was
+# 50%.
+FS = np.load("output/freespace.npy")
+FM = json.load(open("output/freespace_meta.json"))
+assert FM['G'] == G, "free space grid must match"
+flo = np.array(FM['lo'])
+
+def cell_free(i, j, k):
+    """Fraction of this cell's volume the scanner saw through."""
+    sl = []
+    for ax, q in ((0, i), (1, j), (2, k)):
+        a0 = int(np.clip(round((PL[ax][q]-flo[ax])/G), 0, FS.shape[ax]-1))
+        a1 = int(np.clip(round((PL[ax][q+1]-flo[ax])/G), 0, FS.shape[ax]))
+        sl.append(slice(a0, max(a1, a0+1)))
+    blk = FS[tuple(sl)]
+    return float(blk.mean()) if blk.size else 0.0
+
+FREE_FRAC = float(os.environ.get("FREE_FRAC", 0.95))   # only a genuinely open cell
+free = np.zeros((nx, ny, nz), bool)
+for i in range(nx):
+    for j in range(ny):
+        for k in range(nz):
+            if cell_free(i, j, k) >= FREE_FRAC: free[i, j, k] = True
+print(f"seen through: {free.sum():,} of {nx*ny*nz:,} cells are open space")
+
+# Flood in from the bounding box through everything not carved -- but a face
+# carrying scanned surface is masonry and blocks it. Without that gate the
+# unknown cells form one connected network joining the outside to every wall
+# interior, the flood reaches everything, and 119 cells survive as solid.
+unknown = ~free
+outside = np.zeros_like(unknown)
+outside[0, :, :] |= unknown[0, :, :];   outside[-1, :, :] |= unknown[-1, :, :]
+outside[:, 0, :] |= unknown[:, 0, :];   outside[:, -1, :] |= unknown[:, -1, :]
+outside[:, :, 0] |= unknown[:, :, 0];   outside[:, :, -1] |= unknown[:, :, -1]
+OPEN = [SUP[ax] < FACE_SUP for ax in (0, 1, 2)]     # face is passable
+while True:
+    prev = outside.sum()
+    for ax in (0, 1, 2):
+        for sgn in (+1, -1):
+            src = [slice(None)]*3; dst = [slice(None)]*3; fsl = [slice(None)]*3
+            L = (nx, ny, nz)[ax]
+            if sgn > 0:
+                src[ax] = slice(0, L-1); dst[ax] = slice(1, L); fsl[ax] = slice(1, L)
+            else:
+                src[ax] = slice(1, L); dst[ax] = slice(0, L-1); fsl[ax] = slice(1, L)
+            gate = np.moveaxis(OPEN[ax][1:L], 0, ax)
+            outside[tuple(dst)] |= (outside[tuple(src)] & unknown[tuple(dst)] & gate)
+    if outside.sum() == prev: break
+enclosed = unknown & ~outside
+print(f"outside the building: {outside.sum():,} cells")
+
+# Union the two signals. They fail on opposite cases, so neither alone is
+# enough: face-support needs BOTH faces scanned, which is true of an internal
+# partition and false of every external wall; free-space needs the cell to be
+# properly enclosed, which the flood breaks wherever a face is under-scanned.
+thin = np.zeros((nx, ny, nz), bool)
 for i in range(nx):
     for j in range(ny):
         for k in range(nz):
@@ -112,14 +200,25 @@ for i in range(nx):
             ax = int(np.argmin(d))
             if d[ax] > MAX_WALL: continue
             b, c = [a for a in (0, 1, 2) if a != ax]
-            rng = {0: (PL[0][i], PL[0][i+1]), 1: (PL[1][j], PL[1][j+1]),
-                   2: (PL[2][k], PL[2][k+1])}
+            bi, ci = ((i, j, k)[b], (i, j, k)[c])
             pi = (i, j, k)[ax]
-            s0 = face_support(ax, pi,   *rng[b], *rng[c])
-            s1 = face_support(ax, pi+1, *rng[b], *rng[c])
-            if min(s0, s1) >= FACE_SUP:
-                solid[i, j, k] = True; thin_ax[i, j, k] = ax
+            if min(SUP[ax][pi, bi, ci], SUP[ax][pi+1, bi, ci]) >= FACE_SUP:
+                thin[i, j, k] = True
+print(f"  masonry by two scanned faces : {thin.sum():,} cells")
+print(f"  masonry by being enclosed    : {enclosed.sum():,} cells")
+print(f"  overlap                      : {(thin & enclosed).sum():,}")
+solid = thin | enclosed
 print(f"labelled solid: {solid.sum():,} of {nx*ny*nz:,} cells")
+
+# a solid sliver thicker than any masonry is an unscanned void, not a wall
+for i in range(nx):
+    for j in range(ny):
+        for k in range(nz):
+            if not solid[i, j, k]: continue
+            d = [PL[0][i+1]-PL[0][i], PL[1][j+1]-PL[1][j], PL[2][k+1]-PL[2][k]]
+            if min(d) > MAX_WALL: solid[i, j, k] = False
+print(f"after dropping cells thicker than {MAX_WALL*1000:.0f} mm "
+      f"in every axis: {solid.sum():,}")
 
 # ---- boundary faces between solid and empty -------------------------------
 # Only faces where a solid cell meets an empty one. The faces BETWEEN two solid
