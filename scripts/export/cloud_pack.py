@@ -13,15 +13,26 @@ import numpy as np, laspy, json
 TARGET = 4_000_000
 CUT = 0.12                     # metres of ceiling slab removed, from the top down
 
-# The UNCLEANED aligned scan on purpose. The structural cleanup deletes any
+# The aligned scan, not the v6 structural cleanup. That cleanup deletes any
 # point below 1300 mm that is not beside a floor-to-ceiling column of points --
 # and a balcony parapet or half-height wall has no such column, so it is removed
 # entirely. Measured: 8 wall-like regions, 1.6-2.1 m long, standing to 1270 mm,
 # 0.5 m2 of real wall footprint. This view is meant to BE the scan, so it uses
-# the scan. Loose clutter is the price and it is the right trade here.
+# the scan. Free-standing clutter is removed below by connectivity instead.
 with laspy.open("output/mujammel_aligned_z0.las") as r: p = r.read()
 P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
 rgb = np.column_stack([p.red, p.green, p.blue]).astype(np.float64)
+# Drop only what stands free of the walls -- loose objects and people.
+# See scripts/export/declutter_middle.py: the test is connectivity to the wall
+# network, so a parapet or plinth is kept whole while a chair or a person in the
+# middle of a room goes. The old floor-to-ceiling-column rule deleted parapets.
+import os
+if os.path.exists("output/keep_mask.npy"):
+    _keep = np.load("output/keep_mask.npy")
+    _n0 = len(P)
+    P = P[_keep]; rgb = rgb[_keep]
+    print(f"declutter: dropped {_n0-len(P):,} free-standing points "
+          f"({(_n0-len(P))/_n0*100:.2f}%), walls and parapets untouched")
 H = json.load(open("output/fp_walls.json"))['clear_height']
 keep = P[:, 2] < H - CUT
 print(f"{len(P):,} points, cutting z > {(H-CUT)*1000:.0f} mm removes "
