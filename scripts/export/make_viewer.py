@@ -5,9 +5,9 @@ import base64, json, os
 
 GLB = "output/model/shell_fp.glb"
 b64 = base64.b64encode(open(GLB, 'rb').read()).decode()
-cloud = base64.b64encode(open("/tmp/cloud.bin", 'rb').read()).decode()
+cloud = base64.b64encode(open("output/cloud.bin", 'rb').read()).decode()
 surf = base64.b64encode(open("output/model/scan_surface.glb", 'rb').read()).decode()
-CM = json.load(open("/tmp/cloud_meta.json"))
+CM = json.load(open("output/cloud_meta.json"))
 meta = json.load(open("output/model/shell_fp.json"))
 rows = [dict(id=w["id"], length=w["length_mm"], thick=w["thickness_mm"],
              ops=[dict(k=o["kind"], w=o["width_mm"], s=o["sill_mm"],

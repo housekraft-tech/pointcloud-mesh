@@ -12,7 +12,7 @@ and a height clip lets you cut down through the flat.
 """
 import base64, json, os
 
-CM = json.load(open("/tmp/cloud_meta.json"))
+CM = json.load(open("output/cloud_meta.json"))
 
 HTML = r"""<!doctype html>
 <meta charset="utf-8">
@@ -40,7 +40,7 @@ HTML = r"""<!doctype html>
   <div id="side">
     <h1>Meshed scan</h1>
     <div style="color:#8fa3bb">The LiDAR only. No walls, no model, nothing
-    inferred &mdash; a 40&nbsp;mm isosurface of the scan's own occupancy.</div>
+    inferred &mdash; a 30&nbsp;mm isosurface of the scan's own occupancy.</div>
     <h2>Stats</h2><div id="stats"></div>
     <h2>Show</h2>
     <label><input type="checkbox" id="mOn" checked><span>Meshed scan</span></label>

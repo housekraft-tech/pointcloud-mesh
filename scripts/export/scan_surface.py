@@ -29,14 +29,17 @@ sys.path.insert(0, SC)
 from glb import GLB
 
 VOX = 0.030            # lattice pitch
-MINP = 4               # points before a voxel counts as surface
+MINP = 2               # points before a voxel counts as surface
 MIN_BLOB = 60          # voxels before a connected blob counts as structure
 CUT = 0.12             # ceiling slab removed from the top down
 
 H = json.load(open("output/fp_walls.json"))['clear_height']
 with laspy.open("output/mujammel_structural_v6.las") as r: p = r.read()
 P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
+print(f"input: {len(P):,} points read from the LAS -- the FULL cloud, not the "
+      f"thinned copy the viewer displays")
 P = P[P[:, 2] < H - CUT]
+print(f"       {len(P):,} below the ceiling cut, all of them meshed")
 lo = P.min(0) - VOX
 n = np.ceil((P.max(0) + VOX - lo)/VOX).astype(int) + 1
 idx = np.floor((P - lo)/VOX).astype(np.int64)
@@ -55,6 +58,7 @@ V = keep[lab]
 print(f"cleaned: {nb:,} blobs, dropped {dropped:,} voxels in blobs under "
       f"{MIN_BLOB} ({dropped/max(dropped+V.sum(),1)*100:.1f}% of surface)")
 V = ndimage.binary_closing(V, np.ones((3, 3, 3), bool))
+V = ndimage.binary_closing(V, np.ones((5, 5, 5), bool))
 print(f"after closing pinholes: {V.sum():,} voxels")
 
 # ---- sub-voxel face positions: the mean point position inside each voxel ----
