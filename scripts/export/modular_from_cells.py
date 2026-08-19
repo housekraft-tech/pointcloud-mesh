@@ -210,6 +210,43 @@ for _ in range(40):
 parts = [pt for i, pt in enumerate(parts) if alive[i]]
 print(f"merged slivers under {MIN_PART_L:.0f} L: {n0} parts -> {len(parts)}")
 
+# Rejoin one wall that was claimed by several plane pairs.
+#
+# Thinnest-first assignment means a narrower pair can win over part of a wall --
+# a band where skirting, a slight bulge or a beam shifts the face plane -- so
+# the wall arrives as vertical fragments. WALL_048 was z 621-861 and WALL_049
+# z 901-1180: the same wall, two pairs, two parts. They are collinear and they
+# overlap in plan; nothing else in a building does that.
+def part_geom(ax, cells):
+    o = o_of[ax]
+    hax = o[0] if o[0] != 2 else o[1]
+    c = (PL[ax][cells[:, ax].min()] + PL[ax][cells[:, ax].max()+1])/2
+    return c, PL[hax][cells[:, hax].min()], PL[hax][cells[:, hax].max()+1], hax
+
+BRIDGE = 1.20            # a doorway-sized gap is still one wall
+nb0 = len(parts)
+while True:
+    hit = None
+    G_ = [part_geom(ax, cs)+(t,) for (ax, cs, t) in parts]
+    for x in range(len(parts)):
+        for y in range(x+1, len(parts)):
+            if parts[x][0] != parts[y][0]: continue
+            cx, ax0, bx, hx, tx = G_[x]
+            cy, ay0, by, hy, ty = G_[y]
+            if hx != hy: continue
+            if abs(cx-cy) > max(0.04, 0.30*min(tx, ty)): continue
+            gap = max(ax0, ay0) - min(bx, by)
+            if gap > BRIDGE: continue
+            hit = (x, y); break
+        if hit: break
+    if not hit: break
+    x, y = hit
+    ax_, csx, tx = parts[x]; _, csy, ty = parts[y]
+    keep_t = tx if len(csx) >= len(csy) else ty
+    parts[x] = (ax_, np.vstack([csx, csy]), keep_t)
+    parts.pop(y)
+print(f"rejoined walls split across plane pairs: {nb0} -> {len(parts)}")
+
 seq = {}; rows = []
 for (ax, cells, tpair) in parts:
     kind, t, span, other = classify(ax, cells)
@@ -229,7 +266,16 @@ for (ax, cells, tpair) in parts:
                       *yup(q0[0], q1[0], q0[1], q1[1], q0[2], q1[2]))
             v += (q1[0]-q0[0])*(q1[1]-q0[1])*(q1[2]-q0[2])
     G.parent(f"{nm}_t{t*1000:.0f}_L{span*1000:.0f}_v{v*1000:.0f}L", first)
+    o = o_of[ax]
+    ctr = (PL[ax][cells[:, ax].min()] + PL[ax][cells[:, ax].max()+1])/2
+    # the horizontal axis of a vertical wall is whichever of the two is not z
+    hax = o[0] if o[0] != 2 else o[1]
+    a0 = float(PL[hax][cells[:, hax].min()]); a1 = float(PL[hax][cells[:, hax].max()+1])
+    z0 = float(PL[2][cells[:, 2].min()]); z1 = float(PL[2][cells[:, 2].max()+1])
     rows.append(dict(name=nm, kind=kind, axis=int(ax),
+                     centre_mm=round(float(ctr)*1000),
+                     a_mm=round(a0*1000), b_mm=round(a1*1000),
+                     z0_mm=round(z0*1000), z1_mm=round(z1*1000),
                      thickness_mm=round(t*1000), span_mm=round(span*1000),
                      other_mm=round(other*1000), volume_l=round(v*1000, 1),
                      boxes=len(G.parts)-first))
