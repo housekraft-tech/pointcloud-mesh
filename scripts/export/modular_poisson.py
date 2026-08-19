@@ -53,7 +53,15 @@ JOIN_GAP   = 1.30     # m: two runs on the same pair of planes with a gap this
 PAR_MIN    = 1.00     # m: a parapet (half-height wall) must be at least this long
 PAR_ZMIN   = 0.45     # m: and this tall
 MAX_THICK  = 0.45     # m: thicker than this is not one wall
-MIN_THICK  = 0.04     # m
+MIN_THICK  = 0.08     # m: thinner than this is not masonry. Two scans of one
+                      # flat disagreed on thickness by 86 mm at the median, and
+                      # the thin readings were all a panel standing off a wall
+                      # being paired as its far face.
+MODE_TOL   = 0.030    # m: how close a candidate must be to one of the
+                      # building's own thicknesses to be preferred as one
+PAIR_ZCOVER = 0.70    # the opposite face must span this much of the face's own
+                      # height. A wall is bounded by a wall; a wardrobe front
+                      # stops at 2 m and is not the other side of anything.
 STATION    = 0.05     # m: station spacing along a face when pairing
 SLAB_CELL  = 0.05     # m: slab height-map cell
 SLAB_STEP  = 0.030    # m: height step that breaks a plateau
@@ -143,11 +151,36 @@ def levels(N, C, A):
 
 
 # --------------------------------------------------------------- planes ----
-# Poisson normals point INTO the material, not into the room: the floor's
-# normals read -z and the ceiling's +z, because the reconstruction treats the
-# space the scanner walked as the outside of the solid. So a face plane's
-# material lies on the side its normal points to, and two faces bound one wall
-# when they face each other across a gap narrower than a wall.
+# A face plane's material lies on the side its normal points to, and two faces
+# bound one wall when they face each other across a gap narrower than a wall.
+# Which side that is depends on the mesh's global orientation, and Poisson's
+# is arbitrary -- it follows whichever way the input normals were oriented, so
+# two meshes of the same flat can come out opposite. orient() settles it
+# against the floor, which is the one surface whose material side is known.
+
+
+def orient(N, T, C, z_floor):
+    """Make the normals point INTO the material, using the floor to decide.
+
+    Everything downstream -- which side of a face is masonry, which face is the
+    other side of a wall, how thick that wall is -- inverts with this sign. The
+    floor settles it: whatever else is uncertain, the material under a floor is
+    below it. On a mesh that comes out the other way, both the normals and the
+    triangle winding are flipped, so the exported parts still face outward.
+    """
+    band = (np.abs(N[:, 2]) > 0.85) & (C[:, 2] < z_floor + 0.10)
+    if band.sum() < 100:
+        log("orientation: too little floor to check -- assuming normals point "
+            "into the material")
+        return N, T
+    nz = float(np.mean(N[band, 2]))
+    if nz < 0:
+        log(f"orientation: floor normals read {nz:+.2f}, pointing down into the "
+            f"ground -- normals already point into the material")
+        return N, T
+    log(f"orientation: floor normals read {nz:+.2f}, pointing up into the room "
+        f"-- flipping the mesh so normals point into the material")
+    return -N, T[:, ::-1].copy()
 
 def face_planes(N, C, A, z_floor, z_ceil):
     """Every wall face: an axis, a side, and a coordinate, found by area."""
@@ -179,9 +212,12 @@ def face_planes(N, C, A, z_floor, z_ceil):
                 core = np.abs(c - mid[j]) < 0.02
                 if a[core].sum() < 0.2*a[band].sum():
                     core = band
+                z = C[tris, 2]
                 out.append(dict(axis=ax, sign=sgn,
                                 coord=float(np.average(c[core], weights=a[core])),
-                                tris=tris, area=float(a[band].sum())))
+                                tris=tris, area=float(a[band].sum()),
+                                z0=float(np.percentile(z, 1)),
+                                z1=float(np.percentile(z, 99))))
     out.sort(key=lambda f: -f["area"])
     log(f"{len(out)} face planes "
         + ", ".join(f"{sum(1 for f in out if f['axis']==ax and f['sign']==s)}"
@@ -194,6 +230,44 @@ def profile(f, C, A, lo, hi):
     al = C[f["tris"], 1-f["axis"]]
     idx = np.clip(((al - lo)/STATION).astype(int), 0, int((hi-lo)/STATION))
     return np.bincount(idx, weights=A[f["tris"]], minlength=int((hi-lo)/STATION)+1)
+
+
+def thickness_modes(planes, prof, st_area):
+    """The thicknesses this building was actually built with.
+
+    Choosing the NEAREST opposite face makes a wardrobe standing 80 mm off a
+    wall into that wall's far side, and two scans of one flat then disagree
+    about thickness by 86 mm. A building does not have arbitrary thicknesses:
+    it has two or three, repeated everywhere. Those repeats are found here as
+    the peaks of the candidate histogram, weighted by how many stations support
+    each candidate, and a candidate near a peak is then preferred over a nearer
+    one that matches nothing else in the building.
+    """
+    h = np.zeros(int(MAX_THICK/0.01)+1)
+    for i, f in enumerate(planes):
+        for j, g in enumerate(planes):
+            if g["axis"] != f["axis"] or g["sign"] == f["sign"]:
+                continue
+            t = (g["coord"] - f["coord"])*f["sign"]
+            if not (MIN_THICK < t < MAX_THICK):
+                continue
+            n = min(len(prof[i]), len(prof[j]))
+            sup = int(((prof[i][:n] > st_area) & (prof[j][:n] > st_area)).sum())
+            if sup:
+                h[int(t/0.01)] += sup
+    if h.sum() == 0:
+        return []
+    sm = np.convolve(h, np.ones(3), "same")
+    modes = []
+    for b in np.argsort(-sm):
+        if sm[b] < 0.15*sm.max() or any(abs(b*0.01 - m) < 0.05 for m in modes):
+            continue
+        modes.append(b*0.01 + 0.005)
+        if len(modes) == 4:
+            break
+    log("thicknesses this building repeats: "
+        + ", ".join(f"{m*1000:.0f} mm" for m in sorted(modes)))
+    return sorted(modes)
 
 
 def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
@@ -213,24 +287,35 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
         prof.append(profile(f, C, A, lo[1-f["axis"]], hi[1-f["axis"]]))
     ST_AREA = 0.002          # m2 of surface in a 50 mm station = material there
 
+    modes = thickness_modes(planes, prof, ST_AREA)
+
     runs = []
     for i, f in enumerate(planes):
         L0 = lo[1-f["axis"]]
         has = prof[i] > ST_AREA
         partner = np.full(len(has), -1, np.int64)
         thick = np.zeros(len(has))
+        score = np.full(len(has), 1e9)
         for j, g in enumerate(planes):
             if g["axis"] != f["axis"] or g["sign"] == f["sign"]:
                 continue
             t = (g["coord"] - f["coord"])*f["sign"]      # material side of f
             if not (MIN_THICK < t < MAX_THICK):
                 continue
+            span = f["z1"] - f["z0"]
+            cover = min(f["z1"], g["z1"]) - max(f["z0"], g["z0"])
+            if span > 0.1 and cover < PAIR_ZCOVER*span:
+                continue
             pj = prof[j]
             n = min(len(has), len(pj))
             # the opposite face may be occluded for a few stations; smear it
             gh = np.convolve((pj > ST_AREA).astype(float), np.ones(7), "same")[:n] > 0
-            take = has[:n] & gh & ((partner[:n] < 0) | (t < thick[:n]))
-            partner[:n][take] = j; thick[:n][take] = t
+            # rank: a thickness the building repeats beats a nearer one that
+            # matches nothing, and among equals the thinner wins
+            near = min((abs(t-m) for m in modes), default=1e9)
+            rank = (0.0 if near < MODE_TOL else 1.0) + t/100.0
+            take = has[:n] & gh & ((partner[:n] < 0) | (rank < score[:n]))
+            partner[:n][take] = j; thick[:n][take] = t; score[:n][take] = rank
         # cut the face into runs of constant partner
         cut = np.r_[True, (partner[1:] != partner[:-1]) | (~has[1:]) | (~has[:-1])]
         starts = np.flatnonzero(cut & has)
@@ -378,9 +463,13 @@ def fuse_walls(walls, C, A, label, name_of):
         # Prefer a thickness that was MEASURED between a pair of faces during
         # detection. The outer span of the fused parts is an upper bound: it
         # also spans whatever sits between two walls that flank a duct.
-        ts = sorted(w["thickness"] for w in ws if w["thickness"])
-        t = ts[len(ts)//2] if ts else float(c_hi - c_lo - 0.06)
-        head["thickness"] = t if t > MIN_THICK else None
+        ts = [(float(A[label == w["part_id"]].sum()), w["thickness"])
+              for w in ws if w["thickness"]]
+        if ts:
+            t = max(ts)[1]                    # the best-supported measurement
+        else:
+            t = float(c_hi - c_lo - 0.06)     # only an upper bound: no pair
+        head["thickness"] = t if MIN_THICK < t < MAX_THICK else None
         head["planes"] = sorted({q for w in ws for q in w["planes"]})
         head["z0"] = min(w["z0"] for w in ws); head["z1"] = max(w["z1"] for w in ws)
         for w in ws:
@@ -987,6 +1076,7 @@ def main(argv=None):
     log(f"manhattan yaw {yaw:+.2f} deg -- rotating the scan onto its own axes")
     V, N, C = rotate(V, N, C, yaw)
     z_floor, z_ceil = levels(N, C, A)
+    N, T = orient(N, T, C, z_floor)
 
     label = np.full(len(T), -1, np.int64)
     name_of = []
@@ -1028,11 +1118,18 @@ def main(argv=None):
                           faces_seen=len(w["planes"]),
                           axis="xy"[w["axis"]],
                           length_mm=round(w["length"]*1000),
+                          across_m=[round(w["c_lo"], 4), round(w["c_hi"], 4)],
+                          along_m=[round(w["s0"], 4), round(w["s1"], 4)],
                           z_mm=[round((w["z0"]-z_floor)*1000), round((w["z1"]-z_floor)*1000)],
                           tris=int(idx.sum()), area_m2=round(float(A[idx].sum()), 2)))
     for c in ceil + floor:
         idx = label == c["part_id"]
+        cij = c["cells"]*SLAB_CELL
         parts.append(dict(name=c["name"], kind=c.get("kind", "floor"),
+                          centre_m=[round(float(cij[:, 0].mean()), 3),
+                                    round(float(cij[:, 1].mean()), 3)],
+                          extent_m=[round(float(np.ptp(cij[:, 0])), 2),
+                                    round(float(np.ptp(cij[:, 1])), 2)],
                           height_mm=round((c["z"]-z_floor)*1000, 1),
                           drop_mm=c.get("drop_mm"),
                           area_m2=round(c["area"], 2), flat_mm=round(c["flat_mm"], 1),
