@@ -42,6 +42,7 @@ vol = DD[0]*DD[1]*DD[2]
 # a time sliced every wall into ~60 mm laminations: 7,549 parts with a median
 # "thickness" of 60 mm. A wall is all of its cells, through the full thickness.
 parts = []
+claimed = np.zeros_like(solid)
 for ax in (0, 1, 2):
     mine = solid & (amin == ax)
     if not mine.any(): continue
@@ -71,6 +72,44 @@ for ax in (0, 1, 2):
             if len(sub) < 4: continue
             if PL[ax][run[-1]+1]-PL[ax][run[0]] > 0.60: continue   # not masonry
             parts.append((ax, sub))
+            claimed[sub[:, 0], sub[:, 1], sub[:, 2]] = True
+# Nothing may be dropped. The filters above discard small and over-thick
+# fragments, and those cells are still masonry -- the scan sits on them. Left
+# out, the modular model missed 22.5% of the scan where the cell complex it is
+# built from missed 7.2%. Every unclaimed solid cell is gathered up here, so the
+# parts partition the masonry exactly rather than approximately.
+# Absorbed into whichever part they touch, not emitted as parts of their own.
+# Left as separate parts they took the count from 634 to 1,640 -- a fragment
+# beside a wall belongs to that wall, it is not a component of the building.
+left = solid & ~claimed
+if left.any():
+    owner = np.zeros(solid.shape, np.int32)
+    for pi, (ax_, cs) in enumerate(parts, 1):
+        owner[cs[:, 0], cs[:, 1], cs[:, 2]] = pi
+    st2 = ndimage.generate_binary_structure(3, 1)
+    n0 = int(left.sum())
+    for _ in range(60):
+        if not left.any(): break
+        grown = ndimage.grey_dilation(owner, footprint=st2)
+        take = left & (grown > 0)
+        if not take.any(): break
+        owner[take] = grown[take]; left &= ~take
+    add = {}
+    for pi in range(1, len(parts)+1):
+        extra = np.argwhere((owner == pi) & ~claimed)
+        if len(extra): add[pi-1] = extra
+    for k, extra in add.items():
+        ax_, cs = parts[k]
+        parts[k] = (ax_, np.vstack([cs, extra]))
+    print(f"  {n0:,} cells unclaimed by the filters, absorbed into the part "
+          f"each one touches ({len(add)} parts grew); {int(left.sum()):,} orphaned")
+    if left.any():
+        lab2, nb2 = ndimage.label(left, st2)
+        for c in range(1, nb2+1):
+            cs = np.argwhere(lab2 == c)
+            ax2 = int(np.bincount(amin[cs[:, 0], cs[:, 1], cs[:, 2]],
+                                  minlength=3).argmax())
+            parts.append((ax2, cs))
 print(f"{len(parts):,} connected masonry parts")
 
 o_of = {0: (1, 2), 1: (0, 2), 2: (0, 1)}

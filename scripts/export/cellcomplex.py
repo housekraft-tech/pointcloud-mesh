@@ -204,12 +204,27 @@ print(f"outside the building: {outside.sum():,} cells")
 D = [np.diff(PL[ax]) for ax in (0, 1, 2)]
 DD = np.stack(np.meshgrid(D[0], D[1], D[2], indexing='ij'))
 amin = DD.argmin(0); dmin = DD.min(0)
+# A wall is a CONTIGUOUS SLAB and the per-cell vote does not know that: where
+# the scan is thin a cell fails the threshold and the wall comes out perforated,
+# which then shatters into dozens of parts under face-connectivity. Closing
+# within the plane of each slab knits those breaks back.
+#
+# Closing ONLY -- never binary_fill_holes. A doorway is a hole in a wall slab,
+# and filling holes bricks up every door: precision fell from 6.4% to 34.9%
+# unsupported when I tried it. Never across the normal either, which would fuse
+# parallel walls.
+def consolidate(m3, ax, k=3):
+    out = np.moveaxis(m3, ax, 0).copy()
+    ker = np.ones((k, k), bool)
+    for i in range(out.shape[0]):
+        if out[i].any(): out[i] = ndimage.binary_closing(out[i], ker)
+    return np.moveaxis(out, 0, ax)
+
 thin = np.zeros((nx, ny, nz), bool)
 for ax in (0, 1, 2):
-    o = [a for a in (0, 1, 2) if a != ax]
     both = np.minimum(SUP[ax][:-1], SUP[ax][1:]) >= FACE_SUP   # (cells_ax, o0, o1)
     both = np.moveaxis(both, 0, ax)
-    thin |= (amin == ax) & (dmin <= MAX_WALL) & both
+    thin |= consolidate((amin == ax) & (dmin <= MAX_WALL) & both, ax)
 print(f"  masonry by two scanned faces : {thin.sum():,} cells")
 print(f"  masonry by being enclosed    : {enclosed.sum():,} cells")
 print(f"  overlap                      : {(thin & enclosed).sum():,}")
