@@ -99,8 +99,10 @@ geometry of every part.
     venv311\Scripts\python.exe scripts\export\solidify_walls.py --dir output\model\poisson_modular --cache output\model\poisson.npz
     venv311\Scripts\python.exe scripts\exportake_rgb.py --dir output\model\poisson_modular --cache output\model\poisson.npz --las <scan.las>
     venv311\Scripts\python.exe scripts\export\modular_viewer.py output\model\poisson_modular output\model\poisson.npz
-    venv311\Scripts\python.exe scripts\exportender_modular.py output\model\poisson_modular output\model\poisson.npz
-    venv311\Scripts\python.exe scripts\exportender_wall_elevation.py output\model\poisson_modular output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\export
+ender_modular.py output\model\poisson_modular output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\export
+ender_wall_elevation.py output\model\poisson_modular output\model\poisson.npz
     venv311\Scripts\python.exe scripts\export\make_index.py
 
 Those settings matter. `PM_VOXEL=0.008` with `PM_DEPTH=12` roughly doubles the
@@ -190,11 +192,25 @@ pipeline can measure. `compare_models.py` registers them and reports:
 
 ## Result
 
-On koushik's fine mesh (14.2 M triangles): 82 parts — 39 walls, 20 floors, 22
-ceilings of which 2 beams and 7 dropped, 1 column. 50 features: 16 doors, 5
-windows, 1 arch, 8 niches, 11 pilasters. Clear height 2700 mm. **98.6%** of the
-scanned surface is in a named part and the parts leave **8 triangles** of gap
-between them. 39/39 walls solidify watertight, 39.1 m³ of masonry.
+Both scans, built at 8 mm / depth 12:
 
-On mujammel: 78 parts — 32 walls, 23 floors, 21 ceilings, 2 columns; 50 features;
-98.5% of 19.8 M triangles in a named part; colour baked at a 5.2 mm median.
+| | koushik | mujammel |
+|---|---|---|
+| mesh | 14.2 M triangles | 27.4 M triangles |
+| parts | 82 | 80 |
+| walls | 39 | 34 |
+| floors / ceilings | 20 / 22 (2 beams, 7 dropped) | 22 / 22 (2 beams, 7 dropped) |
+| columns | 1 | 2 |
+| features | 50 | 54 |
+| thicknesses repeated | 145 / 195 / 245 mm | 195 / 255 mm |
+| clear height | 2740 mm | 2745 mm |
+| surface in a named part | 98.6% | 98.7% |
+| gap between parts | 8 triangles | 11 triangles |
+| solids | 39/39 watertight, 39.1 m³ | 34/34 watertight, 46.4 m³ |
+| colour | scan has none | baked, 5.1 mm median |
+
+The drawing says 150 / 200 / 244 mm walls; the site report says 2747 mm clear.
+
+Output folders: `output/model/poisson_modular_fine/` (koushik) and
+`output/model/poisson_modular_muj_fine/` (mujammel). `output/model/index.html`
+lists every build with its numbers and pictures.
