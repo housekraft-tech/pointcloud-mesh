@@ -41,12 +41,20 @@ try:
     C = C/(65535.0 if C.max() > 255 else 255.0)
 except Exception:
     C = None
-if os.path.exists("output/keep_mask.npy"):
+if os.path.exists("output/keep_mask.npy") and os.environ.get("PM_MASK", "1") == "1":
     k = np.load("output/keep_mask.npy")
     if len(k) == len(P):
         P = P[k]; C = C[k] if C is not None else None
         stage(f"declutter: dropped {(~k).sum():,} free-standing points")
-H = json.load(open("output/fp_walls.json"))['clear_height']
+if os.path.exists("output/fp_walls.json"):
+    H = json.load(open("output/fp_walls.json"))['clear_height']
+else:
+    # No measured shell yet: take the ceiling off the height histogram itself.
+    # The 99.5th percentile sits on the ceiling slab; anything above it is the
+    # neighbouring building seen through a balcony, and is not this flat.
+    H = float(np.percentile(P[:, 2], 99.5)) - float(np.percentile(P[:, 2], 0.5))
+    P[:, 2] -= float(np.percentile(P[:, 2], 0.5))
+    stage(f"no fp_walls.json: clear height taken as {H*1000:.0f} mm from the scan")
 m = P[:, 2] < H-CUT
 P = P[m]; C = C[m] if C is not None else None
 stage(f"{len(P):,} points below the ceiling cut")
