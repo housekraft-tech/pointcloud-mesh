@@ -28,9 +28,9 @@ from glb import GLB
 
 G          = 0.02      # support grid
 MERGE      = 0.015     # planes closer than this are the same plane
-MIN_AREA   = 0.60      # m2 of scanned surface before a plane is real
+MIN_AREA   = float(os.environ.get("MIN_AREA", 0.30))   # m2 before a plane is real
 MAX_WALL   = 0.45      # a cell thinner than this, between two faces, is masonry
-FACE_SUP   = 0.25      # fraction of a cell face that must be scanned to block
+FACE_SUP   = float(os.environ.get("FACE_SUP", 0.15))  # face scanned this much = masonry
 CUT        = 0.12
 SLAB       = 0.15      # assumed depth of the floor and ceiling slabs
 
@@ -56,7 +56,11 @@ print(f"occupancy {n[0]}x{n[1]}x{n[2]} @ {G*1000:.0f} mm, {OCC.sum():,} cells")
 def planes(ax):
     other = [a for a in (0, 1, 2) if a != ax]
     area = OCC.sum(axis=tuple(other)) * G*G          # m2 per slab
-    thr = max(MIN_AREA, area.max()*0.04)
+    # A fixed area threshold, not a fraction of the largest slab. The relative
+    # term put the cut at 0.77 m2, and the peak count falls off a cliff there:
+    # 0.77 -> 67 planes, 0.60 -> 124. Real wall faces were sitting just under it,
+    # and a wall whose faces are not both detected never becomes a cell.
+    thr = MIN_AREA
     pk = [i for i in range(1, len(area)-1)
           if area[i] >= thr and area[i] >= area[i-1] and area[i] > area[i+1]]
     out = []
@@ -144,22 +148,27 @@ FM = json.load(open("output/freespace_meta.json"))
 assert FM['G'] == G, "free space grid must match"
 flo = np.array(FM['lo'])
 
-def cell_free(i, j, k):
-    """Fraction of this cell's volume the scanner saw through."""
-    sl = []
-    for ax, q in ((0, i), (1, j), (2, k)):
-        a0 = int(np.clip(round((PL[ax][q]-flo[ax])/G), 0, FS.shape[ax]-1))
-        a1 = int(np.clip(round((PL[ax][q+1]-flo[ax])/G), 0, FS.shape[ax]))
-        sl.append(slice(a0, max(a1, a0+1)))
-    blk = FS[tuple(sl)]
-    return float(blk.mean()) if blk.size else 0.0
-
 FREE_FRAC = float(os.environ.get("FREE_FRAC", 0.95))   # only a genuinely open cell
-free = np.zeros((nx, ny, nz), bool)
-for i in range(nx):
-    for j in range(ny):
-        for k in range(nz):
-            if cell_free(i, j, k) >= FREE_FRAC: free[i, j, k] = True
+# Vectorised over every cell at once with a 3D summed-area table -- a Python
+# loop over half a million cells, each taking a numpy slice, is minutes.
+CS = np.zeros((FS.shape[0]+1, FS.shape[1]+1, FS.shape[2]+1), np.int32)
+CS[1:, 1:, 1:] = FS
+np.cumsum(CS, axis=0, out=CS); np.cumsum(CS, axis=1, out=CS)
+np.cumsum(CS, axis=2, out=CS)
+E = []
+for ax in (0, 1, 2):
+    e = np.clip(np.round((PL[ax]-flo[ax])/G).astype(int), 0, FS.shape[ax])
+    e[1:] = np.maximum(e[1:], e[:-1]+1)
+    E.append(np.clip(e, 0, FS.shape[ax]))
+a0, a1 = E[0][:-1][:, None, None], E[0][1:][:, None, None]
+b0, b1 = E[1][:-1][None, :, None], E[1][1:][None, :, None]
+c0, c1 = E[2][:-1][None, None, :], E[2][1:][None, None, :]
+def blk(i, j, k): return CS[i, j, k]
+tot = (blk(a1,b1,c1)-blk(a0,b1,c1)-blk(a1,b0,c1)-blk(a1,b1,c0)
+       +blk(a0,b0,c1)+blk(a0,b1,c0)+blk(a1,b0,c0)-blk(a0,b0,c0))
+vol = np.maximum((a1-a0)*(b1-b0)*(c1-c0), 1)
+free = (tot/vol) >= FREE_FRAC
+del CS
 print(f"seen through: {free.sum():,} of {nx*ny*nz:,} cells are open space")
 
 # Flood in from the bounding box through everything not carved -- but a face
@@ -192,18 +201,15 @@ print(f"outside the building: {outside.sum():,} cells")
 # enough: face-support needs BOTH faces scanned, which is true of an internal
 # partition and false of every external wall; free-space needs the cell to be
 # properly enclosed, which the flood breaks wherever a face is under-scanned.
+D = [np.diff(PL[ax]) for ax in (0, 1, 2)]
+DD = np.stack(np.meshgrid(D[0], D[1], D[2], indexing='ij'))
+amin = DD.argmin(0); dmin = DD.min(0)
 thin = np.zeros((nx, ny, nz), bool)
-for i in range(nx):
-    for j in range(ny):
-        for k in range(nz):
-            d = [PL[0][i+1]-PL[0][i], PL[1][j+1]-PL[1][j], PL[2][k+1]-PL[2][k]]
-            ax = int(np.argmin(d))
-            if d[ax] > MAX_WALL: continue
-            b, c = [a for a in (0, 1, 2) if a != ax]
-            bi, ci = ((i, j, k)[b], (i, j, k)[c])
-            pi = (i, j, k)[ax]
-            if min(SUP[ax][pi, bi, ci], SUP[ax][pi+1, bi, ci]) >= FACE_SUP:
-                thin[i, j, k] = True
+for ax in (0, 1, 2):
+    o = [a for a in (0, 1, 2) if a != ax]
+    both = np.minimum(SUP[ax][:-1], SUP[ax][1:]) >= FACE_SUP   # (cells_ax, o0, o1)
+    both = np.moveaxis(both, 0, ax)
+    thin |= (amin == ax) & (dmin <= MAX_WALL) & both
 print(f"  masonry by two scanned faces : {thin.sum():,} cells")
 print(f"  masonry by being enclosed    : {enclosed.sum():,} cells")
 print(f"  overlap                      : {(thin & enclosed).sum():,}")
@@ -211,12 +217,7 @@ solid = thin | enclosed
 print(f"labelled solid: {solid.sum():,} of {nx*ny*nz:,} cells")
 
 # a solid sliver thicker than any masonry is an unscanned void, not a wall
-for i in range(nx):
-    for j in range(ny):
-        for k in range(nz):
-            if not solid[i, j, k]: continue
-            d = [PL[0][i+1]-PL[0][i], PL[1][j+1]-PL[1][j], PL[2][k+1]-PL[2][k]]
-            if min(d) > MAX_WALL: solid[i, j, k] = False
+solid &= dmin <= MAX_WALL
 print(f"after dropping cells thicker than {MAX_WALL*1000:.0f} mm "
       f"in every axis: {solid.sum():,}")
 

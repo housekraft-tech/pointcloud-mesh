@@ -58,6 +58,10 @@ HTML = r"""<!doctype html>
     <div class="k">brightness</div><input type="range" id="pcDim" min="10" max="100" value="70">
     <div><button id="pcOnly">Cloud only</button><button id="modelOnly">Model only</button>
          <button id="both">Both</button></div>
+    <h2>Cell complex</h2>
+    <label><input type="checkbox" id="ccOn"><span>Show cell-complex shell
+      (watertight, plane-partitioned)</span></label>
+    <div class="k">opacity</div><input type="range" id="ccOp" min="10" max="100" value="100">
     <h2>Scan surface</h2>
     <label><input type="checkbox" id="sfOn"><span>Show meshed scan (30 mm voxel
       isosurface of the LiDAR)</span></label>
@@ -146,6 +150,20 @@ new GLTFLoader().parse(buf,"",g=>{
 document.getElementById('sfOn').onchange=e=>{if(surf)surf.visible=e.target.checked;};
 document.getElementById('sfOp').oninput=e=>{const f=e.target.value/100;
   if(surf)surf.traverse(o=>{if(o.isMesh){o.material.transparent=f<1;
+    o.material.opacity=f; o.material.depthWrite=f>=1;}});};
+
+// ---- the cell complex: the watertight shell, for comparison --------------
+let cc=null;
+fetch('model/cellcomplex.glb').then(r=>r.arrayBuffer()).then(buf=>
+new GLTFLoader().parse(buf,"",g=>{
+  cc=g.scene; cc.visible=false;
+  cc.traverse(o=>{ if(o.isMesh) o.material=new THREE.MeshStandardMaterial(
+    {color:0xd98a4f,roughness:0.9,metalness:0.0,side:THREE.DoubleSide}); });
+  scene.add(cc);
+}));
+document.getElementById('ccOn').onchange=e=>{if(cc)cc.visible=e.target.checked;};
+document.getElementById('ccOp').oninput=e=>{const f=e.target.value/100;
+  if(cc)cc.traverse(o=>{if(o.isMesh){o.material.transparent=f<1;
     o.material.opacity=f; o.material.depthWrite=f>=1;}});};
 
 // ---- LiDAR: Int16 positions dequantised against the cloud's own bbox ----
