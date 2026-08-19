@@ -172,8 +172,15 @@ def face_planes(N, C, A, z_floor, z_ceil):
                 if a[band].sum() < FACE_AREA:
                     continue
                 tris = m[band]
+                # The face position is the PEAK of the histogram refined over a
+                # narrow window, not the mean of the whole band: relief is all
+                # on one side of a face, so a band-wide mean is pulled into the
+                # masonry and every thickness comes out ~20 mm too big.
+                core = np.abs(c - mid[j]) < 0.02
+                if a[core].sum() < 0.2*a[band].sum():
+                    core = band
                 out.append(dict(axis=ax, sign=sgn,
-                                coord=float(np.average(c[band], weights=a[band])),
+                                coord=float(np.average(c[core], weights=a[core])),
                                 tris=tris, area=float(a[band].sum())))
     out.sort(key=lambda f: -f["area"])
     log(f"{len(out)} face planes "
