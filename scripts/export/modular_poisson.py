@@ -71,10 +71,14 @@ COL_TOUCH  = 0.30     # m: must reach this close to both floor and ceiling
 COL_VERT   = 0.55     # frac of a column's surface that must be vertical
 SPECK_AREA = 0.05     # m2: a connected piece smaller than this is Poisson dust
 LEVEL_SAME = 0.025    # m: plateaus within this of each other are one surface
-GROW_WALL  = 0.25     # m: how far off its planes a wall may grow. This is the
-                      # depth of a reveal or a boxed conduit; beyond it lies
-                      # whatever was standing against the wall, and a curtain
-                      # absorbed into a wall part is worse than a missing one.
+GROW_OUT   = 0.10     # m: how far INTO THE ROOM a wall may grow -- a skirting,
+                      # a cornice, the lip of a reveal. Beyond it stands the
+                      # furniture, and a curtain absorbed into a wall is worse
+                      # than a missing one.
+GROW_IN    = 0.35     # m: how far INTO THE MASONRY it may grow, for the wall
+                      # whose far face was never seen. Relief cuts inwards, so
+                      # this is the direction that has to stay generous.
+GROW_ALONG = 0.30     # m: past the ends of the run
 GROW_SLAB  = 0.55     # m: how far below its level a ceiling may grow (beam drop)
 GROW_FLOOR = 0.20     # m
 GROW_COL   = 0.20     # m beyond the column footprint
@@ -298,6 +302,15 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
         w["z0"] = float(z.min()); w["z1"] = float(z.max())
         w["length"] = float(length)
         w["c_lo"] = float(c_lo); w["c_hi"] = float(c_hi)
+        # how far this wall may reach when the seams are grown: into the
+        # masonry generously, into the room hardly at all
+        if w["thickness"] is None:
+            f = ps[0]
+            w["g_lo"] = c_lo - (GROW_IN if f["sign"] < 0 else GROW_OUT)
+            w["g_hi"] = c_hi + (GROW_IN if f["sign"] > 0 else GROW_OUT)
+        else:
+            w["g_lo"] = c_lo - GROW_OUT
+            w["g_hi"] = c_hi + GROW_OUT
         w["part_id"] = len(name_of)
         w["name"] = f"{w['kind']}_{len(keep):02d}"
         label[m] = w["part_id"]
@@ -353,6 +366,8 @@ def fuse_walls(walls, C, A, label, name_of):
         head["s0"] = min(w["s0"] for w in ws); head["s1"] = max(w["s1"] for w in ws)
         head["length"] = head["s1"] - head["s0"]
         head["c_lo"] = c_lo; head["c_hi"] = c_hi
+        head["g_lo"] = min(w["g_lo"] for w in ws)
+        head["g_hi"] = max(w["g_hi"] for w in ws)
         # Prefer a thickness that was MEASURED between a pair of faces during
         # detection. The outer span of the fused parts is an upper bound: it
         # also spans whatever sits between two walls that flank a duct.
@@ -364,6 +379,10 @@ def fuse_walls(walls, C, A, label, name_of):
         for w in ws:
             if w is not head:
                 label[label == w["part_id"]] = head["part_id"]
+                # the absorbed part must not keep a wall name: the renumbering
+                # below reuses those names, and two parts answering to one name
+                # is how a lookup lands on an empty part
+                name_of[w["part_id"]] = f"_absorbed_{w['part_id']:03d}"
         out.append(head)
     # renumber so the names run in order of size again
     out.sort(key=lambda w: -float(A[label == w["part_id"]].sum()))
@@ -620,7 +639,7 @@ def grow(label, ea, eb, C, walls, ceil, floor, cols, z_floor, z_ceil):
     for w in walls:
         i = w["part_id"]
         kind[i] = 0; ax[i] = w["axis"]
-        c_lo[i] = w["c_lo"]; c_hi[i] = w["c_hi"]
+        c_lo[i] = w["g_lo"]; c_hi[i] = w["g_hi"]
         s_lo[i] = w["s0"]; s_hi[i] = w["s1"]
     for c in ceil:
         kind[c["part_id"]] = 1; lvl[c["part_id"]] = c["z"]
@@ -649,8 +668,8 @@ def grow(label, ea, eb, C, walls, ceil, floor, cols, z_floor, z_ceil):
             a0 = ax[pw]
             cc = np.where(a0 == 0, p[w, 0], p[w, 1])
             ss = np.where(a0 == 0, p[w, 1], p[w, 0])
-            ok[w] = ((cc > c_lo[pw] - GROW_WALL) & (cc < c_hi[pw] + GROW_WALL) &
-                     (ss > s_lo[pw] - GROW_WALL) & (ss < s_hi[pw] + GROW_WALL) &
+            ok[w] = ((cc > c_lo[pw]) & (cc < c_hi[pw]) &
+                     (ss > s_lo[pw] - GROW_ALONG) & (ss < s_hi[pw] + GROW_ALONG) &
                      (p[w, 2] > z_floor - 0.05) & (p[w, 2] < z_ceil + 0.10))
         c = k == 1
         if c.any():

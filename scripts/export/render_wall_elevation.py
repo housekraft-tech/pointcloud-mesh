@@ -45,6 +45,10 @@ for ax, nm in zip(axes, pick):
     face = 0.5*(e[:-1]+e[1:])[np.argmax(h)]
     keep = np.abs(cc-face) < 0.30
     al, cc, z = al[keep], cc[keep], z[keep]
+    if al.size < 50:
+        ax.set_title(f"{nm}: too little surface to unfold", fontsize=8)
+        ax.axis("off")
+        continue
     nu = max(2, int(np.ceil(np.ptp(al)/CELL))); nv = max(2, int(np.ceil(np.ptp(z)/CELL)))
     iu = np.clip(((al-al.min())/CELL).astype(int), 0, nu-1)
     iv = np.clip(((z-z.min())/CELL).astype(int), 0, nv-1)
