@@ -21,7 +21,7 @@ Grouping: a solid cell is thinnest along one axis, and that axis is the normal
 of the masonry it belongs to. Cells sharing a normal, sharing the same pair of
 bounding planes, and touching each other are one wall.
 """
-import sys, json, numpy as np
+import sys, os, json, numpy as np
 from scipy import ndimage
 sys.path.insert(0, "scripts/export")
 from glb import GLB
@@ -34,8 +34,36 @@ print(f"{solid.sum():,} solid cells in a {nx} x {ny} x {nz} complex")
 
 D = [np.diff(PL[ax]) for ax in (0, 1, 2)]
 DD = np.stack(np.meshgrid(D[0], D[1], D[2], indexing='ij'))
-amin = DD.argmin(0)                       # the wall normal for each cell
 vol = DD[0]*DD[1]*DD[2]
+
+# The wall normal is the direction in which the MASONRY is thinnest, not the
+# direction in which the individual cell is thinnest. A 200 mm wall spans
+# several plane intervals, and a cell inside it can easily be thinner in some
+# other direction wherever planes happen to be dense -- so per-cell argmin
+# assigned different normals to cells of the same wall and split it into 60 mm
+# laminations. Measure instead how far the solid run extends through each cell
+# along each axis, and take the shortest.
+def run_thickness(ax):
+    m = np.moveaxis(solid, ax, 0)
+    d = np.moveaxis(np.broadcast_to(DD[ax], solid.shape), ax, 0)
+    L = m.shape[0]
+    up = np.zeros(m.shape, np.float32)
+    acc = np.zeros(m.shape[1:], np.float32)
+    for i in range(L):
+        acc = np.where(m[i], acc + d[i], 0.0); up[i] = acc
+    dn = np.zeros(m.shape, np.float32)
+    acc = np.zeros(m.shape[1:], np.float32)
+    for i in range(L-1, -1, -1):
+        acc = np.where(m[i], acc + d[i], 0.0); dn[i] = acc
+    tot = up + dn - np.moveaxis(np.broadcast_to(DD[ax], solid.shape), ax, 0)
+    return np.moveaxis(tot, 0, ax)
+
+RT = np.stack([run_thickness(ax) for ax in (0, 1, 2)])
+RT[:, ~solid] = 1e9
+amin = RT.argmin(0)                       # the wall normal for each cell
+thick = RT.min(0)
+print(f"masonry run thickness: median {np.median(thick[solid])*1000:.0f} mm, "
+      f"90th {np.percentile(thick[solid], 90)*1000:.0f} mm")
 
 # Connect in 3D, not per plane-interval. Planes are dense enough that a 200 mm
 # wall spans several intervals along its own normal, so grouping one interval at
@@ -114,8 +142,21 @@ print(f"{len(parts):,} connected masonry parts")
 
 o_of = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
 def classify(ax, cells):
+    """Thickness is the typical depth of the masonry, not the extent of the
+    part. Once slivers are merged a part is no longer a single clean slab, and
+    measuring corner to corner along its normal reported an 11.4 m wall. Take
+    the median run of cells through the thickness instead, which is what a
+    tape measure would read."""
     o = o_of[ax]
-    t = PL[ax][cells[:, ax].max()+1] - PL[ax][cells[:, ax].min()]
+    key = cells[:, o[0]].astype(np.int64)*100000 + cells[:, o[1]]
+    ordk = np.argsort(key, kind='stable')
+    k2 = key[ordk]
+    runs = np.split(cells[ordk][:, ax], np.flatnonzero(np.diff(k2))+1)
+    depths = []
+    for r in runs:
+        u = np.unique(r)
+        depths.append(PL[ax][u.max()+1]-PL[ax][u.min()])
+    t = float(np.median(depths)) if depths else 0.0
     e0 = PL[o[0]][cells[:, o[0]].min()], PL[o[0]][cells[:, o[0]].max()+1]
     e1 = PL[o[1]][cells[:, o[1]].min()], PL[o[1]][cells[:, o[1]].max()+1]
     d0, d1 = e0[1]-e0[0], e1[1]-e1[0]
@@ -143,6 +184,50 @@ def greedy(mask):
             while a+h < R and m[a+h, b:b+w].all(): h += 1
             m[a:a+h, b:b+w] = False; out.append((a, b, h, w)); b += w
     return out
+
+# Merge slivers into the part they touch.
+#
+# The grouping was producing 911 parts, but half the masonry sits in the largest
+# 22 of them and 440 parts are under 5 litres holding 0.66 m3 between them --
+# 1.8% of the volume in 48% of the parts. Those are not components of the
+# building, they are the ragged edge of the labelling. Each is absorbed into its
+# largest neighbour, so no cell is lost and the count reflects structure.
+MIN_PART_L = float(os.environ.get("MIN_PART_L", 150))
+
+def part_volume(cells):
+    return float(vol[cells[:, 0], cells[:, 1], cells[:, 2]].sum())*1000
+
+owner = np.full(solid.shape, -1, np.int32)
+for pi, (ax_, cs) in enumerate(parts):
+    owner[cs[:, 0], cs[:, 1], cs[:, 2]] = pi
+vols = [part_volume(cs) for (ax_, cs) in parts]
+alive = [True]*len(parts)
+st1 = ndimage.generate_binary_structure(3, 1)
+n0 = len(parts)
+for _ in range(40):
+    order = sorted((v, i) for i, v in enumerate(vols)
+                   if alive[i] and v < MIN_PART_L)
+    if not order: break
+    merged = 0
+    for v, pi in order:
+        if not alive[pi] or vols[pi] >= MIN_PART_L: continue
+        cs = parts[pi][1]
+        m = np.zeros(solid.shape, bool)
+        m[cs[:, 0], cs[:, 1], cs[:, 2]] = True
+        ring = ndimage.binary_dilation(m, st1) & ~m
+        nb = owner[ring]
+        nb = nb[(nb >= 0) & (nb != pi)]
+        if not len(nb): continue
+        cand = [(vols[q], q) for q in set(nb.tolist()) if alive[q]]
+        if not cand: continue
+        _, best = max(cand)
+        parts[best] = (parts[best][0], np.vstack([parts[best][1], cs]))
+        owner[cs[:, 0], cs[:, 1], cs[:, 2]] = best
+        vols[best] += vols[pi]
+        alive[pi] = False; merged += 1
+    if not merged: break
+parts = [pt for i, pt in enumerate(parts) if alive[i]]
+print(f"merged slivers under {MIN_PART_L:.0f} L: {n0} parts -> {len(parts)}")
 
 seq = {}; rows = []
 for (ax, cells) in parts:
