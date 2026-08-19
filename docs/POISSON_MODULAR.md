@@ -28,47 +28,67 @@ geometry of every part.
 2. **Levels.** Floor and ceiling are the two peaks of horizontal surface *area*
    against height.
 
-3. **Faces.** Poisson normals point **into the material**, not into the room —
-   the floor reads −z and the ceiling +z, because the reconstruction treats the
-   space the scanner walked as the outside of the solid. So a face plane's
-   material lies on the side its normal points to, and two faces bound one wall
-   when they face each other across less than a wall's width.
+3. **Orientation — settle this before anything else.** A face plane's material
+   lies on the side its normal points to, and *which* side that is depends on
+   the mesh's global orientation. Poisson's is **arbitrary**: it follows
+   whichever way the input normals were oriented, and two meshes of the same
+   flat came out opposite. Every pairing decision inverts with that sign — on
+   the flipped mesh the pairing found almost nothing, and mujammel came out with
+   25 walls and a thickness "vocabulary" of 75 mm. The floor settles it:
+   whatever else is uncertain, the material under a floor is below it. Where the
+   floor's normals point up, the normals and the triangle winding are flipped.
 
-4. **Walls.** Every 50 mm station along a face chooses its own opposite face —
-   the nearest one carrying material there. Thickness is therefore measured per
-   station, and a wall is cut only where that choice changes. A doorway does not
-   end a wall: runs on the same pair of planes with a door's width between them
-   are rejoined. Afterwards, parts that face each other across a wall are fused,
-   because the far side of a corridor wall is broken into a face per room and no
-   run-to-run pairing can match more than one of them.
+4. **Faces.** Each face is an axis, a side and a coordinate, taken from the
+   area-weighted histogram of surface across that axis. The coordinate is the
+   **peak** refined over a ±20 mm window, not the mean of the band: relief cuts
+   into the masonry, so a band-wide mean is pulled inwards and every thickness
+   comes out about 20 mm too big.
 
-5. **Slabs.** Horizontal triangles are gridded and grown into plateaus. Height
+5. **Walls.** Every 50 mm station along a face chooses its own opposite face, so
+   thickness is measured per station and a wall is cut only where that choice
+   changes. Three rules make that choice survive contact with a furnished flat:
+
+   - a doorway does not end a wall — runs on the same pair of planes with a
+     door's width between them are rejoined;
+   - the opposite face must span at least 70% of the face's own height — a wall
+     is bounded by a wall, while a wardrobe front stops at 2 m;
+   - a candidate whose thickness matches one the **building repeats** beats a
+     nearer one that matches nothing. A building has two or three thicknesses,
+     used everywhere; they are found as the peaks of the candidate histogram.
+     On koushik those peaks are 95 / 195 / 245 mm against a drawing that says
+     150 / 200 / 244.
+
+   Afterwards, parts that face each other across a wall are fused, because the
+   far side of a corridor wall is broken into a face per room and no run-to-run
+   pairing can match more than one of them.
+
+6. **Slabs.** Horizontal triangles are gridded and grown into plateaus. Height
    clustering cannot separate a beam from its ceiling — the histogram is
-   continuous — but a plateau is bounded by a vertical step, which region growing
-   finds. A long narrow plateau hanging below the highest ceiling is a **beam**;
-   a wide one is a **dropped ceiling**.
+   continuous — but a plateau is bounded by a vertical step, which region
+   growing finds. A long narrow plateau hanging below the highest ceiling is a
+   **beam**; a wide one is a **dropped ceiling**.
 
-6. **Columns.** Tall near-square clusters that reach both floor and ceiling and
+7. **Columns.** Tall near-square clusters that reach both floor and ceiling and
    whose surface is mostly vertical.
 
-7. **The seam pass — this is the one that matters.** A plane band cuts the mesh
-   at a flat boundary, and every fillet, jamb return, reveal and arch soffit in a
-   junction falls outside every band by construction. Those are exactly the
+8. **The seam pass — this is the one that matters.** A plane band cuts the mesh
+   at a flat boundary, and every fillet, jamb return, reveal and arch soffit in
+   a junction falls outside every band by construction. Those are exactly the
    triangles that make a model read as one house rather than a set of panels. So
    after the geometric labelling, every unclaimed triangle that *touches* a part
-   grows into it, bounded by how far that kind of part may reach: 250 mm off a
-   wall's planes (a reveal, not a curtain), 550 mm below a ceiling level (a beam
-   drop), 200 mm around a floor.
+   grows into it, bounded by how far that kind of part may reach. That bound is
+   asymmetric for walls: 350 mm into the masonry, because relief cuts inwards,
+   and 100 mm into the room, because beyond that stands the furniture.
 
-8. **What is left** is attached to nothing structural, and only that is dropped.
+9. **What is left** is attached to nothing structural, and only that is dropped.
 
-9. **Relief.** Each wall is unfolded onto its near face as a depth map in
-   (along, height). A cell with no surface is a void — an opening if material
-   spans over it. The top of the void, column by column, is a flat lintel or a
-   curved **arch**. A cell deeper than the wall's own surface is a **niche**, one
-   standing proud a **pilaster**. Depth is measured against the median of the
-   face, not against the fitted plane, or a wall whose plane sits on the far
-   face reads as one enormous niche.
+10. **Relief.** Each wall is unfolded onto its near face as a depth map in
+    (along, height). A cell with no surface is a void — an opening if material
+    spans over it. The top of the void, column by column, is a flat lintel or a
+    curved **arch**. A cell deeper than the wall's own surface is a **niche**,
+    one standing proud a **pilaster**. Depth is measured against the median of
+    the face, not against the fitted plane, or a wall whose plane sits on the
+    far face reads as one enormous niche.
 
 ## Running it
 

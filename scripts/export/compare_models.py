@@ -90,6 +90,24 @@ def wall_lines(man, R=None, t=None):
     return out
 
 
+def overlay(WA, WB, path):
+    """Both models' wall lines on one plan -- the agreement, seen."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(9, 9))
+    for W, col, lw, lab in ((WA, "#1f6feb", 3.0, "A"), (WB, "#e0533d", 1.6, "B")):
+        for i, w in enumerate(W):
+            xs = [w["c"], w["c"]] if w["axis"] == 0 else [w["s0"], w["s1"]]
+            ys = [w["s0"], w["s1"]] if w["axis"] == 0 else [w["c"], w["c"]]
+            ax.plot(xs, ys, color=col, lw=lw, solid_capstyle="butt",
+                    label=lab if i == 0 else None)
+    ax.set_aspect("equal"); ax.legend(); ax.grid(alpha=.2)
+    ax.set_title("wall lines of the two scans, registered")
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    print(f"wrote {path}")
+
+
 def main():
     manA, PA = wall_plan(A_DIR, A_CACHE)
     manB, PB = wall_plan(B_DIR, B_CACHE)
@@ -167,6 +185,8 @@ def main():
                     key=lambda f: -f["width_mm"])
         print(f"  {tag}: " + ", ".join(f"{f['kind'][0]}{f['width_mm']}x{f['height_mm']}"
                                        for f in op))
+
+    overlay(WA, WB, A_DIR/"compare_plan.png")
 
     fa = [p["area_m2"] for p in manA["parts"] if p["kind"] == "floor"]
     fb = [p["area_m2"] for p in manB["parts"] if p["kind"] == "floor"]
