@@ -92,13 +92,20 @@ geometry of every part.
 
 ## Running it
 
+    set PM_MASK=0 & set PM_CUT=-0.60 & set PM_VOXEL=0.008 & set PM_DEPTH=12 & set PM_TRIM=1.0
     venv311\Scripts\python.exe scripts\export\poisson_mesh.py <scan.las> output\model\poisson.ply
     venv311\Scripts\python.exe scripts\export\mesh_cache.py output\model\poisson.ply output\model\poisson.npz
     venv311\Scripts\python.exe scripts\export\modular_poisson.py --cache output\model\poisson.npz --out output\model\poisson_modular
     venv311\Scripts\python.exe scripts\export\modular_viewer.py output\model\poisson_modular output\model\poisson.npz
 
-`PM_CUT` on `poisson_mesh.py` slices the ceiling off for a cutaway view. **Do not
-use it for this stage** — without the ceiling slab, the dropped ceilings of the
+Those settings matter. `PM_VOXEL=0.008` with `PM_DEPTH=12` roughly doubles the
+mesh (koushik: 7.9 M triangles to 14.2 M) and it is not cosmetic — on the coarser
+mesh the thicknesses the building repeats came out 105 / 195 / 245 mm, and on the
+finer one 145 / 195 / 245 against a drawing that says 150 / 200 / 244. The extra
+resolution is where the millimetres are.
+
+`PM_CUT` slices the ceiling off for a cutaway view. **Do not use it for this
+stage** — without the ceiling slab, the dropped ceilings of the
 wet rooms become "the ceiling" and every height in the model is measured to the
 wrong surface. `modular_poisson.py` warns when the mesh it was given looks like
 that.
@@ -115,6 +122,57 @@ Outputs, in the `--out` directory:
 | `labels.npy`, `verts.npy`, `names.json` | the segmentation itself, for further stages |
 | `wall_elevations.png` | per-wall depth maps — the check that the relief survived |
 
+## Filling the walls
+
+`solidify_walls.py` turns each wall into a closed solid. The surface model gives
+a wall both of its faces, but a face is a sheet: opened in Blender the wall is
+hollow, with no volume and nothing to cut into.
+
+Each wall's face is gridded at 10 mm. Where the scan found material the wall is
+solid; where it found none through either face there is a hole — a doorway, a
+window, the space under a lintel. That outline is traced, simplified to 5 mm,
+triangulated with its holes and extruded through the thickness measured for that
+wall. On koushik's fine mesh: **39 of 39 walls watertight, 39.1 m³ of masonry**,
+in a 1 MB file.
+
+The solid carries the outline, the openings, the thickness and therefore the
+volume. It does **not** carry the millimetre relief — that stays in
+`modular.obj`, which is the scanned surface itself. A per-cell solid carrying
+both was built and abandoned: the scan steps at almost every 10 mm cell, so the
+two faces met in millions of little ribbons and 12% of their edges would not
+close, in a 787 MB file. A solid whose volume can be trusted beside a surface
+whose millimetres can be trusted beats one mesh that is wrong at both.
+
+## Colour
+
+`bake_rgb.py` puts the scan's RGB back on the model, where the scan has it
+(mujammel does, koushik's is all zero). Poisson throws colour away, so each
+vertex takes the colour of the nearest scanned point — after the point cloud is
+put through the same rotation and z-shift the mesh went through. The residual
+distance is reported and must be a few millimetres: on mujammel it is a median of
+**5.2 mm**, which is the check that the two frames really match.
+
+Colour answers what geometry cannot: what a surface *is* (tile, paint, timber,
+stone are the same shape and different colours), where the glazing is (a window
+is a hole to the geometry and a dark low-return patch to the colour), and what
+changed between two scans (a repaint is invisible in geometry). Each part gets a
+median colour and a spread in the manifest; `modular_rgb.glb` carries it per
+vertex.
+
+## The two scans check each other
+
+koushik and mujammel are the same flat, walked twice. Neither is a ground truth,
+but a quantity that comes out the same from two independent walks is one the
+pipeline can measure. `compare_models.py` registers them and reports:
+
+| | agreement |
+|---|---|
+| registration | 0°, 0.364 / −0.842 m — no rotation, so it is one flat |
+| wall lines | 37 of 39 matched, median **15 mm**, 90th pct 63 mm |
+| wall thickness | median **10 mm** over the 15 both scans vouch for |
+| ceiling levels | 2706 / 2733 / 2741 / 2744 vs 2699 / 2735 / 2736 / 2741 mm |
+| openings | both find the 2325×2375 door and the 1550×1175 window |
+
 ## Reading the audit
 
 `coverage` in the manifest answers the two questions that matter:
@@ -125,9 +183,13 @@ Outputs, in the `--out` directory:
   is a hole in the shell. This is the number that says "seamless", and on koushik
   it is 6 out of 7.9 million triangles.
 
-## Result on koushik
+## Result
 
-82 parts — 39 walls (28 with a measured thickness), 19 floors, 22 ceilings of
-which 2 beams and 7 dropped, 2 columns. 48 features: 15 doors, 4 windows, 2
-arches, 10 niches, 6 pilasters. Clear height 2740 mm. 98.7% of the surface is in
-a named part; 9 m² was dropped as clutter, in 76 pieces, the largest 1.2 m².
+On koushik's fine mesh (14.2 M triangles): 82 parts — 39 walls, 20 floors, 22
+ceilings of which 2 beams and 7 dropped, 1 column. 50 features: 16 doors, 5
+windows, 1 arch, 8 niches, 11 pilasters. Clear height 2700 mm. **98.6%** of the
+scanned surface is in a named part and the parts leave **8 triangles** of gap
+between them. 39/39 walls solidify watertight, 39.1 m³ of masonry.
+
+On mujammel: 78 parts — 32 walls, 23 floors, 21 ceilings, 2 columns; 50 features;
+98.5% of 19.8 M triangles in a named part; colour baked at a 5.2 mm median.

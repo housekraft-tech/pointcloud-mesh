@@ -57,8 +57,11 @@ MIN_THICK  = 0.08     # m: thinner than this is not masonry. Two scans of one
                       # flat disagreed on thickness by 86 mm at the median, and
                       # the thin readings were all a panel standing off a wall
                       # being paired as its far face.
-MODE_TOL   = 0.030    # m: how close a candidate must be to one of the
+MODE_TOL   = 0.020    # m: how close a candidate must be to one of the
                       # building's own thicknesses to be preferred as one
+MODE_SUPP  = 0.30     # a peak carrying less than this share of the strongest
+                      # one is not a thickness the building repeats -- it is a
+                      # few panels standing off a few walls
 PAIR_ZCOVER = 0.70    # the opposite face must span this much of the face's own
                       # height. A wall is bounded by a wall; a wardrobe front
                       # stops at 2 m and is not the other side of anything.
@@ -260,10 +263,10 @@ def thickness_modes(planes, prof, st_area):
     sm = np.convolve(h, np.ones(3), "same")
     modes = []
     for b in np.argsort(-sm):
-        if sm[b] < 0.15*sm.max() or any(abs(b*0.01 - m) < 0.05 for m in modes):
+        if sm[b] < MODE_SUPP*sm.max() or any(abs(b*0.01 - m) < 0.05 for m in modes):
             continue
         modes.append(b*0.01 + 0.005)
-        if len(modes) == 4:
+        if len(modes) == 3:
             break
     log("thicknesses this building repeats: "
         + ", ".join(f"{m*1000:.0f} mm" for m in sorted(modes)))
@@ -296,6 +299,7 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
         partner = np.full(len(has), -1, np.int64)
         thick = np.zeros(len(has))
         score = np.full(len(has), 1e9)
+        vouched = np.zeros(len(has), bool)
         for j, g in enumerate(planes):
             if g["axis"] != f["axis"] or g["sign"] == f["sign"]:
                 continue
@@ -316,6 +320,7 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
             rank = (0.0 if near < MODE_TOL else 1.0) + t/100.0
             take = has[:n] & gh & ((partner[:n] < 0) | (rank < score[:n]))
             partner[:n][take] = j; thick[:n][take] = t; score[:n][take] = rank
+            vouched[:n][take] = near < MODE_TOL
         # cut the face into runs of constant partner
         cut = np.r_[True, (partner[1:] != partner[:-1]) | (~has[1:]) | (~has[:-1])]
         starts = np.flatnonzero(cut & has)
@@ -327,6 +332,7 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
                 continue
             runs.append(dict(face=i, partner=int(partner[s]),
                              s0=L0 + s*STATION, s1=L0 + (e+1)*STATION,
+                             vouched=bool(vouched[s]),
                              thickness=float(thick[s]) if partner[s] >= 0 else None))
     # a doorway does not end a wall: rejoin runs that sit on the same pair of
     # planes with only a door's width between them
@@ -358,7 +364,7 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
             seen.add(key)
         walls.append(dict(planes=[r["face"]] + ([r["partner"]] if r["partner"] >= 0 else []),
                           axis=f["axis"], s0=r["s0"], s1=r["s1"],
-                          thickness=r["thickness"]))
+                          vouched=r["vouched"], thickness=r["thickness"]))
     log(f"{len(runs)} runs -> {len(walls)} physical walls "
         f"({sum(1 for w in walls if w['thickness'] is None)} single-faced)")
 
@@ -411,8 +417,11 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
     keep = fuse_walls(keep, C, A, label, name_of)
     log(f"{len(keep)} walls kept ("
         f"{sum(1 for w in keep if w['kind']=='parapet')} parapets, "
-        f"{sum(1 for w in keep if w['thickness'])} with measured thickness)")
-    return keep
+        f"{sum(1 for w in keep if w['thickness'] and w.get('vouched'))} with a "
+        f"thickness the building repeats, "
+        f"{sum(1 for w in keep if w['thickness'] and not w.get('vouched'))} paired "
+        f"with something else)")
+    return keep, modes
 
 
 def fuse_walls(walls, C, A, label, name_of):
@@ -463,13 +472,14 @@ def fuse_walls(walls, C, A, label, name_of):
         # Prefer a thickness that was MEASURED between a pair of faces during
         # detection. The outer span of the fused parts is an upper bound: it
         # also spans whatever sits between two walls that flank a duct.
-        ts = [(float(A[label == w["part_id"]].sum()), w["thickness"])
+        ts = [(float(A[label == w["part_id"]].sum()), w["thickness"], w["vouched"])
               for w in ws if w["thickness"]]
         if ts:
-            t = max(ts)[1]                    # the best-supported measurement
+            _, t, v = max(ts)                 # the best-supported measurement
         else:
-            t = float(c_hi - c_lo - 0.06)     # only an upper bound: no pair
+            t, v = float(c_hi - c_lo - 0.06), False   # an upper bound, no pair
         head["thickness"] = t if MIN_THICK < t < MAX_THICK else None
+        head["vouched"] = bool(v)
         head["planes"] = sorted({q for w in ws for q in w["planes"]})
         head["z0"] = min(w["z0"] for w in ws); head["z1"] = max(w["z1"] for w in ws)
         for w in ws:
@@ -1084,7 +1094,7 @@ def main(argv=None):
     n_dust = prune_specks(label, ea, eb, A)
 
     planes = face_planes(N, C, A, z_floor, z_ceil)
-    walls = physical_walls(planes, C, A, z_floor, z_ceil, label, name_of)
+    walls, modes = physical_walls(planes, C, A, z_floor, z_ceil, label, name_of)
     floor, ceil = slabs(N, C, A, z_floor, z_ceil, label, name_of)
     cols = columns(C, A, N, z_floor, z_ceil, label, name_of)
     log(f"before growth: {(label>=0).mean()*100:.1f}% of triangles claimed")
@@ -1113,8 +1123,15 @@ def main(argv=None):
     parts = []
     for w in walls:
         idx = label == w["part_id"]
+        # A thickness whose pair matches none of the thicknesses the building
+        # repeats is a pairing with something that is not the other side of the
+        # wall -- usually a panel standing off it. It is kept as a raw reading
+        # and left out of the measurement, because a wrong number is worse here
+        # than a missing one.
         parts.append(dict(name=w["name"], kind=w["kind"],
-                          thickness_mm=round(w["thickness"]*1000, 1) if w["thickness"] else None,
+                          thickness_mm=(round(w["thickness"]*1000, 1)
+                                        if w["thickness"] and w.get("vouched") else None),
+                          thickness_raw_mm=round(w["thickness"]*1000, 1) if w["thickness"] else None,
                           faces_seen=len(w["planes"]),
                           axis="xy"[w["axis"]],
                           length_mm=round(w["length"]*1000),
@@ -1139,6 +1156,7 @@ def main(argv=None):
         parts.append(dict(name=c["name"], kind="column", footprint_m=c["footprint"],
                           tris=int(idx.sum()), area_m2=round(float(A[idx].sum()), 2)))
     man = dict(source=args.cache, yaw_deg=round(yaw, 3),
+               thickness_modes_mm=[round(m*1000, 1) for m in modes],
                floor_z=round(z_floor, 4), ceiling_z=round(z_ceil, 4),
                clear_height_mm=round((z_ceil-z_floor)*1000, 1),
                n_parts=len(order), parts=parts, features=feats,
