@@ -280,6 +280,95 @@ for (ax, cells, tpair) in parts:
                      other_mm=round(other*1000), volume_l=round(v*1000, 1),
                      boxes=len(G.parts)-first))
 
+# ---------------------------------------------------- openings in the walls
+# An opening is a void in a wall with masonry OVER it. That is the same test
+# that scored 9 doors out of 9 on the fitted model, but it can now be asked of
+# the wall itself rather than of a raster: the wall's own cells say exactly
+# where it is solid, so the void is whatever is left inside its extent.
+#
+# Sill and head come straight off the plane positions bounding the void, so they
+# are measured, not fitted.
+def openings_in(ax, cells, tname):
+    o = o_of[ax]
+    hax = o[0] if o[0] != 2 else o[1]
+    h0, h1 = cells[:, hax].min(), cells[:, hax].max()+1
+    z0, z1 = cells[:, 2].min(), cells[:, 2].max()+1
+    if h1-h0 < 2 or z1-z0 < 3: return []
+    m = np.zeros((h1-h0, z1-z0), bool)
+    m[cells[:, hax]-h0, cells[:, 2]-z0] = True
+    top = PL[2][z1]
+    out = []
+    voids = []
+    for c in range(h1-h0):
+        col = m[c]
+        if not col.any(): continue
+        hi = np.flatnonzero(col).max()
+        k = 0
+        while k < hi:
+            if col[k]: k += 1; continue
+            e = k
+            while e+1 <= hi and not col[e+1]: e += 1
+            # masonry above the void is what makes it an opening rather than
+            # simply the end of the wall
+            if e < hi and col[e+1:hi+1].any():
+                voids.append((c, PL[2][z0+k], PL[2][z0+e+1]))
+            k = e+1
+    if not voids: return []
+    voids.sort()
+    run = [voids[0]]
+    for v in voids[1:]:
+        if v[0] <= run[-1][0]+1 and abs(v[1]-run[-1][1]) < 0.35 \
+           and abs(v[2]-run[-1][2]) < 0.35:
+            run.append(v)
+        else:
+            out.append(run); run = [v]
+    out.append(run)
+    res = []
+    for r in out:
+        c0 = r[0][0]; c1 = r[-1][0]
+        wmm = (PL[hax][h0+c1+1]-PL[hax][h0+c0])
+        if wmm < 0.55 or wmm > 4.50: continue
+        sill = float(np.median([v[1] for v in r]))
+        head = float(np.median([v[2] for v in r]))
+        if head-sill < 0.75: continue
+        # A head at 861 mm is not a doorway, it is a gap under a shelf or a
+        # ragged patch in the labelling. Doors and balconies in this building
+        # head out between 2.0 and 2.4 m; allow 1.70 up so a low one still
+        # counts, but no lower.
+        if head < 1.70: continue
+        kind = ("window" if sill >= 0.60 else
+                "door" if wmm <= 1.15 else "opening")
+        res.append(dict(kind=kind, wall=tname,
+                        width_mm=round(wmm*1000), sill_mm=round(sill*1000),
+                        head_mm=round(head*1000),
+                        a_mm=round(float(PL[hax][h0+c0])*1000),
+                        b_mm=round(float(PL[hax][h0+c1+1])*1000),
+                        arch_mm=round((top-head)*1000)))
+    return res
+
+# the floor plane, so sills read from the floor rather than from the origin
+FLOOR = float(PL[2][1]) if len(PL[2]) > 2 else 0.0
+OPEN = []
+for r, (ax, cells, tpair) in zip(rows, parts):
+    if r['kind'] not in ("WALL",): continue
+    for op in openings_in(ax, cells, r['name']):
+        op['sill_mm'] = round(op['sill_mm'] - FLOOR*1000)
+        # a sill within a skirting's height of the floor IS the floor; the
+        # residual is the z-plane spacing, not a step to walk over
+        if op['sill_mm'] < 150: op['sill_mm'] = 0
+        op['head_mm'] = round(op['head_mm'] - FLOOR*1000)
+        op['axis'] = int(ax)
+        op['centre_mm'] = r['centre_mm']
+        op['thickness_mm'] = r['thickness_mm']
+        OPEN.append(op)
+from collections import Counter
+print(f"openings found in the walls: {dict(Counter(o['kind'] for o in OPEN))}"
+      f"   (ground truth 9 doors, 4 balconies, 2 openings)")
+if OPEN:
+    wd = [o['width_mm'] for o in OPEN]
+    print(f"  widths {min(wd)}-{max(wd)} mm, "
+          f"heads {min(o['head_mm'] for o in OPEN)}-{max(o['head_mm'] for o in OPEN)} mm")
+
 from collections import Counter
 print("parts by kind:", dict(Counter(r['kind'] for r in rows)))
 tw = [r for r in rows if r['kind'] == "WALL"]
@@ -293,8 +382,26 @@ if tw:
     print("  (by volume is the honest one -- there are many small parts and a "
           "plain median lets them outvote the walls that hold the masonry)")
 print(f"total masonry volume {sum(r['volume_l'] for r in rows)/1000:.2f} m3")
+# Draw each opening: a leaf in the void and the arch over it. These are not
+# masonry -- they are what the masonry leaves behind -- so they are separate
+# named parts and their volume is not counted as material.
+LEAF = 0.040
+oseq = {}
+for op in OPEN:
+    oseq[op['kind']] = oseq.get(op['kind'], 0)+1
+    nm = f"{op['kind'].upper()}_{oseq[op['kind']]:02d}"
+    ax = op['axis']; c = op['centre_mm']/1000
+    a, b = op['a_mm']/1000, op['b_mm']/1000
+    s0 = op['sill_mm']/1000 + FLOOR; h0 = op['head_mm']/1000 + FLOOR
+    first = len(G.parts)
+    q0 = {ax: c-LEAF/2}; q1 = {ax: c+LEAF/2}
+    o = o_of[ax]; hax = o[0] if o[0] != 2 else o[1]
+    q0[hax] = a; q1[hax] = b; q0[2] = s0; q1[2] = h0
+    G.add_box(f"{nm}_leaf_w{op['width_mm']}_h{op['head_mm']-op['sill_mm']}",
+              *yup(q0[0], q1[0], q0[1], q1[1], q0[2], q1[2]))
+    G.parent(f"{nm}_w{op['width_mm']}_sill{op['sill_mm']}_head{op['head_mm']}", first)
 sz, np_, tris = G.write("output/model/modular_cells.glb")
-json.dump(dict(clear_height_mm=round(H*1000), parts=rows),
+json.dump(dict(clear_height_mm=round(H*1000), parts=rows, openings=OPEN),
           open("output/model/modular_cells.json", "w"), indent=1)
 print(f"wrote output/model/modular_cells.glb  {sz/1e6:.2f} MB, {np_} boxes, "
       f"{tris:,} triangles, {len(rows)} named parts")
