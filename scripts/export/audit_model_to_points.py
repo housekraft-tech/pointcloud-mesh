@@ -50,6 +50,7 @@ def tris(path):
 
 for label,path in (("MODULAR model","output/model/shell_fp.glb"),
                    ("CELL COMPLEX","output/model/cellcomplex.glb"),
+                   ("MODULAR from cells","output/model/modular_cells.glb"),
                    ("VOXEL surface","output/model/scan_surface.glb")):
     T=tris(path)
     if not len(T): print(f"{label}: none"); continue

@@ -28,7 +28,7 @@ from glb import GLB
 
 G          = 0.02      # support grid
 MERGE      = 0.015     # planes closer than this are the same plane
-MIN_AREA   = float(os.environ.get("MIN_AREA", 0.30))   # m2 before a plane is real
+MIN_AREA   = float(os.environ.get("MIN_AREA", 0.15))   # m2 before a plane is real
 MAX_WALL   = 0.45      # a cell thinner than this, between two faces, is masonry
 FACE_SUP   = float(os.environ.get("FACE_SUP", 0.15))  # face scanned this much = masonry
 CUT        = 0.12
@@ -271,6 +271,10 @@ for ax in (0, 1, 2):
         nrm[{0: 0, 1: 2, 2: 1}[ax]] = float(sgn) * (-1.0 if ax == 1 else 1.0)
         Gl.add_quads(f"SHELL_{'XYZ'[ax]}{'+' if sgn>0 else '-'}", quads, tuple(nrm))
         nq += len(quads)
+np.savez_compressed("output/cells.npz", solid=solid, free=free,
+                    px=PL[0], py=PL[1], pz=PL[2],
+                    supx=SUP[0], supy=SUP[1], supz=SUP[2])
+print("wrote output/cells.npz  (solid labels + plane positions + face support)")
 sz, parts, tris = Gl.write("output/model/cellcomplex.glb")
 print(f"{nq:,} boundary quads -> {tris:,} triangles")
 print(f"wrote output/model/cellcomplex.glb  {sz/1e6:.2f} MB, {parts} parts")
