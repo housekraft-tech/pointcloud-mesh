@@ -96,7 +96,12 @@ geometry of every part.
     venv311\Scripts\python.exe scripts\export\poisson_mesh.py <scan.las> output\model\poisson.ply
     venv311\Scripts\python.exe scripts\export\mesh_cache.py output\model\poisson.ply output\model\poisson.npz
     venv311\Scripts\python.exe scripts\export\modular_poisson.py --cache output\model\poisson.npz --out output\model\poisson_modular
+    venv311\Scripts\python.exe scripts\export\solidify_walls.py --dir output\model\poisson_modular --cache output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\exportake_rgb.py --dir output\model\poisson_modular --cache output\model\poisson.npz --las <scan.las>
     venv311\Scripts\python.exe scripts\export\modular_viewer.py output\model\poisson_modular output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\exportender_modular.py output\model\poisson_modular output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\exportender_wall_elevation.py output\model\poisson_modular output\model\poisson.npz
+    venv311\Scripts\python.exe scripts\export\make_index.py
 
 Those settings matter. `PM_VOXEL=0.008` with `PM_DEPTH=12` roughly doubles the
 mesh (koushik: 7.9 M triangles to 14.2 M) and it is not cosmetic — on the coarser
