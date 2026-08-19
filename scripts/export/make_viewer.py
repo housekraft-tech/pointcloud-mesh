@@ -6,6 +6,9 @@ import base64, json, os
 GLB = "output/model/shell_fp.glb"
 b64 = base64.b64encode(open(GLB, 'rb').read()).decode()
 CM = json.load(open("output/cloud_meta.json"))
+import os as _os
+MC = json.load(open("output/model/modular_cells.json")) \
+     if _os.path.exists("output/model/modular_cells.json") else {'parts': []}
 meta = json.load(open("output/model/shell_fp.json"))
 rows = [dict(id=w["id"], length=w["length_mm"], thick=w["thickness_mm"],
              ops=[dict(k=o["kind"], w=o["width_mm"], s=o["sill_mm"],
@@ -58,6 +61,10 @@ HTML = r"""<!doctype html>
     <div class="k">brightness</div><input type="range" id="pcDim" min="10" max="100" value="70">
     <div><button id="pcOnly">Cloud only</button><button id="modelOnly">Model only</button>
          <button id="both">Both</button></div>
+    <h2>Modular from cells</h2>
+    <label><input type="checkbox" id="mcOn"><span>Show modular parts
+      (__NPARTS__ parts in <span id="mcN">?</span> boxes, watertight)</span></label>
+    <div class="k">opacity</div><input type="range" id="mcOp" min="10" max="100" value="100">
     <h2>Cell complex</h2>
     <label><input type="checkbox" id="ccOn"><span>Show cell-complex shell
       (watertight, plane-partitioned)</span></label>
@@ -152,6 +159,30 @@ document.getElementById('sfOp').oninput=e=>{const f=e.target.value/100;
   if(surf)surf.traverse(o=>{if(o.isMesh){o.material.transparent=f<1;
     o.material.opacity=f; o.material.depthWrite=f>=1;}});};
 
+// ---- modular parts, taken from the cells ---------------------------------
+// Coloured per part so the grouping is visible: this is the layer whose part
+// count is still too high, and colour is the quickest way to see where a wall
+// is coming apart into pieces.
+let mc=null;
+fetch('model/modular_cells.glb').then(r=>r.arrayBuffer()).then(buf=>
+new GLTFLoader().parse(buf,"",g=>{
+  mc=g.scene; mc.visible=false;
+  let n=0;
+  mc.traverse(o=>{ if(!o.isMesh) return;
+    n++;
+    const h=(n*0.137)%1;
+    o.material=new THREE.MeshStandardMaterial({
+      color:new THREE.Color().setHSL(h,0.55,0.55),roughness:0.9,
+      metalness:0.0,side:THREE.DoubleSide});
+  });
+  document.getElementById('mcN').textContent=n.toLocaleString();
+  scene.add(mc);
+}));
+document.getElementById('mcOn').onchange=e=>{if(mc)mc.visible=e.target.checked;};
+document.getElementById('mcOp').oninput=e=>{const f=e.target.value/100;
+  if(mc)mc.traverse(o=>{if(o.isMesh){o.material.transparent=f<1;
+    o.material.opacity=f; o.material.depthWrite=f>=1;}});};
+
 // ---- the cell complex: the watertight shell, for comparison --------------
 let cc=null;
 fetch('model/cellcomplex.glb').then(r=>r.arrayBuffer()).then(buf=>
@@ -226,6 +257,7 @@ addEventListener('resize',resize); resize();
 (function loop(){requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera);})();
 </script>
 """
+HTML = HTML.replace("__NPARTS__", str(len(MC['parts'])))
 HTML = (HTML.replace("__B64__", b64)
             .replace("__WALLS__", json.dumps(rows)).replace("__SUM__", json.dumps(SUM))
             .replace("__CM__", json.dumps(CM)))
