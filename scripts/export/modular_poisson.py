@@ -1155,10 +1155,23 @@ def main(argv=None):
         idx = label == c["part_id"]
         parts.append(dict(name=c["name"], kind="column", footprint_m=c["footprint"],
                           tris=int(idx.sum()), area_m2=round(float(A[idx].sum()), 2)))
+    # The clear height is to the STRUCTURAL ceiling, which is the highest slab
+    # carrying real area -- not the modal one. Picking the mode made the same
+    # flat read 2740 mm off one mesh and 2700 off a finer one, because the two
+    # plateaus swap which is larger; the highest one is the same in both.
+    tops = [c for c in ceil if c.get("kind") == "ceiling"]
+    if tops:
+        big = max(c["area"] for c in tops)
+        z_top = max(c["z"] for c in tops if c["area"] > 0.2*big)
+    else:
+        z_top = z_ceil
+
     man = dict(source=args.cache, yaw_deg=round(yaw, 3),
+               structural_ceiling_z=round(z_top, 4),
                thickness_modes_mm=[round(m*1000, 1) for m in modes],
                floor_z=round(z_floor, 4), ceiling_z=round(z_ceil, 4),
-               clear_height_mm=round((z_ceil-z_floor)*1000, 1),
+               clear_height_mm=round((z_top-z_floor)*1000, 1),
+               modal_ceiling_height_mm=round((z_ceil-z_floor)*1000, 1),
                n_parts=len(order), parts=parts, features=feats,
                coverage=cov, dropped=junk)
     json.dump(man, open(out/"manifest.json", "w"), indent=1)
