@@ -220,12 +220,40 @@ def consolidate(m3, ax, k=3):
         if out[i].any(): out[i] = ndimage.binary_closing(out[i], ker)
     return np.moveaxis(out, 0, ax)
 
+# Fill the masonry between two planes that are OPPOSITE FACES OF ONE WALL.
+#
+# Testing each cell against its own bounding planes only ever labels the outer
+# lamina: a 200 mm wall spans several plane intervals and the interior ones are
+# bounded by planes nobody scanned, so the wall came out hollow -- a measured
+# run thickness of 106 mm where the walls are about 200.
+#
+# But pairing every two supported planes within 600 mm is far too loose: it
+# bridges a wall face to a column face across open floor and put the flat's
+# masonry at 61.8 m3 against a plausible 37. The test that distinguishes them is
+# not distance, it is which way the faces LOOK. Two planes are opposite faces of
+# one wall when there is open space on the far side of each -- a room here, a
+# room there, masonry in between. A wall face and a column face across a room
+# fail it, because the space between them is open, not enclosed.
 thin = np.zeros((nx, ny, nz), bool)
 for ax in (0, 1, 2):
-    both = np.minimum(SUP[ax][:-1], SUP[ax][1:]) >= FACE_SUP   # (cells_ax, o0, o1)
-    both = np.moveaxis(both, 0, ax)
-    thin |= consolidate((amin == ax) & (dmin <= MAX_WALL) & both, ax)
-print(f"  masonry by two scanned faces : {thin.sum():,} cells")
+    sup = SUP[ax] >= FACE_SUP                        # (planes, o0, o1)
+    fr = np.moveaxis(free, ax, 0)                    # (cells, o0, o1)
+    ncell = fr.shape[0]
+    filled = np.zeros(fr.shape, bool)
+    npl = len(PL[ax])
+    for i in range(npl):
+        if not sup[i].any(): continue
+        room_lo = fr[i-1] if i-1 >= 0 else np.ones(fr.shape[1:], bool)
+        for j in range(i+1, npl):
+            t = PL[ax][j]-PL[ax][i]
+            if t > MAX_WALL: break
+            if t < 0.02: continue
+            room_hi = fr[j] if j < ncell else np.ones(fr.shape[1:], bool)
+            pair = sup[i] & sup[j] & room_lo & room_hi
+            if not pair.any(): continue
+            filled[i:j] |= pair[None, :, :]
+    thin |= consolidate(np.moveaxis(filled, 0, ax), ax)
+print(f"  masonry between opposing faces: {thin.sum():,} cells")
 print(f"  masonry by being enclosed    : {enclosed.sum():,} cells")
 print(f"  overlap                      : {(thin & enclosed).sum():,}")
 solid = thin | enclosed

@@ -84,7 +84,7 @@ for ax in (0, 1, 2):
     k = np.ones((3, 3, 3), bool); k[tuple([slice(None)]*3)] = True
     ksh = [3, 3, 3]; ksh[ax] = 1
     mine = ndimage.binary_closing(mine, np.ones(ksh, bool))
-    mine &= solid | ndimage.binary_dilation(solid, np.ones(ksh, bool))
+    mine &= solid          # closing must never admit a cell that is not solid
     lab, nb = ndimage.label(mine, st)
     for c in range(1, nb+1):
         cells = np.argwhere(lab == c)
@@ -124,7 +124,10 @@ if left.any():
         owner[take] = grown[take]; left &= ~take
     add = {}
     for pi in range(1, len(parts)+1):
-        extra = np.argwhere((owner == pi) & ~claimed)
+        # solid only: the dilation that grows ownership runs into empty cells
+        # too, and absorbing one carried the 1e9 no-solid sentinel into the
+        # thickness, reporting a wall 5e11 mm thick.
+        extra = np.argwhere((owner == pi) & ~claimed & solid)
         if len(extra): add[pi-1] = extra
     for k, extra in add.items():
         ax_, cs = parts[k]
@@ -148,15 +151,11 @@ def classify(ax, cells):
     the median run of cells through the thickness instead, which is what a
     tape measure would read."""
     o = o_of[ax]
-    key = cells[:, o[0]].astype(np.int64)*100000 + cells[:, o[1]]
-    ordk = np.argsort(key, kind='stable')
-    k2 = key[ordk]
-    runs = np.split(cells[ordk][:, ax], np.flatnonzero(np.diff(k2))+1)
-    depths = []
-    for r in runs:
-        u = np.unique(r)
-        depths.append(PL[ax][u.max()+1]-PL[ax][u.min()])
-    t = float(np.median(depths)) if depths else 0.0
+    # The same physical measure the normal was chosen by: how far the solid run
+    # extends through each cell. Taking the median over the part's own columns
+    # instead reported 59 mm against a true 275, because a part picks up thin
+    # single-cell columns along its edges and they dominate the median.
+    t = float(np.median(thick[cells[:, 0], cells[:, 1], cells[:, 2]]))
     e0 = PL[o[0]][cells[:, o[0]].min()], PL[o[0]][cells[:, o[0]].max()+1]
     e1 = PL[o[1]][cells[:, o[1]].min()], PL[o[1]][cells[:, o[1]].max()+1]
     d0, d1 = e0[1]-e0[0], e1[1]-e1[0]
@@ -256,9 +255,14 @@ from collections import Counter
 print("parts by kind:", dict(Counter(r['kind'] for r in rows)))
 tw = [r for r in rows if r['kind'] == "WALL"]
 if tw:
-    th = [r['thickness_mm'] for r in tw]
-    print(f"WALL thickness: median {np.median(th):.0f} mm, "
-          f"range {min(th)}-{max(th)} -- every one MEASURED between two planes")
+    th = np.array([r['thickness_mm'] for r in tw], float)
+    vv = np.array([r['volume_l'] for r in tw], float)
+    o = np.argsort(th); c = np.cumsum(vv[o])
+    med = th[o][np.searchsorted(c, c[-1]/2)]
+    print(f"WALL thickness: {med:.0f} mm by volume, {np.median(th):.0f} mm by count, "
+          f"range {th.min():.0f}-{th.max():.0f}")
+    print("  (by volume is the honest one -- there are many small parts and a "
+          "plain median lets them outvote the walls that hold the masonry)")
 print(f"total masonry volume {sum(r['volume_l'] for r in rows)/1000:.2f} m3")
 sz, np_, tris = G.write("output/model/modular_cells.glb")
 json.dump(dict(clear_height_mm=round(H*1000), parts=rows),
