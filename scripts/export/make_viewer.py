@@ -167,15 +167,21 @@ let mc=null;
 fetch('model/modular_cells.glb').then(r=>r.arrayBuffer()).then(buf=>
 new GLTFLoader().parse(buf,"",g=>{
   mc=g.scene; mc.visible=false;
-  let n=0;
-  mc.traverse(o=>{ if(!o.isMesh) return;
-    n++;
-    const h=(n*0.137)%1;
-    o.material=new THREE.MeshStandardMaterial({
+  // One colour PER PART, not per box. A part is a parent node holding several
+  // boxes after greedy merging; colouring each box separately made 80 parts
+  // look like 8,286 and hid the very thing this layer is meant to show.
+  let n=0, np=0;
+  mc.children.forEach(part=>{
+    const h=(np*0.381)%1;                       // golden-angle hues, adjacent
+    const mat=new THREE.MeshStandardMaterial({  // parts stay distinguishable
       color:new THREE.Color().setHSL(h,0.55,0.55),roughness:0.9,
       metalness:0.0,side:THREE.DoubleSide});
+    let any=false;
+    part.traverse(o=>{ if(o.isMesh){o.material=mat; n++; any=true;} });
+    if(any) np++;
   });
   document.getElementById('mcN').textContent=n.toLocaleString();
+  console.log('[modular] '+np+' parts, '+n+' boxes');
   scene.add(mc);
 }));
 document.getElementById('mcOn').onchange=e=>{if(mc)mc.visible=e.target.checked;};
