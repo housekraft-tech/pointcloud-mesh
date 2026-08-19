@@ -235,24 +235,43 @@ def consolidate(m3, ax, k=3):
 # room there, masonry in between. A wall face and a column face across a room
 # fail it, because the space between them is open, not enclosed.
 thin = np.zeros((nx, ny, nz), bool)
+# PROVENANCE. Record which pair of planes made each cell solid, because that IS
+# the wall: one slab between two named faces. Grouping by connectivity instead
+# has to guess where one wall ends and the next begins, and it guesses badly --
+# 384 parts where a person would name a few dozen, walls shattered into confetti
+# because the chosen normal flips at junctions and around openings. The fill
+# already knows the answer and was throwing it away.
+#
+# Pairs are applied THINNEST FIRST so the closest two faces enclosing a cell
+# own it; a wider pair spanning the same cell is a coincidence, not a wall.
+prov = np.zeros((nx, ny, nz), np.int32)     # ax*1e6 + i*1000 + j, 0 = none
 for ax in (0, 1, 2):
     sup = SUP[ax] >= FACE_SUP                        # (planes, o0, o1)
     fr = np.moveaxis(free, ax, 0)                    # (cells, o0, o1)
-    ncell = fr.shape[0]
-    filled = np.zeros(fr.shape, bool)
-    npl = len(PL[ax])
+    ncell = fr.shape[0]; npl = len(PL[ax])
+    cand = []
     for i in range(npl):
         if not sup[i].any(): continue
-        room_lo = fr[i-1] if i-1 >= 0 else np.ones(fr.shape[1:], bool)
         for j in range(i+1, npl):
             t = PL[ax][j]-PL[ax][i]
             if t > MAX_WALL: break
             if t < 0.02: continue
-            room_hi = fr[j] if j < ncell else np.ones(fr.shape[1:], bool)
-            pair = sup[i] & sup[j] & room_lo & room_hi
-            if not pair.any(): continue
-            filled[i:j] |= pair[None, :, :]
-    thin |= consolidate(np.moveaxis(filled, 0, ax), ax)
+            cand.append((t, i, j))
+    cand.sort()
+    filled = np.zeros(fr.shape, bool)
+    pv = np.zeros(fr.shape, np.int32)
+    for (t, i, j) in cand:
+        room_lo = fr[i-1] if i-1 >= 0 else np.ones(fr.shape[1:], bool)
+        room_hi = fr[j] if j < ncell else np.ones(fr.shape[1:], bool)
+        pair = sup[i] & sup[j] & room_lo & room_hi
+        if not pair.any(): continue
+        blk = np.zeros(fr.shape, bool); blk[i:j] = pair[None, :, :]
+        fresh = blk & ~filled
+        if not fresh.any(): continue
+        filled |= fresh
+        pv[fresh] = ax*1000000 + i*1000 + j
+    thin |= np.moveaxis(filled, 0, ax)
+    prov = np.where(np.moveaxis(pv, 0, ax) != 0, np.moveaxis(pv, 0, ax), prov)
 print(f"  masonry between opposing faces: {thin.sum():,} cells")
 print(f"  masonry by being enclosed    : {enclosed.sum():,} cells")
 print(f"  overlap                      : {(thin & enclosed).sum():,}")
@@ -314,7 +333,7 @@ for ax in (0, 1, 2):
         nrm[{0: 0, 1: 2, 2: 1}[ax]] = float(sgn) * (-1.0 if ax == 1 else 1.0)
         Gl.add_quads(f"SHELL_{'XYZ'[ax]}{'+' if sgn>0 else '-'}", quads, tuple(nrm))
         nq += len(quads)
-np.savez_compressed("output/cells.npz", solid=solid, free=free,
+np.savez_compressed("output/cells.npz", solid=solid, free=free, prov=prov,
                     px=PL[0], py=PL[1], pz=PL[2],
                     supx=SUP[0], supy=SUP[1], supz=SUP[2])
 print("wrote output/cells.npz  (solid labels + plane positions + face support)")

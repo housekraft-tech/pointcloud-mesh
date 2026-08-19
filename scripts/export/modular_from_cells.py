@@ -65,82 +65,63 @@ thick = RT.min(0)
 print(f"masonry run thickness: median {np.median(thick[solid])*1000:.0f} mm, "
       f"90th {np.percentile(thick[solid], 90)*1000:.0f} mm")
 
-# Connect in 3D, not per plane-interval. Planes are dense enough that a 200 mm
-# wall spans several intervals along its own normal, so grouping one interval at
-# a time sliced every wall into ~60 mm laminations: 7,549 parts with a median
-# "thickness" of 60 mm. A wall is all of its cells, through the full thickness.
+# A wall is the cells one PLANE PAIR filled -- not a blob found by connectivity.
+#
+# cellcomplex.py records, for every cell it made solid, which two planes enclose
+# it. That pair IS the wall: a slab between the face you see on one side and the
+# face you see on the other, with a thickness that is exact rather than a median.
+# Grouping by connectivity instead has to guess where one wall stops and the next
+# starts, and it guessed badly -- 384 parts, walls shattered into confetti,
+# because the chosen normal flips at junctions and around openings.
+#
+# Connectivity is still used, but only WITHIN a pair, to separate two different
+# walls that happen to lie between the same two planes at opposite ends of the
+# flat.
+o_of = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
+prov = Z['prov']
 parts = []
 claimed = np.zeros_like(solid)
-for ax in (0, 1, 2):
-    mine = solid & (amin == ax)
-    if not mine.any(): continue
-    # 6-connectivity, not 26: face-touching only. Diagonal connectivity welds
-    # walls together where they merely graze at a junction.
-    st = ndimage.generate_binary_structure(3, 1)
-    # Consolidate first. The solid labelling is patchy along a wall -- a cell
-    # here and there fails the vote -- and face-connectivity then shatters one
-    # wall into dozens of parts. Closing within the wall's own plane (never
-    # across its normal, which would fuse parallel walls) knits them back.
-    k = np.ones((3, 3, 3), bool); k[tuple([slice(None)]*3)] = True
-    ksh = [3, 3, 3]; ksh[ax] = 1
-    mine = ndimage.binary_closing(mine, np.ones(ksh, bool))
-    mine &= solid          # closing must never admit a cell that is not solid
-    lab, nb = ndimage.label(mine, st)
+ids = np.unique(prov[solid & (prov != 0)])
+print(f"{len(ids):,} distinct plane pairs account for "
+      f"{int((solid & (prov != 0)).sum()):,} of {int(solid.sum()):,} solid cells")
+for pid in ids:
+    ax = int(pid)//1000000
+    i = (int(pid) % 1000000)//1000
+    j = int(pid) % 1000
+    m = solid & (prov == pid)
+    if m.sum() < 4: continue
+    flat2 = m.any(axis=ax)                       # its footprint in the wall plane
+    lab, nb = ndimage.label(flat2, np.ones((3, 3), bool))
     for c in range(1, nb+1):
-        cells = np.argwhere(lab == c)
+        keep2 = lab == c
+        if keep2.sum() < 3: continue
+        sel = np.zeros_like(m)
+        idx = np.argwhere(keep2)
+        for k in range(i, j):
+            cc = np.zeros((len(idx), 3), int); cc[:, ax] = k
+            o = o_of[ax]; cc[:, o[0]] = idx[:, 0]; cc[:, o[1]] = idx[:, 1]
+            ok2 = m[cc[:, 0], cc[:, 1], cc[:, 2]]
+            cc = cc[ok2]
+            if len(cc): sel[cc[:, 0], cc[:, 1], cc[:, 2]] = True
+        cells = np.argwhere(sel)
         if len(cells) < 4: continue
-        # Split by contiguity ALONG THE NORMAL. A component that reaches around
-        # a corner spans two separate positions in its own normal direction, and
-        # measuring across the gap called one wall 1706 mm thick.
-        ks = np.sort(np.unique(cells[:, ax]))
-        brk = np.flatnonzero(np.diff(ks) > 1)
-        runs = np.split(ks, brk+1)
-        for run in runs:
-            sub = cells[np.isin(cells[:, ax], run)]
-            if len(sub) < 4: continue
-            if PL[ax][run[-1]+1]-PL[ax][run[0]] > 0.60: continue   # not masonry
-            parts.append((ax, sub))
-            claimed[sub[:, 0], sub[:, 1], sub[:, 2]] = True
-# Nothing may be dropped. The filters above discard small and over-thick
-# fragments, and those cells are still masonry -- the scan sits on them. Left
-# out, the modular model missed 22.5% of the scan where the cell complex it is
-# built from missed 7.2%. Every unclaimed solid cell is gathered up here, so the
-# parts partition the masonry exactly rather than approximately.
-# Absorbed into whichever part they touch, not emitted as parts of their own.
-# Left as separate parts they took the count from 634 to 1,640 -- a fragment
-# beside a wall belongs to that wall, it is not a component of the building.
-left = solid & ~claimed
-if left.any():
-    owner = np.zeros(solid.shape, np.int32)
-    for pi, (ax_, cs) in enumerate(parts, 1):
-        owner[cs[:, 0], cs[:, 1], cs[:, 2]] = pi
-    st2 = ndimage.generate_binary_structure(3, 1)
-    n0 = int(left.sum())
-    for _ in range(60):
-        if not left.any(): break
-        grown = ndimage.grey_dilation(owner, footprint=st2)
-        take = left & (grown > 0)
-        if not take.any(): break
-        owner[take] = grown[take]; left &= ~take
-    add = {}
-    for pi in range(1, len(parts)+1):
-        # solid only: the dilation that grows ownership runs into empty cells
-        # too, and absorbing one carried the 1e9 no-solid sentinel into the
-        # thickness, reporting a wall 5e11 mm thick.
-        extra = np.argwhere((owner == pi) & ~claimed & solid)
-        if len(extra): add[pi-1] = extra
-    for k, extra in add.items():
-        ax_, cs = parts[k]
-        parts[k] = (ax_, np.vstack([cs, extra]))
-    print(f"  {n0:,} cells unclaimed by the filters, absorbed into the part "
-          f"each one touches ({len(add)} parts grew); {int(left.sum()):,} orphaned")
-    if left.any():
-        lab2, nb2 = ndimage.label(left, st2)
-        for c in range(1, nb2+1):
-            cs = np.argwhere(lab2 == c)
-            ax2 = int(np.bincount(amin[cs[:, 0], cs[:, 1], cs[:, 2]],
-                                  minlength=3).argmax())
-            parts.append((ax2, cs))
+        parts.append((ax, cells, PL[ax][j]-PL[ax][i]))
+        claimed |= sel
+print(f"{len(parts):,} walls from plane pairs")
+
+# cells labelled solid by enclosure have no pair; group those by connectivity
+rest = solid & ~claimed
+if rest.any():
+    st0 = ndimage.generate_binary_structure(3, 1)
+    lab0, nb0 = ndimage.label(rest, st0)
+    for c in range(1, nb0+1):
+        cs = np.argwhere(lab0 == c)
+        if len(cs) < 4: continue
+        ax0 = int(np.bincount(amin[cs[:, 0], cs[:, 1], cs[:, 2]], minlength=3).argmax())
+        parts.append((ax0, cs, float(np.median(thick[cs[:, 0], cs[:, 1], cs[:, 2]]))))
+        claimed[cs[:, 0], cs[:, 1], cs[:, 2]] = True
+    print(f"  plus {nb0} groups from cells solid by enclosure alone")
+
 print(f"{len(parts):,} connected masonry parts")
 
 o_of = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
@@ -197,9 +178,9 @@ def part_volume(cells):
     return float(vol[cells[:, 0], cells[:, 1], cells[:, 2]].sum())*1000
 
 owner = np.full(solid.shape, -1, np.int32)
-for pi, (ax_, cs) in enumerate(parts):
+for pi, (ax_, cs, _t) in enumerate(parts):
     owner[cs[:, 0], cs[:, 1], cs[:, 2]] = pi
-vols = [part_volume(cs) for (ax_, cs) in parts]
+vols = [part_volume(cs) for (ax_, cs, _t) in parts]
 alive = [True]*len(parts)
 st1 = ndimage.generate_binary_structure(3, 1)
 n0 = len(parts)
@@ -220,7 +201,8 @@ for _ in range(40):
         cand = [(vols[q], q) for q in set(nb.tolist()) if alive[q]]
         if not cand: continue
         _, best = max(cand)
-        parts[best] = (parts[best][0], np.vstack([parts[best][1], cs]))
+        parts[best] = (parts[best][0], np.vstack([parts[best][1], cs]),
+                       parts[best][2])
         owner[cs[:, 0], cs[:, 1], cs[:, 2]] = best
         vols[best] += vols[pi]
         alive[pi] = False; merged += 1
@@ -229,8 +211,9 @@ parts = [pt for i, pt in enumerate(parts) if alive[i]]
 print(f"merged slivers under {MIN_PART_L:.0f} L: {n0} parts -> {len(parts)}")
 
 seq = {}; rows = []
-for (ax, cells) in parts:
+for (ax, cells, tpair) in parts:
     kind, t, span, other = classify(ax, cells)
+    if tpair: t = tpair          # exact: the gap between the two planes
     seq[kind] = seq.get(kind, 0)+1
     nm = f"{kind}_{seq[kind]:03d}"
     o = o_of[ax]
