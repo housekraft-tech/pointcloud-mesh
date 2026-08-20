@@ -55,11 +55,16 @@ def build_glb(path, T, V, label, names, rgb, target):
         want = max(60, int(len(t)*ratio))
         if want < len(t):
             m = m.simplify_quadric_decimation(want)
+        m.compute_vertex_normals()
         vv = np.asarray(m.vertices); tt = np.asarray(m.triangles)
         if len(tt) == 0:
             continue
         kept += len(tt)
-        tm = trimesh.Trimesh(vv, tt, process=False)
+        # glTF without NORMAL renders black under any lit material, and that is
+        # exactly how the first build came out: the geometry was all there and
+        # none of it could be seen.
+        tm = trimesh.Trimesh(vv, tt, vertex_normals=np.asarray(m.vertex_normals),
+                             process=False)
         if rgb is not None:
             cc = np.asarray(m.vertex_colors)
             col = np.zeros((len(vv), 4), np.uint8)
@@ -72,6 +77,36 @@ def build_glb(path, T, V, label, names, rgb, target):
     return kept
 
 
+def build_raw(path, T, V, rgb, target):
+    """The Poisson mesh as it came out, before anything was named or dropped.
+
+    Worth having beside the model: it is the ground the model is cut from, so
+    anything the segmentation lost can be seen against it directly.
+    """
+    import trimesh
+    m = o3d.geometry.TriangleMesh()
+    m.vertices = o3d.utility.Vector3dVector(V)
+    m.triangles = o3d.utility.Vector3iVector(T)
+    if rgb is not None:
+        m.vertex_colors = o3d.utility.Vector3dVector(rgb)
+    if target and target < len(T):
+        m = m.simplify_quadric_decimation(target)
+    m.compute_vertex_normals()
+    vv = np.asarray(m.vertices); tt = np.asarray(m.triangles)
+    tm = trimesh.Trimesh(vv, tt, vertex_normals=np.asarray(m.vertex_normals),
+                         process=False)
+    if rgb is not None:
+        cc = np.asarray(m.vertex_colors)
+        col = np.zeros((len(vv), 4), np.uint8)
+        col[:, :3] = np.clip(cc*255, 0, 255).astype(np.uint8); col[:, 3] = 255
+        tm.visual.vertex_colors = col
+    sc = trimesh.Scene()
+    sc.add_geometry(tm, geom_name="poisson_mesh", node_name="poisson_mesh")
+    sc.export(str(path))
+    log(f"wrote {path.name}: {len(tt):,} triangles of raw mesh, "
+        f"{path.stat().st_size/1e6:.0f} MB")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("out", nargs="?", default="output/model/poisson_modular")
@@ -80,6 +115,8 @@ def main():
                     help="triangles in the file the page loads first")
     ap.add_argument("--full", action="store_true",
                     help="also write every triangle, for the full-resolution button")
+    ap.add_argument("--raw", action="store_true",
+                    help="also write the unsegmented Poisson mesh as a layer")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     OUT = Path(a.out)
@@ -108,6 +145,9 @@ def main():
     full = OUT/"modular_full.glb"
     if a.full and (a.force or not full.exists()):
         build_glb(full, T, V, label, names, rgb, None)
+    raw = OUT/"scan_view.glb"
+    if a.raw and (a.force or not raw.exists()):
+        build_raw(raw, T, V, rgb, a.target)
 
     parts = {p["name"]: p for p in man["parts"]}
     cov = man["coverage"]
@@ -147,6 +187,11 @@ def main():
   <button data-m=kind>by kind</button>
   {'<button data-m=scan>as scanned</button>' if rgb is not None else ''}
  </div>
+ <h2>Layer</h2>
+ <div>
+  <button id=lmodel class=on>model parts</button>
+  <button id=lraw>the Poisson mesh</button>
+ </div>
  <h2>Resolution</h2>
  <div><button id=hi>load full resolution</button> <span id=st></span></div>
  <h2>Show</h2>
@@ -183,9 +228,11 @@ const cam = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .05, 500);
 const rend = new THREE.WebGLRenderer({{canvas:document.getElementById('c'), antialias:true}});
 rend.setSize(innerWidth, innerHeight); rend.setPixelRatio(Math.min(devicePixelRatio,2));
 const ctl = new OrbitControls(cam, rend.domElement);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x40485a, 2.0));
+scene.add(new THREE.HemisphereLight(0xffffff, 0x555f70, 2.4));
+scene.add(new THREE.AmbientLight(0xffffff, .35));
 const dl = new THREE.DirectionalLight(0xffffff, 1.5); dl.position.set(6,-9,12); scene.add(dl);
-const dl2 = new THREE.DirectionalLight(0xffffff, .5); dl2.position.set(-8,6,4); scene.add(dl2);
+const dl2 = new THREE.DirectionalLight(0xffffff, .7); dl2.position.set(-8,6,4); scene.add(dl2);
+const dl3 = new THREE.DirectionalLight(0xffffff, .5); dl3.position.set(0,0,-10); scene.add(dl3);
 
 let groups = {{}}, root = null, mode = 'part', framed = false;
 const rnd = (s)=>{{let x=Math.sin(s*127.1)*43758.5453; return x-Math.floor(x);}};
@@ -208,6 +255,10 @@ function install(g) {{
   let n = 0;
   root.traverse(o => {{
     if (!o.isMesh) return;
+    // A mesh with no NORMAL attribute is lit as black whatever the material
+    // says, which is how the first build came out: every triangle present and
+    // none of it visible. Exports carry normals now; this catches the rest.
+    if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
     const p = PARTS[o.name] || PARTS[o.name.replace(/_\\d+$/, '')];
     const kind = p ? p.kind : 'other';
     o.userData.part = p; o.userData.kind = kind;
@@ -242,7 +293,17 @@ function load(url, note) {{
       ' — open this page through the local server, not from the file system'; }});
 }}
 load('modular_view.glb', 'working resolution');
-document.getElementById('hi').onclick = () => load('modular_full.glb', 'full resolution');
+document.getElementById('hi').onclick = () => load(layer === 'raw' ?
+  'scan_view.glb' : 'modular_full.glb', 'full resolution');
+let layer = 'model';
+function setLayer(k, url, note) {{
+  layer = k;
+  document.getElementById('lmodel').classList.toggle('on', k === 'model');
+  document.getElementById('lraw').classList.toggle('on', k === 'raw');
+  load(url, note);
+}}
+document.getElementById('lmodel').onclick = () => setLayer('model', 'modular_view.glb', 'model parts');
+document.getElementById('lraw').onclick = () => setLayer('raw', 'scan_view.glb', 'the Poisson mesh');
 document.querySelectorAll('#modes button').forEach(b => b.onclick = () => {{
   document.querySelectorAll('#modes button').forEach(x => x.classList.remove('on'));
   b.classList.add('on'); mode = b.dataset.m; paint();
