@@ -89,8 +89,16 @@ def main():
     V = np.load(OUT/"verts.npy").astype(np.float64)
     label = np.load(OUT/"labels.npy")
     names = json.load(open(OUT/"names.json"))
-    rgbf = OUT/"vertex_rgb.npy"
-    rgb = np.load(rgbf).astype(np.float64)/255.0 if rgbf.exists() else None
+    # the mesh's own colour first -- Poisson interpolated it from the scan, so
+    # it needs no lookup and has no nearest-neighbour error at all
+    cd = np.load(a.cache)
+    rgb = None
+    if "RGB" in cd.files:
+        rgb = cd["RGB"].astype(np.float64)/255.0
+        log("colour: the Poisson mesh's own, interpolated from the scan")
+    elif (OUT/"vertex_rgb.npy").exists():
+        rgb = np.load(OUT/"vertex_rgb.npy").astype(np.float64)/255.0
+        log("colour: baked onto the model from the nearest scanned point")
     log(f"{int((label>=0).sum()):,} triangles in {man['n_parts']} parts"
         + ("; scan colour present" if rgb is not None else "; no scan colour"))
 
