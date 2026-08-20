@@ -187,6 +187,8 @@ def main():
   <button data-m=kind>by kind</button>
   {'<button data-m=scan>as scanned</button>' if rgb is not None else ''}
  </div>
+ <div class=note>wheel zooms to the cursor &middot; double-click to orbit that
+ point &middot; right-drag pans &middot; W A S D moves &middot; F reframes</div>
  <h2>Layer</h2>
  <div>
   <button id=lmodel class=on>model parts</button>
@@ -224,10 +226,25 @@ const PARTS = {json.dumps(parts)};
 const KC = {json.dumps(KIND_COLOR)};
 const FEATS = {json.dumps(man['features'])};
 const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0f1115);
-const cam = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .05, 500);
+const cam = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, .02, 2000);
 const rend = new THREE.WebGLRenderer({{canvas:document.getElementById('c'), antialias:true}});
 rend.setSize(innerWidth, innerHeight); rend.setPixelRatio(Math.min(devicePixelRatio,2));
 const ctl = new OrbitControls(cam, rend.domElement);
+// Zoom used to dolly toward the middle of the building and stop dead there, so
+// you could not get into a room: the target is the centre and OrbitControls
+// will not travel past it. Zooming to the cursor instead means the wheel goes
+// where you are pointing, and the step scales with how far away you are, so it
+// is not glacial across the plan and violent up against a wall.
+ctl.zoomToCursor = true;
+ctl.enableDamping = true;
+ctl.dampingFactor = 0.08;
+ctl.screenSpacePanning = true;
+ctl.minDistance = 0.05;
+ctl.maxDistance = 400;
+ctl.zoomSpeed = 1.1;
+ctl.panSpeed = 0.9;
+ctl.keys = {{LEFT:'KeyA', UP:'KeyW', RIGHT:'KeyD', BOTTOM:'KeyS'}};
+ctl.listenToKeyEvents(window);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x555f70, 2.4));
 scene.add(new THREE.AmbientLight(0xffffff, .35));
 const dl = new THREE.DirectionalLight(0xffffff, 1.5); dl.position.set(6,-9,12); scene.add(dl);
@@ -328,6 +345,26 @@ addEventListener('click', e => {{
 addEventListener('resize', () => {{
   cam.aspect = innerWidth/innerHeight; cam.updateProjectionMatrix();
   rend.setSize(innerWidth, innerHeight);
+}});
+// double-click puts the orbit centre on what you clicked, so the next zoom
+// goes into that room rather than back to the middle of the building
+addEventListener('dblclick', e => {{
+  mv.x = e.clientX/innerWidth*2-1; mv.y = -(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(mv, cam);
+  const h = ray.intersectObjects(scene.children, true).filter(i => i.object.visible)[0];
+  if (!h) return;
+  ctl.target.copy(h.point);
+  ctl.update();
+  document.getElementById('st').textContent =
+    'orbiting ' + (h.object.name || 'that point');
+}});
+addEventListener('keydown', e => {{
+  if (e.code === 'KeyF' && root) {{                 // F = frame the whole model
+    const box = new THREE.Box3().setFromObject(root);
+    const c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
+    cam.position.set(c.x + sz.x*.9, c.y - sz.y*1.1, c.z + sz.z*2.2);
+    ctl.target.copy(c); ctl.update();
+  }}
 }});
 (function loop() {{ requestAnimationFrame(loop); ctl.update(); rend.render(scene, cam); }})();
 </script>
