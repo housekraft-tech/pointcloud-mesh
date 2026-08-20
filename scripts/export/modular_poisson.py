@@ -29,6 +29,9 @@ import sys, os, json, time, argparse
 from pathlib import Path
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from freespace_carve import free_fraction as fs_free_fraction, seen_mask as fs_seen
+
 t0 = time.time()
 def log(m): print(f"[{time.time()-t0:6.1f}s] {m}", flush=True)
 
@@ -62,7 +65,15 @@ MODE_TOL   = 0.020    # m: how close a candidate must be to one of the
 MODE_SUPP  = 0.25
 PT_CELL    = 0.02     # m: grid the scan is checked on
 PT_SUPPORT = 0.50     # a face plane must have scanned points behind this much
-                      # of itself, or it is not a surface the scanner saw     # a peak carrying less than this share of the strongest
+                      # of itself, or it is not a surface the scanner saw
+FREE_MAX   = 0.45     # a wall's interior may be this much free space and no
+                      # more. The scanner cannot see inside masonry, so a pair
+                      # of faces with daylight between them is not one wall.
+                      # Measured on koushik: real walls come out 0.00-0.27 and
+                      # open room air 0.95-0.99, so the line goes between them
+                      # and not at either end.
+FREE_OPEN  = 0.25     # a void in a wall that the scanner looked through this
+                      # much of is a real opening, not an occlusion shadow     # a peak carrying less than this share of the strongest
                       # one is not a thickness the building repeats -- it is a
                       # few panels standing off a few walls
 PAIR_ZCOVER = 0.70    # the opposite face must span this much of the face's own
@@ -296,7 +307,7 @@ def profile(f, C, A, lo, hi):
     return np.bincount(idx, weights=A[f["tris"]], minlength=int((hi-lo)/STATION)+1)
 
 
-def thickness_modes(planes, prof, st_area):
+def thickness_modes(planes, prof, st_area, free=None, origin=None):
     """The thicknesses this building was actually built with.
 
     Choosing the NEAREST opposite face makes a wardrobe standing 80 mm off a
@@ -320,6 +331,13 @@ def thickness_modes(planes, prof, st_area):
             if zs > 0.1 and cov < PAIR_ZCOVER*zs:
                 continue
             n = min(len(prof[i]), len(prof[j]))
+            if free is not None:
+                c0, c1 = sorted((f["coord"], g["coord"]))
+                both = np.where((prof[i][:n] > st_area) & (prof[j][:n] > st_area))[0]
+                if interior_free(free, f["axis"], c0, c1,
+                                 origin[1-f["axis"]] + (both + 0.5)*STATION,
+                                 max(f["z0"], g["z0"]), min(f["z1"], g["z1"])) > FREE_MAX:
+                    continue
             both = (prof[i][:n] > st_area) & (prof[j][:n] > st_area)
             # Weight a candidate by the SURFACE the two faces carry where they
             # face each other, not by how many stations they share. Counting
@@ -348,7 +366,37 @@ def thickness_modes(planes, prof, st_area):
     return sorted(modes)
 
 
-def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
+def interior_free(free, ax, c0, c1, stations, z0, z1, nv=9, nw=5):
+    """Can you see straight through the masonry, where there IS masonry?
+
+    Asked column by column: a column of the wall counts as looked-through only
+    if every sample across the full thickness is free space. Asked over the
+    whole run it would be meaningless -- a doorway is a column you can see
+    through, and every wall has doorways -- so the columns are the stations
+    where both faces carry material, which is where the wall claims to be
+    solid.
+
+    On koushik, walls come out 0.00-0.27 by this measure and open room air
+    0.95-0.99, which is the separation that makes it a test.
+    """
+    if free is None or len(stations) == 0 or c1 - c0 < 0.02 or z1 - z0 < 0.3:
+        return 0.0
+    ss = np.asarray(stations)
+    if len(ss) > 60:
+        ss = ss[np.linspace(0, len(ss)-1, 60).astype(int)]
+    zs = np.linspace(z0 + 0.15, z1 - 0.15, nv)
+    S, Z = np.meshgrid(ss, zs, indexing="ij")
+    through = np.ones(S.size, bool)
+    for w in np.linspace(c0 + 0.02, c1 - 0.02, nw):
+        Q = np.empty((S.size, 3))
+        Q[:, ax] = w; Q[:, 1-ax] = S.ravel(); Q[:, 2] = Z.ravel()
+        through &= fs_seen(free, Q)
+        if not through.any():
+            return 0.0
+    return float(through.mean())
+
+
+def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
     """Pair the faces into walls, and measure each wall where it stands.
 
     Pairing plane-to-plane rather than run-to-run is what makes a corridor wall
@@ -364,8 +412,9 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
     for f in planes:
         prof.append(profile(f, C, A, lo[1-f["axis"]], hi[1-f["axis"]]))
     ST_AREA = 0.002          # m2 of surface in a 50 mm station = material there
+    n_free = [0]
 
-    modes = thickness_modes(planes, prof, ST_AREA)
+    modes = thickness_modes(planes, prof, ST_AREA, free, lo)
 
     runs = []
     for i, f in enumerate(planes):
@@ -420,6 +469,9 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
             joined[-1]["s1"] = max(joined[-1]["s1"], r["s1"])
             continue
         joined.append(dict(r))
+    if n_free[0]:
+        log(f"{n_free[0]} candidate pairs had free space between their faces "
+            f"-- the scanner looked through them, so they are not one wall")
     log(f"{len(runs)} face runs -> {len(joined)} after rejoining across doorways")
     runs = joined
 
@@ -484,6 +536,13 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of):
         else:
             w["g_lo"] = c_lo - GROW_OUT
             w["g_hi"] = c_hi + GROW_OUT
+        if free is not None:
+            st = np.unique(np.round(C[m][:, 1-ax]/STATION).astype(int))*STATION
+            w["free_frac"] = round(interior_free(
+                free, ax, c_lo, c_hi, st,
+                max(z.min(), z_floor), min(z.max(), z_ceil)), 3)
+        else:
+            w["free_frac"] = None
         w["part_id"] = len(name_of)
         w["name"] = f"{w['kind']}_{len(keep):02d}"
         label[m] = w["part_id"]
@@ -897,7 +956,7 @@ FEAT_MAXAREA = 3.0    # m2: and neither a niche nor a pilaster is bigger
 FEAT_MAXDEEP = 0.25   # m: nor deeper than this
 
 
-def wall_features(w, planes, C, label, z_floor, z_ceil):
+def wall_features(w, planes, C, label, z_floor, z_ceil, free=None):
     """Read a wall's own surface: its openings, its arches, its niches.
 
     The wall is unfolded onto its near face as a depth map in (along, height).
@@ -957,6 +1016,22 @@ def wall_features(w, planes, C, label, z_floor, z_ceil):
         # An opening is classified by what it is shaped like, and a void that
         # is not shaped like any of them is an occlusion shadow, not a hole in
         # the wall. Saying so is the difference between 11 doors and 23.
+        # Did the scanner see through this hole? A doorway it walked through
+        # and a window it looked out of are full of rays; the shadow behind a
+        # wardrobe has none. This is the difference between an opening and a
+        # place the scan could not reach, and geometry cannot tell them apart.
+        seen_through = None
+        if free is not None:
+            uu = np.linspace(t0 + (u0+0.5)*FEAT_CELL, t0 + (u1+0.5)*FEAT_CELL, 7)
+            vv = np.linspace(z_floor + (v0+0.5)*FEAT_CELL,
+                             z_floor + (v1+0.5)*FEAT_CELL, 7)
+            ww = np.linspace(min(w["c_lo"], w["c_hi"]) + 0.02,
+                             max(w["c_lo"], w["c_hi"]) - 0.02, 3)
+            Wg, Ug, Vg = np.meshgrid(ww, uu, vv, indexing="ij")
+            Q = np.empty((Wg.size, 3))
+            Q[:, ax] = Wg.ravel(); Q[:, 1-ax] = Ug.ravel(); Q[:, 2] = Vg.ravel()
+            seen_through = round(fs_free_fraction(free, Q), 3)
+
         arched = (rise > ARCH_RISE and rise < 0.6*wid and wid > 0.60
                   and head > z_floor + 1.70)
         if arched:
@@ -968,7 +1043,12 @@ def wall_features(w, planes, C, label, z_floor, z_ceil):
             kind = "window"
         else:
             kind = "void"                              # unexplained: occlusion
-        feats.append(dict(kind=kind, wall=w["name"],
+        if seen_through is not None:
+            if kind == "void" and seen_through > FREE_OPEN:
+                kind = "opening"       # real, but not shaped like door or window
+            elif kind != "void" and seen_through < 0.10:
+                kind = "shadow"        # door-shaped, but nothing ever passed it
+        feats.append(dict(kind=kind, wall=w["name"], seen_through=seen_through,
                           width_mm=round(wid*1000), height_mm=round(hei*1000),
                           sill_mm=round((sill-z_floor)*1000),
                           head_mm=round((head-z_floor)*1000),
@@ -1155,6 +1235,9 @@ def main(argv=None):
     ap.add_argument("--no-glb", action="store_true")
     ap.add_argument("--las", default=None,
                     help="the scan itself: face planes are checked against it")
+    ap.add_argument("--freespace", default=None,
+                    help="a grid from freespace_carve.py: walls must be solid "
+                         "inside and openings must have been seen through")
     args = ap.parse_args(argv)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -1171,8 +1254,15 @@ def main(argv=None):
     n_dust = prune_specks(label, ea, eb, A)
 
     grid = scan_grid(args.las, yaw) if args.las else None
+    free = None
+    if args.freespace:
+        from freespace_carve import load_grid
+        free = load_grid(args.freespace)
+        log(f"free space: {free['seen'].sum():,} cells looked through "
+            f"at {free['G']*1000:.0f} mm")
     planes = face_planes(N, C, A, z_floor, z_ceil, grid)
-    walls, modes = physical_walls(planes, C, A, z_floor, z_ceil, label, name_of)
+    walls, modes = physical_walls(planes, C, A, z_floor, z_ceil, label, name_of,
+                                  free)
     floor, ceil = slabs(N, C, A, z_floor, z_ceil, label, name_of)
     cols = columns(C, A, N, z_floor, z_ceil, label, name_of)
     log(f"before growth: {(label>=0).mean()*100:.1f}% of triangles claimed")
@@ -1181,11 +1271,12 @@ def main(argv=None):
 
     feats = []
     for w in walls:
-        feats += wall_features(w, planes, C, label, z_floor, z_ceil)
+        feats += wall_features(w, planes, C, label, z_floor, z_ceil, free)
     feats = dedupe_openings(feats, walls)
     log(f"{len(feats)} relief features: "
         + ", ".join(f"{k}={sum(1 for f in feats if f['kind']==k)}"
-                    for k in ("door", "window", "arch", "niche", "pilaster", "void")))
+                    for k in ("door", "window", "arch", "opening", "niche",
+                              "pilaster", "void", "shadow")))
 
     cov = audit(label, ea, eb, C, A, name_of)
     junk = dropped_report(label, C, A, ea, eb, z_floor, z_ceil)
@@ -1216,6 +1307,7 @@ def main(argv=None):
                           across_m=[round(w["c_lo"], 4), round(w["c_hi"], 4)],
                           along_m=[round(w["s0"], 4), round(w["s1"], 4)],
                           z_mm=[round((w["z0"]-z_floor)*1000), round((w["z1"]-z_floor)*1000)],
+                          interior_free=w.get("free_frac"),
                           tris=int(idx.sum()), area_m2=round(float(A[idx].sum()), 2)))
     for c in ceil + floor:
         idx = label == c["part_id"]

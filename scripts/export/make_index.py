@@ -8,8 +8,9 @@ between them, the thicknesses the building repeats, and the masonry volume.
 import json, os, sys
 from pathlib import Path
 
-ROOT = Path("output/model")
-DIRS = [d for d in sorted(ROOT.iterdir()) if (d/"manifest.json").exists()]
+ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "output/model")
+DIRS = [d for d in sorted(ROOT.iterdir())
+        if d.is_dir() and (d/"manifest.json").exists()]
 
 CARD = """<section>
  <h2>{title}</h2>

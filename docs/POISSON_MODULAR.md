@@ -166,6 +166,51 @@ changed between two scans (a repaint is invisible in geometry). Each part gets a
 median colour and a spread in the manifest; `modular_rgb.glb` carries it per
 vertex.
 
+## Free space: what the scanner looked through
+
+`freespace_carve.py` recovers where the scanner was and what it could see, with
+no trajectory file. The export carries gps_time; the returns fall into frames of
+about 0.7 s; every return in a frame radiates from the sensor, so the point where
+those directions balance -- the geometric median of the frame's returns -- is
+where the sensor stood. Every return is then paired with its own pose and the
+segment between them is marched on a 30 mm grid: each cell the segment crosses
+was looked through, so it is empty.
+
+Two things had to be right before the answer meant anything:
+
+- **A frame is not a pose.** The operator walks 1.4 m/s, so the sensor moves a
+  metre inside one frame. Rays cast from the frame's average position are tilted
+  by tens of degrees at close range and cut straight through walls: carved that
+  way, the inside of every wall came out 0.84 free against 0.85 for the middle
+  of a room. The pose is now interpolated across each frame by the return's
+  place in acquisition order.
+- **One ray proves nothing.** About a tenth of rays clip something before their
+  own endpoint -- a grazing shot, a pose off by centimetres, SLAM drift. A cell
+  is counted free only if **8** rays crossed it, and each ray stops 50 mm plus
+  2% of its length short of its endpoint, because the sideways error grows with
+  range.
+
+With those, the carved grid separates:
+
+| sampled where | looked through |
+|---|---|
+| inside masonry, over the columns where the wall has material | **0.00 – 0.27** |
+| open room air | **0.95 – 0.99** |
+| 250 mm below the floor | 0.000 |
+| 200 mm above the ceiling | 0.000 |
+
+The floor and ceiling rows are the frame check: the grid and the model agree to
+the centimetre, or those would not be zero.
+
+It is used three ways. A candidate pair of faces with daylight between them is
+not one wall, so it is rejected before it can pair. Every wall carries its
+`interior_free` in the manifest as the evidence that it is solid. And an opening
+is confirmed by rays having passed through it: a doorway the operator walked
+through is full of them, while the shadow behind a wardrobe has none, which is
+the difference between an opening and a place the scan could not reach -- a
+distinction geometry cannot make. Voids the rays confirm are promoted to
+`opening`; door-shaped voids nothing ever passed are demoted to `shadow`.
+
 ## The two scans check each other
 
 koushik and mujammel are the same flat, walked twice. Neither is a ground truth,
