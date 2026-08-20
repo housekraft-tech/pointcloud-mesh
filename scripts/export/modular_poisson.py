@@ -25,7 +25,7 @@ fillet, jamb return and soffit within a junction falls outside every band. Those
 are exactly the triangles that make the model read as one house rather than a
 set of panels.
 """
-import sys, os, json, time, argparse
+import sys, os, json, time, argparse, shutil
 from pathlib import Path
 import numpy as np
 
@@ -1233,6 +1233,8 @@ def main(argv=None):
     ap.add_argument("--cache", default="output/model/poisson_koushik.npz")
     ap.add_argument("--out", default="output/model/poisson_modular")
     ap.add_argument("--no-glb", action="store_true")
+    ap.add_argument("--obj", action="store_true",
+                    help="write modular.obj even if the disk is nearly full")
     ap.add_argument("--las", default=None,
                     help="the scan itself: face planes are checked against it")
     ap.add_argument("--freespace", default=None,
@@ -1281,11 +1283,23 @@ def main(argv=None):
     cov = audit(label, ea, eb, C, A, name_of)
     junk = dropped_report(label, C, A, ea, eb, z_floor, z_ceil)
 
+    # An OBJ is ASCII: this building's ground floor is 66 M triangles, which is
+    # 2.8 GB of text. Write it when there is room, and say so when there is not
+    # -- the same geometry goes out as GLB from the viewer stage, which is
+    # binary, a fifth the size, and keeps the parts as named nodes.
+    free_gb = shutil.disk_usage(out).free/1e9
+    want_gb = len(T)*42/1e9
+    write_obj_file = args.obj or (free_gb - want_gb > 1.5)
+    if not write_obj_file:
+        log(f"skipping modular.obj: it would be {want_gb:.1f} GB of text and "
+            f"only {free_gb:.1f} GB is free -- this is a last-resort guard "
+            f"against filling the disk mid-run. Use --obj to force it.")
     np.save(out/"labels.npy", label)
     np.save(out/"verts.npy", V.astype(np.float32))
     json.dump(name_of, open(out/"names.json", "w"))
     order = [p for p in range(len(name_of)) if (label == p).any()]
-    write_obj(out/"modular.obj", V, T, label, name_of, order)
+    if write_obj_file:
+        write_obj(out/"modular.obj", V, T, label, name_of, order)
     if not args.no_glb:
         write_glb(str(out/"modular.glb"), V, T, label, name_of, order)
 
