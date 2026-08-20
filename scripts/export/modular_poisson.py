@@ -59,7 +59,10 @@ MIN_THICK  = 0.08     # m: thinner than this is not masonry. Two scans of one
                       # being paired as its far face.
 MODE_TOL   = 0.020    # m: how close a candidate must be to one of the
                       # building's own thicknesses to be preferred as one
-MODE_SUPP  = 0.30     # a peak carrying less than this share of the strongest
+MODE_SUPP  = 0.25
+PT_CELL    = 0.02     # m: grid the scan is checked on
+PT_SUPPORT = 0.50     # a face plane must have scanned points behind this much
+                      # of itself, or it is not a surface the scanner saw     # a peak carrying less than this share of the strongest
                       # one is not a thickness the building repeats -- it is a
                       # few panels standing off a few walls
 PAIR_ZCOVER = 0.70    # the opposite face must span this much of the face's own
@@ -185,10 +188,60 @@ def orient(N, T, C, z_floor):
         f"-- flipping the mesh so normals point into the material")
     return -N, T[:, ::-1].copy()
 
-def face_planes(N, C, A, z_floor, z_ceil):
+def scan_grid(las_path, yaw_deg):
+    """The scan itself, as a 20 mm occupancy set in the model's frame.
+
+    Poisson does not only interpolate, it extrapolates: where the cloud is thin
+    it wraps a shell around the surface, and a wall seen from one side comes
+    back as a slab about 100 mm thick with a face on each side. That phantom
+    face is indistinguishable from a real one by geometry -- it is flat, it is
+    vertical, it is full height, it faces the right way -- and it is what put a
+    95 mm entry in koushik's thickness vocabulary, on a scan four times sparser
+    than mujammel's, which sees no such wall.
+
+    What it does not have is points. This grid is what a face is checked
+    against.
+    """
+    import laspy
+    with laspy.open(las_path) as r:
+        pts = r.read()
+    P = np.column_stack([pts.x, pts.y, pts.z]).astype(np.float64)
+    P[:, 2] -= float(np.percentile(P[:, 2], 0.5))       # as poisson_mesh.py did
+    a = np.radians(-yaw_deg); c, sn = np.cos(a), np.sin(a)
+    P[:, :2] = np.column_stack([P[:, 0]*c - P[:, 1]*sn, P[:, 0]*sn + P[:, 1]*c])
+    lo = P.min(0) - 0.1
+    n = np.ceil((P.max(0) + 0.1 - lo)/PT_CELL).astype(int) + 1
+    idx = ((P - lo)/PT_CELL).astype(np.int64)
+    flat = (idx[:, 0]*n[1] + idx[:, 1])*n[2] + idx[:, 2]
+    occ = np.zeros(int(n.prod()), bool)
+    occ[flat] = True
+    log(f"scan grid: {len(P):,} points, {int(occ.sum()):,} cells of {PT_CELL*1000:.0f} mm")
+    return dict(occ=occ, lo=lo, n=n)
+
+
+def point_support(grid, Q):
+    """Fraction of the given positions that have a scanned point beside them."""
+    if grid is None:
+        return 1.0
+    lo, n, occ = grid["lo"], grid["n"], grid["occ"]
+    idx = np.floor((Q - lo)/PT_CELL).astype(np.int64)
+    ok = np.zeros(len(Q), bool)
+    for d in (0, 1, -1):
+        for e in (0, 1, -1):
+            for f in (0, 1, -1):
+                j = idx + np.array([d, e, f])
+                good = np.all((j >= 0) & (j < n), axis=1)
+                flat = (j[good, 0]*n[1] + j[good, 1])*n[2] + j[good, 2]
+                w = np.where(good)[0]
+                ok[w[occ[flat]]] = True
+    return float(ok.mean())
+
+
+def face_planes(N, C, A, z_floor, z_ceil, grid=None):
     """Every wall face: an axis, a side, and a coordinate, found by area."""
     vert = (np.abs(N[:, 2]) < VERT_NZ) & (C[:, 2] > z_floor + 0.03) & (C[:, 2] < z_ceil - 0.03)
     out = []
+    dropped = [0]
     for ax in (0, 1):
         for sgn in (+1, -1):
             m = np.where(vert & (N[:, ax]*sgn > np.cos(np.radians(HEAD_TOL))))[0]
@@ -208,6 +261,11 @@ def face_planes(N, C, A, z_floor, z_ceil):
                 if a[band].sum() < FACE_AREA:
                     continue
                 tris = m[band]
+                # a face the scanner never actually hit is a Poisson artefact
+                sub = tris if len(tris) < 4000 else tris[::max(1, len(tris)//4000)]
+                if point_support(grid, C[sub]) < PT_SUPPORT:
+                    dropped[0] += 1
+                    continue
                 # The face position is the PEAK of the histogram refined over a
                 # narrow window, not the mean of the whole band: relief is all
                 # on one side of a face, so a band-wide mean is pulled into the
@@ -222,6 +280,9 @@ def face_planes(N, C, A, z_floor, z_ceil):
                                 z0=float(np.percentile(z, 1)),
                                 z1=float(np.percentile(z, 99))))
     out.sort(key=lambda f: -f["area"])
+    if dropped[0]:
+        log(f"{dropped[0]} face planes had no scanned points behind them "
+            f"-- Poisson shells, dropped")
     log(f"{len(out)} face planes "
         + ", ".join(f"{sum(1 for f in out if f['axis']==ax and f['sign']==s)}"
                     f"@{'xy'[ax]}{'+-'[s<0]}" for ax in (0, 1) for s in (+1, -1)))
@@ -254,9 +315,19 @@ def thickness_modes(planes, prof, st_area):
             t = (g["coord"] - f["coord"])*f["sign"]
             if not (MIN_THICK < t < MAX_THICK):
                 continue
+            zs = f["z1"] - f["z0"]
+            cov = min(f["z1"], g["z1"]) - max(f["z0"], g["z0"])
+            if zs > 0.1 and cov < PAIR_ZCOVER*zs:
+                continue
             n = min(len(prof[i]), len(prof[j]))
-            sup = int(((prof[i][:n] > st_area) & (prof[j][:n] > st_area)).sum())
-            if sup:
+            both = (prof[i][:n] > st_area) & (prof[j][:n] > st_area)
+            # Weight a candidate by the SURFACE the two faces carry where they
+            # face each other, not by how many stations they share. Counting
+            # stations lets a shelf and a wall outvote two walls, and that is
+            # what put a phantom 145 mm in koushik's vocabulary while mujammel,
+            # the same flat better scanned, read a clean 200 and 243.
+            sup = float(np.minimum(prof[i][:n], prof[j][:n])[both].sum())
+            if sup > 0:
                 h[int(t/0.01)] += sup
     if h.sum() == 0:
         return []
@@ -265,7 +336,11 @@ def thickness_modes(planes, prof, st_area):
     for b in np.argsort(-sm):
         if sm[b] < MODE_SUPP*sm.max() or any(abs(b*0.01 - m) < 0.05 for m in modes):
             continue
-        modes.append(b*0.01 + 0.005)
+        # the peak's own centre of mass, not the bin centre: the bins are 10 mm
+        # and the number is quoted against a drawing in millimetres
+        w = sm[max(0, b-1):b+2]
+        c = np.arange(max(0, b-1), b+2)*0.01 + 0.005
+        modes.append(float((w*c).sum()/w.sum()))
         if len(modes) == 3:
             break
     log("thicknesses this building repeats: "
@@ -1078,6 +1153,8 @@ def main(argv=None):
     ap.add_argument("--cache", default="output/model/poisson_koushik.npz")
     ap.add_argument("--out", default="output/model/poisson_modular")
     ap.add_argument("--no-glb", action="store_true")
+    ap.add_argument("--las", default=None,
+                    help="the scan itself: face planes are checked against it")
     args = ap.parse_args(argv)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -1093,7 +1170,8 @@ def main(argv=None):
     ea, eb = adjacency(T, len(V))
     n_dust = prune_specks(label, ea, eb, A)
 
-    planes = face_planes(N, C, A, z_floor, z_ceil)
+    grid = scan_grid(args.las, yaw) if args.las else None
+    planes = face_planes(N, C, A, z_floor, z_ceil, grid)
     walls, modes = physical_walls(planes, C, A, z_floor, z_ceil, label, name_of)
     floor, ceil = slabs(N, C, A, z_floor, z_ceil, label, name_of)
     cols = columns(C, A, N, z_floor, z_ceil, label, name_of)

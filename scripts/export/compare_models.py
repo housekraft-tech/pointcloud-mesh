@@ -84,9 +84,16 @@ def wall_lines(man, R=None, t=None):
             pts = pts @ R + t
             ax = ax if abs(R[0, 0]) > 0.5 else 1-ax
         cc = pts[:, ax].mean(); ss = sorted(pts[:, 1-ax])
+        # the two faces themselves, so a wall placed differently can be told
+        # apart from a wall whose faces were measured differently
+        lo, hi = p["across_m"]
+        if R is not None:
+            q = np.array([[lo, 0], [hi, 0]]) if ax == 0 else np.array([[0, lo], [0, hi]])
+            q = q @ R + t
+            lo, hi = sorted(q[:, ax])
         out.append(dict(name=p["name"], axis=ax, c=float(cc), s0=float(ss[0]),
                         s1=float(ss[1]), thickness=p["thickness_mm"],
-                        area=p["area_m2"]))
+                        lo=float(lo), hi=float(hi), area=p["area_m2"]))
     return out
 
 
@@ -162,6 +169,11 @@ def main():
     if len(d):
         print(f"  wall line agreement: median {np.median(d):.0f} mm, "
               f"90th pct {np.percentile(d, 90):.0f} mm, worst {d.max():.0f} mm")
+    fl = np.array([[a["lo"]-b["lo"], a["hi"]-b["hi"]] for a, b, _, _ in rows])*1000
+    if len(fl):
+        print(f"  face positions: near face A-B median {np.median(fl[:, 0]):+.0f} mm, "
+              f"far face {np.median(fl[:, 1]):+.0f} mm "
+              f"(a matched pair of walls seen from the same side)")
     tt = [(r[0]["thickness"], r[1]["thickness"]) for r in rows
           if r[0]["thickness"] and r[1]["thickness"]]
     if tt:

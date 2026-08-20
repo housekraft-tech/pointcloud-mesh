@@ -51,6 +51,9 @@ def main():
     ap.add_argument("--dir", default="output/model/poisson_modular_mujammel")
     ap.add_argument("--cache", default="output/model/poisson_mujammel.npz")
     ap.add_argument("--las", default="output/mujammel_all/isolated.las")
+    ap.add_argument("--no-glb", action="store_true",
+                    help="only the per-vertex colours and the manifest; the "
+                         "viewer reads vertex_rgb.npy itself")
     ap.add_argument("--lite", type=int, default=900_000,
                     help="triangles in the coloured GLB")
     a = ap.parse_args()
@@ -97,6 +100,8 @@ def main():
     json.dump(man, open(d/"manifest.json", "w"), indent=1)
     log("manifest updated with a colour per part")
 
+    if a.no_glb:
+        return 0
     # a coloured, decimated GLB, so the finishes can actually be looked at
     import open3d as o3d, trimesh
     keep = np.where(L >= 0)[0]
