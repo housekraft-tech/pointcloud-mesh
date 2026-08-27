@@ -1,25 +1,32 @@
-"""Build the return face where a surface steps, instead of leaving a slot.
+"""Close the slots, by asking whether a gap is a SLOT rather than what made it.
 
-The dark stripe running along a wall is not a seam and not a tolerance: it is
-a STEP. Where a wall thickens, or a recess starts, the scan has two parallel
-surfaces 50 to 200 mm apart. Two parallel planes have no intersection line, so
-the clipped-plane rebuild has nothing to clip against and simply stops at the
-edge of each -- leaving a slot exactly as wide as the step is deep, running the
-whole length of the wall.
+The dark stripe running along a wall is not a seam and not a tolerance. Sample
+the scan where one appears and four planes meet there, all of them parallel --
+normals along Y, offsets at -5.85, -5.80, -5.66 and +5.79 m. It is a recess.
+Parallel planes have no intersection line, so the clipped-plane rebuild has
+nothing to clip against, each patch stops at its own edge, and what is left is
+a slot exactly as deep as the recess and as long as the wall.
 
-What belongs there is the return: the little perpendicular face that carries
-the surface from one offset to the other. So every open edge looks across the
-gap for an open edge facing it, and the strip between them is filled.
+The first version of this tested the geometry of each pair of edges: parallel
+surfaces, same facing, crossing along the shared normal. That describes a step,
+and it closed the steps -- but the slots left over were not steps. Measured at
+the six longest, the two sides' normals ran from -0.80 to +0.99, because a slot
+can equally be the end of a pier, the side of a jamb, or a reveal turning a
+corner. No test written in terms of normals covers them all.
 
-Two guards keep this from closing things that are meant to be open:
+What they have in common is not their shape but their CONSISTENCY. A slot is a
+long run of boundary whose opposite side stays the same distance away: two
+edges of one thing that should have been joined. The scan's ragged fringe also
+throws up edges that pass close by, but there the distance wanders and the run
+goes nowhere. So the test is on the run, not on the pair:
 
-  * --close bounds how far it will reach. A doorway is not a step, and the
-    default is well under any opening a building has;
-  * the two edges have to be the two sides of a step -- surfaces parallel and
-    facing the same way, with the crossing along their shared normal. Two
-    edges that merely come close, like the scan's ragged outer fringe, do not
-    qualify; without that test this pass welds 49,300 "steps" and adds 230 m2
-    of surface that is not there.
+  * long -- at least --min-run edges and --min-len of boundary;
+  * steady -- the gap's spread within --gap-var of its own mean;
+  * narrow -- the whole thing inside --close, which is well under any opening a
+    building has, so a doorway is never mistaken for a slot.
+
+Runs that pass are filled with a quad strip. Runs that fail are left open: an
+open edge in the right place is better than surface that is not there.
 """
 import argparse
 from collections import defaultdict
@@ -40,12 +47,15 @@ def main():
     ap.add_argument("--inp", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--close", type=float, default=0.22,
-                    help="m: the widest step it will build a return across")
-    ap.add_argument("--min-run", type=int, default=8,
-                    help="edges: a reveal is a long run of facing boundary, "
-                         "a fringe coincidence is one or two edges")
+                    help="m: the widest slot it will close")
     ap.add_argument("--min-gap", type=float, default=0.004,
-                    help="m: below this the seam is a weld, not a step")
+                    help="m: below this the seam is a weld, not a slot")
+    ap.add_argument("--min-run", type=int, default=6, help="edges")
+    ap.add_argument("--min-len", type=float, default=0.25,
+                    help="m: total boundary in a run before it counts")
+    ap.add_argument("--gap-var", type=float, default=0.40,
+                    help="the gap's standard deviation over its mean; above "
+                         "this the two sides are not two sides of one slot")
     a = ap.parse_args()
 
     m = trimesh.load(a.inp, force="mesh")
@@ -55,90 +65,84 @@ def main():
     be = open_edges(F)
     print(f"in: {len(F):,} tris, {m.area:.0f} m2, {len(be):,} open edges")
 
-    # each boundary vertex's outward sense: the average normal of its faces
-    vn = np.zeros((len(V), 3))
-    tri = V[F]
-    fn = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    L = np.linalg.norm(fn, axis=1)
-    fn[L > 1e-12] /= L[L > 1e-12][:, None]
-    for fi, f in enumerate(F):
-        vn[f] += fn[fi]
-    L = np.linalg.norm(vn, axis=1)
-    vn[L > 1e-12] /= L[L > 1e-12][:, None]
-
     bv = np.unique(be)
-    # which boundary edges each boundary vertex belongs to, for the facing test
-    inc = defaultdict(list)
-    for k, (x, y) in enumerate(be):
-        inc[int(x)].append(k)
-        inc[int(y)].append(k)
+    # which way each boundary vertex's own boundary runs: a bridge crosses a
+    # slot, it does not run along the edge it starts from
+    along = np.zeros((len(V), 3))
+    for x, y in be:
+        d = V[y] - V[x]
+        n = np.linalg.norm(d)
+        if n > 1e-12:
+            along[x] += d / n
+            along[y] += d / n
+    n = np.linalg.norm(along, axis=1)
+    along[n > 1e-12] /= n[n > 1e-12][:, None]
 
     tree = cKDTree(V[bv])
-    pairs = tree.query_pairs(a.close, output_type="ndarray")
-    partner = {}
-    best = defaultdict(lambda: np.inf)
-    for i, j in pairs:
+    partner, best = {}, defaultdict(lambda: np.inf)
+    for i, j in tree.query_pairs(a.close, output_type="ndarray"):
         vi, vj = int(bv[i]), int(bv[j])
         d = float(np.linalg.norm(V[vi] - V[vj]))
         if d < a.min_gap:
             continue
-        # A STEP, and only a step: the two surfaces are parallel and face the
-        # same way, and the crossing runs along their shared normal. That is a
-        # wall that thickens. Anything else -- the scan's ragged fringe, a pipe
-        # passing a wall, two edges that merely come close -- fails one of the
-        # two and is left alone, which is the difference between building 700
-        # return faces and welding the whole model shut.
         u = (V[vj] - V[vi]) / d
-        if vn[vi] @ vn[vj] < 0.85:
-            continue
-        if abs(u @ vn[vi]) < 0.7 or abs(u @ vn[vj]) < 0.7:
-            continue
+        if abs(u @ along[vi]) > 0.7 or abs(u @ along[vj]) > 0.7:
+            continue                      # along the same boundary, not across
         if d < best[vi]:
             best[vi], partner[vi] = d, vj
         if d < best[vj]:
             best[vj], partner[vj] = d, vi
 
-    # A recess is a COLLAR: a long unbroken run of boundary, all of it facing
-    # its opposite number across the same offset. The scan's fringe throws up
-    # matches too, but they are isolated -- one edge here, two there. Requiring
-    # a run is what separates a window reveal from noise, and without it this
-    # pass fires 5,523 times and fragments the model instead of closing it.
     cand = [k for k, (x, y) in enumerate(be)
             if partner.get(int(x)) is not None and partner.get(int(y)) is not None
             and partner[int(x)] != partner[int(y)]]
     at = defaultdict(list)
     for k in cand:
-        x, y = be[k]
-        at[int(x)].append(k)
-        at[int(y)].append(k)
-    seenk, runs = set(), []
+        at[int(be[k][0])].append(k)
+        at[int(be[k][1])].append(k)
+
+    seen, runs = set(), []
     for k0 in cand:
-        if k0 in seenk:
+        if k0 in seen:
             continue
         run, stack = [], [k0]
-        seenk.add(k0)
+        seen.add(k0)
         while stack:
             k = stack.pop()
             run.append(k)
             for v in be[k]:
                 for k2 in at[int(v)]:
-                    if k2 not in seenk:
-                        seenk.add(k2)
+                    if k2 not in seen:
+                        seen.add(k2)
                         stack.append(k2)
         runs.append(run)
-    keep = [k for r in runs if len(r) >= a.min_run for k in r]
-    print(f"  {len(cand):,} edges face a step; {len(runs):,} runs, "
-          f"{len([r for r in runs if len(r) >= a.min_run]):,} long enough to be a reveal")
 
-    add = []
-    seen = set()
+    keep, why = [], defaultdict(int)
+    for r in runs:
+        if len(r) < a.min_run:
+            why["too few edges"] += 1
+            continue
+        ln = float(sum(np.linalg.norm(V[be[k][0]] - V[be[k][1]]) for k in r))
+        if ln < a.min_len:
+            why["too short"] += 1
+            continue
+        gs = np.array([best[int(be[k][0])] for k in r])
+        if gs.mean() <= 0 or gs.std() / gs.mean() > a.gap_var:
+            why["gap wanders"] += 1
+            continue
+        keep.extend(r)
+    print(f"  {len(cand):,} edges face something across a gap, in {len(runs):,} runs; "
+          f"kept {len(keep):,} (" +
+          ", ".join(f"{v} {k}" for k, v in sorted(why.items())) + ")")
+
+    add, done = [], set()
     for k in keep:
         x, y = int(be[k][0]), int(be[k][1])
         px, py = partner[x], partner[y]
         key = tuple(sorted((x, y, px, py)))
-        if key in seen:
+        if key in done:
             continue
-        seen.add(key)
+        done.add(key)
         add.append([x, y, py])
         add.append([x, py, px])
 
@@ -146,15 +150,14 @@ def main():
         print("  nothing to bridge")
     else:
         F = np.vstack([F, np.array(add)])
-        print(f"  bridged {len(seen):,} steps with {len(add):,} triangles")
+        print(f"  closed {len(done):,} slots with {len(add):,} triangles")
 
     out = trimesh.Trimesh(V, F, process=False)
     out.update_faces(out.nondegenerate_faces())
     out.remove_unreferenced_vertices()
     out.export(a.out)
-    be2 = open_edges(np.array(out.faces))
     print(f"out: {len(out.faces):,} tris, {out.area:.0f} m2, "
-          f"{len(be2):,} open edges -> {a.out}")
+          f"{len(open_edges(np.array(out.faces))):,} open edges -> {a.out}")
 
 
 if __name__ == "__main__":
