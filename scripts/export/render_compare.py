@@ -52,6 +52,9 @@ def main():
     ap.add_argument("--azim", type=float, default=35.0, help="deg")
     ap.add_argument("--elev", type=float, default=28.0, help="deg")
     ap.add_argument("--dist", type=float, default=1.9, help="x the diagonal")
+    ap.add_argument("--radius", type=float, default=None,
+                    help="m: put the camera exactly this far from --at, instead "
+                         "of scaling off the whole model's diagonal")
     ap.add_argument("--at", nargs=3, type=float, default=None,
                     help="look at this point instead of the centre")
     a = ap.parse_args()
@@ -60,7 +63,7 @@ def main():
     lo = np.min([m.bounds[0] for m in ms], axis=0)
     hi = np.max([m.bounds[1] for m in ms], axis=0)
     c = np.array(a.at, float) if a.at else (lo + hi) / 2
-    R = float(np.linalg.norm(hi - lo)) * a.dist / 2
+    R = a.radius if a.radius else float(np.linalg.norm(hi - lo)) * a.dist / 2
     az, el = np.radians(a.azim), np.radians(a.elev)
     eye = c + R*np.array([np.cos(el)*np.cos(az), np.cos(el)*np.sin(az), np.sin(el)])
     panels = [shade(m, eye.astype(np.float32), c.astype(np.float32),
