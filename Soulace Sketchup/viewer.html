@@ -47,7 +47,8 @@ import {STLLoader} from 'three/addons/loaders/STLLoader.js';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 
 const FLOORS = [{"key": "Soulace_L0_ground", "label": "Soulace L0 ground", "stem": "Soulace_L0_ground"}, {"key": "Soulace_L1_first", "label": "Soulace L1 first", "stem": "Soulace_L1_first"}, {"key": "Soulace_L2_second", "label": "Soulace L2 second", "stem": "Soulace_L2_second"}];
-const FMTS = [{k:'edges.stl', label:'planes, true edges'},
+const FMTS = [{k:'rect.stl', label:'rectangles only'},
+              {k:'edges.stl', label:'planes, true edges'},
               {k:'parts.dae', label:'boxes, per part'},
               {k:'dae', label:'boxes, fused'}, {k:'stl', label:'boxes .stl'},
               {k:'relief_solid.glb', label:'relief, sealed'},
@@ -70,7 +71,7 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x2b2f3d, 2.1));
 const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(4, -6, 9); scene.add(key);
 
 const root = new THREE.Group(); root.rotation.x = -Math.PI/2; scene.add(root);   // Z up -> Y up
-let current = null, floor = FLOORS[0], fmt = 'edges.stl';
+let current = null, floor = FLOORS[0], fmt = 'rect.stl';
 
 function resize(){
   const w = innerWidth, h = innerHeight;
