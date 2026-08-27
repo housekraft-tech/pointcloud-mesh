@@ -126,6 +126,8 @@ def main():
     ap.add_argument("--bite", type=float, default=0.05,
                     help="m: how wide the fillet band at a junction is -- only "
                          "material this close to the intersection line is fake")
+    ap.add_argument("--grow", type=float, default=0.15,
+                    help="m: how far a patch may be extended to reach the seam")
     ap.add_argument("--max-cut", type=float, default=0.35,
                     help="a clip removing more than this fraction of the patch "
                          "is refused: the window was wrong, not the patch")
@@ -218,7 +220,10 @@ def main():
             strip = Polygon([base0 - nrm2*a.bite, base1 - nrm2*a.bite,
                              base1 + nrm2*a.bite, base0 + nrm2*a.bite])
             cut = strip.difference(half)                    # the wrong side of it
-            grown = strip.intersection(half).intersection(patch.buffer(a.bite))
+            # reach ACROSS the fillet, not just its width: at a floor the
+            # Poisson blend can be 100 mm deep, and a patch that stops short of
+            # the line leaves exactly the gap you see standing in the room.
+            grown = strip.intersection(half).intersection(patch.buffer(a.grow))
             clipped = unary_union([patch.difference(cut), grown])
             if clipped.is_empty or clipped.area < (1.0 - a.max_cut) * patch.area:
                 stats["clip_refused"] += 1
