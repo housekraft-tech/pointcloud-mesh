@@ -18,6 +18,8 @@ complete surface where an earlier attempt was patchy:
 Run with .venv311 -- open3d has no wheel for the 3.13 in .venv.
 """
 import sys, os, json, time
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import laspy
 import open3d as o3d
@@ -36,6 +38,9 @@ def stage(msg): print(f"[{time.time()-t0:6.1f}s] {msg}", flush=True)
 stage(f"reading {SRC}")
 with laspy.open(SRC) as r: p = r.read()
 P = np.column_stack([p.x, p.y, p.z]).astype(np.float64)
+# the time each point was measured: what turns "which way is out?" from a guess
+# into a lookup, because the sensor's own position at that moment is knowable
+T = np.asarray(p.gps_time, np.float64) if "gps_time" in     set(p.point_format.dimension_names) else None
 try:
     C = np.column_stack([p.red, p.green, p.blue]).astype(np.float64)
     C = C/(65535.0 if C.max() > 255 else 255.0)
@@ -45,6 +50,7 @@ if os.path.exists("output/keep_mask.npy") and os.environ.get("PM_MASK", "1") == 
     k = np.load("output/keep_mask.npy")
     if len(k) == len(P):
         P = P[k]; C = C[k] if C is not None else None
+        T = T[k] if T is not None else None
         stage(f"declutter: dropped {(~k).sum():,} free-standing points")
 if os.path.exists("output/fp_walls.json"):
     H = json.load(open("output/fp_walls.json"))['clear_height']
@@ -57,6 +63,7 @@ else:
     stage(f"no fp_walls.json: clear height taken as {H*1000:.0f} mm from the scan")
 m = P[:, 2] < H-CUT
 P = P[m]; C = C[m] if C is not None else None
+T = T[m] if T is not None else None
 stage(f"{len(P):,} points below the ceiling cut")
 
 pcd = o3d.geometry.PointCloud()
@@ -68,12 +75,47 @@ stage(f"  {len(pcd.points):,} points")
 stage("statistical outlier removal")
 pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
 stage(f"  {len(pcd.points):,} points")
-stage("normals + consistent orientation")
+stage("normals")
 pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=VOXEL*4, max_nn=30))
-try:
-    pcd.orient_normals_consistent_tangent_plane(30)
-except Exception as e:
-    stage(f"  orientation skipped ({e})")
+
+# Orienting the normals is where this used to spend most of its life.
+# orient_normals_consistent_tangent_plane builds a k-NN graph over every point
+# and walks its minimum spanning tree -- single threaded, and on 19 M points it
+# ran for over half an hour without finishing. It is also only a guess: it
+# propagates a choice of sign, and two meshes of the same flat came out
+# opposite, which is why the modular stage has to re-settle orientation against
+# the floor.
+#
+# The scan already knows the answer. Every point was SEEN, from a sensor that
+# was somewhere at the time, and a surface faces the thing that saw it. The
+# gps_time field gives the sensor's path, so the normal simply points back
+# towards the nearest place the sensor stood. O(n) against a few thousand
+# poses, right by construction, and no MST.
+oriented = False
+if T is not None and len(T):
+    try:
+        from scipy.spatial import cKDTree
+        from scripts.recon.trajectory import approx_trajectory
+        traj = approx_trajectory(T, P, dt_s=0.25)
+        if len(traj) >= 8:
+            Q = np.asarray(pcd.points)
+            N = np.asarray(pcd.normals)
+            _, j = cKDTree(traj[:, :3]).query(Q, k=1, workers=-1)
+            to_sensor = traj[j, :3] - Q
+            flip = np.einsum("ij,ij->i", N, to_sensor) < 0
+            N[flip] *= -1.0
+            pcd.normals = o3d.utility.Vector3dVector(N)
+            stage(f"  oriented towards the sensor along {len(traj):,} poses "
+                  f"({100*flip.mean():.0f}% flipped)")
+            oriented = True
+    except Exception as e:
+        stage(f"  sensor orientation unavailable ({e})")
+if not oriented:
+    stage("  falling back to the MST -- this is the slow one")
+    try:
+        pcd.orient_normals_consistent_tangent_plane(30)
+    except Exception as e:
+        stage(f"  orientation skipped ({e})")
 stage(f"poisson depth={DEPTH}  (this is the slow part)")
 mesh, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
     pcd, depth=DEPTH, n_threads=-1)

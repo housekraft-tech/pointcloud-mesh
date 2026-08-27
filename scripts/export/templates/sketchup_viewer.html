@@ -1,0 +1,226 @@
+<!doctype html><meta charset=utf-8><title>@@TITLE@@</title>
+<style>
+ html,body{margin:0;height:100%;background:#12131a;color:#e8e6e1;font:14px/1.5 system-ui}
+ #c{position:fixed;inset:0}
+ #p{position:fixed;top:0;right:0;width:320px;max-height:100%;overflow:auto;
+    padding:16px 18px;background:rgba(18,19,26,.92);border-left:1px solid #2a2c38}
+ h1{font-size:15px;margin:0 0 2px} .n{color:#8b93a7;font-size:12px;margin:0 0 14px}
+ .h{font-size:11px;letter-spacing:.08em;color:#8b93a7;margin:16px 0 6px;text-transform:uppercase}
+ button{background:#232633;color:#e8e6e1;border:1px solid #343849;border-radius:6px;
+        padding:6px 10px;margin:0 4px 4px 0;cursor:pointer;font:13px system-ui}
+ button.on{background:#3b6ef5;border-color:#3b6ef5}
+ label{display:block;margin:3px 0} table{width:100%;font-size:12px;border-collapse:collapse}
+ td{padding:2px 0;color:#b9bfd0} td:last-child{text-align:right;color:#fff}
+ a{color:#7aa2ff}
+</style>
+<div id=c></div>
+<div id=msg style="position:fixed;left:50%;top:46%;transform:translate(-50%,-50%);
+ padding:10px 16px;border-radius:8px;background:#232633;border:1px solid #343849">loading&hellip;</div>
+<div id=p>
+ <h1>@@TITLE@@</h1>
+ <p class=n>the exact files in this folder, as SketchUp will read them</p>
+ <div class=h>storey</div>
+ <div id=floors></div>
+ <div class=h>file</div>
+ <p class=n style="margin:0 0 6px">boxes: flat faces, sharp edges, ~4 mm from the scan.
+  full relief: the scanned surface itself, ~1 mm &mdash; heavier, and a surface, not a solid.</p>
+ <div id=fmt></div>
+ <div class=h>show</div>
+ <label><input type=checkbox id=edges checked> edges</label>
+ <label><input type=checkbox id=faces checked> faces</label>
+ <label><input type=checkbox id=cut> cut the ceiling away</label>
+ <div class=h>measured</div>
+ <table id=stats></table>
+ <div class=h>files</div>
+ <div id=links class=n></div>
+ <p class=n>drag to orbit &middot; wheel zooms toward the cursor, 12% of the way to it a notch
+  &middot; double-click to orbit that point &middot; right-drag pans &middot; F reframes</p>
+</div>
+<script type="importmap">
+{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {ColladaLoader} from 'three/addons/loaders/ColladaLoader.js';
+import {STLLoader} from 'three/addons/loaders/STLLoader.js';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+
+const FLOORS = @@FLOORS@@;
+const FMTS = [{k:'parts.dae', label:'boxes, per part'},
+              {k:'dae', label:'boxes, fused'}, {k:'stl', label:'boxes .stl'},
+              {k:'relief_solid.glb', label:'relief, sealed'},
+              {k:'sharp.stl', label:'scan, corners sharpened'},
+              {k:'detail.stl', label:'full relief'},
+              {k:'detail_hi.stl', label:'full relief +'}];
+
+const msg = document.getElementById('msg');
+const say = t => { msg.style.display = t ? 'block' : 'none'; msg.textContent = t || ''; };
+addEventListener('error', e => say('failed: ' + (e.message || e.type)));
+const el = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(devicePixelRatio); el.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color('#12131a');
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 800);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.enableZoom = false;         // replaced below: a fixed step, toward the cursor
+scene.add(new THREE.HemisphereLight(0xffffff, 0x2b2f3d, 2.1));
+const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(4, -6, 9); scene.add(key);
+
+const root = new THREE.Group(); root.rotation.x = -Math.PI/2; scene.add(root);   // Z up -> Y up
+let current = null, floor = FLOORS[0], fmt = 'dae';
+
+function resize(){
+  const w = innerWidth, h = innerHeight;
+  camera.aspect = w/h; camera.updateProjectionMatrix(); renderer.setSize(w, h);
+}
+addEventListener('resize', resize); resize();
+
+function frame(){
+  const b = new THREE.Box3().setFromObject(root); if (b.isEmpty()) return;
+  const c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(s*0.42, s*0.34, s*0.42));
+  camera.near = Math.max(s/5000, 0.01); camera.far = s*40;
+  camera.updateProjectionMatrix();
+}
+addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') frame(); });
+
+// Zoom, done properly. Two bugs lived here.
+//
+// OrbitControls' own zoom scales about the orbit CENTRE, so it always drags you
+// back to the middle of the building. Replacing it with a dolly toward the
+// cursor fixes that -- but a dolly moves the camera AND the target by the same
+// vector, so the orbit radius never changes, and if the step is a percentage of
+// that radius the step never changes either. Thirteen metres from the building
+// every notch moves a metre; ten centimetres from a wall every notch still
+// moves a metre, straight through it. That is the "zoom is broken".
+//
+// The step has to be measured against the thing you are pointing AT. Each notch
+// covers 12% of the distance to the surface under the cursor, so approach is
+// geometric: fast across the room, slow at the wall, and it never crosses it.
+const ray = new THREE.Raycaster(), mv = new THREE.Vector2();
+const _f = new THREE.Vector3(), _v = new THREE.Vector3();
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  mv.x = (e.clientX/innerWidth)*2 - 1; mv.y = -(e.clientY/innerHeight)*2 + 1;
+  ray.setFromCamera(mv, camera);
+  // How far away is the thing you are pointing at? That, not the orbit radius,
+  // is what a zoom step should be measured against.
+  const hit = current ? ray.intersectObjects(current.children, true)
+                            .filter(i => i.object.visible)[0] : null;
+  const reach = hit ? hit.distance : camera.position.distanceTo(controls.target);
+  if (e.deltaY < 0 && reach < 0.25) return;      // do not walk through the wall
+  const f = (e.deltaY < 0 ? 1 : -1) * 0.12;      // 12% of what is left, per notch
+  _v.copy(ray.ray.direction).multiplyScalar(reach*f);
+  camera.position.add(_v); controls.target.add(_v); controls.update();
+}, {passive:false});
+
+// double-click re-centres the orbit on the point you clicked
+addEventListener('dblclick', e => {
+  if (!current) return;
+  mv.x = (e.clientX/innerWidth)*2 - 1; mv.y = -(e.clientY/innerHeight)*2 + 1;
+  ray.setFromCamera(mv, camera);
+  const h = ray.intersectObjects(current.children, true).filter(i => i.object.visible)[0];
+  if (h) { controls.target.copy(h.point); controls.update(); }
+});
+
+const mat = new THREE.MeshStandardMaterial({color:'#cfc9bd', roughness:.92, metalness:0,
+                                            side:THREE.DoubleSide});
+const lineMat = new THREE.LineBasicMaterial({color:'#3b6ef5'});
+
+function show(meshes){
+  if (!Array.isArray(meshes)) meshes = [meshes];
+  if (current) root.remove(current);
+  current = new THREE.Group();
+  const edges = new THREE.Group(); edges.name = 'edges';
+  let tri = 0;
+  for (const m of meshes) {
+    m.material = mat;
+    m.updateWorldMatrix(true, false);
+    const g = m.geometry.clone().applyMatrix4(m.matrixWorld);
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.name = m.name || '';
+    current.add(mesh);
+    tri += (g.index ? g.index.count : g.attributes.position.count)/3;
+    edges.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), lineMat));
+  }
+  current.add(edges);
+  root.add(current); applyToggles(); frame(); stats(current, tri, meshes.length); say('');
+}
+
+function applyToggles(){
+  if (!current) return;
+  const e = document.getElementById('edges').checked;
+  const f = document.getElementById('faces').checked;
+  current.children.forEach(o => { o.visible = (o.name === 'edges') ? e : f; });
+  const cut = document.getElementById('cut').checked;
+  const b = new THREE.Box3().setFromObject(current);
+  renderer.clippingPlanes = cut
+    ? [new THREE.Plane(new THREE.Vector3(0,-1,0), b.max.y - 0.35)] : [];
+}
+['edges','faces','cut'].forEach(id =>
+  document.getElementById(id).onchange = applyToggles);
+renderer.localClippingEnabled = true;
+
+function stats(group, tri, nparts){
+  const b = new THREE.Box3().setFromObject(group);
+  const s = b.getSize(new THREE.Vector3());
+  document.getElementById('stats').innerHTML =
+    `<tr><td>named parts</td><td>${(nparts||1).toLocaleString()}</td></tr>
+     <tr><td>triangles</td><td>${tri.toLocaleString()}</td></tr>
+     <tr><td>extent</td><td>${s.x.toFixed(2)} &times; ${s.z.toFixed(2)} &times; ${s.y.toFixed(2)} m</td></tr>`;
+  document.getElementById('links').innerHTML = FMTS.map(f =>
+     `<a href="${f.k.includes('.') ? floor.stem+'_'+f.k : floor.stem+'.'+f.k}">`
+     + (f.k.includes('.') ? floor.stem+'_'+f.k : floor.stem+'.'+f.k) + `</a>`).join('<br>') +
+     `<br><a href="${floor.stem}.obj">${floor.stem}.obj</a>` +
+     `<br><a href="${floor.stem}_plan.dxf">${floor.stem}_plan.dxf</a>`;
+}
+
+function load(){
+  // 'detail.stl' and the like name a variant file, not just an extension
+  const url = fmt.includes('.') ? `${floor.stem}_${fmt}` : `${floor.stem}.${fmt}`;
+  say('loading ' + url + ' …');
+  if (url.endsWith('.dae')) {
+    new ColladaLoader().load(url, res => {
+      const found = [];
+      res.scene.updateMatrixWorld(true);
+      res.scene.traverse(o => { if (o.isMesh) found.push(o); });
+      found.forEach(o => o.geometry.computeVertexNormals());
+      if (found.length) show(found); else say('nothing to show in ' + url);
+    }, undefined, e => { console.error('collada', e); say('could not load ' + url); });
+  } else if (url.endsWith('.glb')) {
+    new GLTFLoader().load(url, res => {
+      const found = [];
+      res.scene.updateMatrixWorld(true);
+      res.scene.traverse(o => { if (o.isMesh) found.push(o); });
+      found.forEach(o => { if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals(); });
+      if (found.length) show(found); else say('nothing to show in ' + url);
+    }, undefined, e => { console.error('glb', e); say('could not load ' + url); });
+  } else {
+    new STLLoader().load(url, g => {
+      g.computeVertexNormals(); show(new THREE.Mesh(g, mat));
+    }, undefined, e => { console.error('stl', e); say('could not load ' + url); });
+  }
+}
+
+function buttons(id, list, get, set){
+  const host = document.getElementById(id); host.innerHTML = '';
+  list.forEach(it => {
+    const b = document.createElement('button');
+    b.textContent = it.label; b.className = (get() === it) ? 'on' : '';
+    b.onclick = () => { set(it); buttons(id, list, get, set); load(); };
+    host.appendChild(b);
+  });
+}
+buttons('floors', FLOORS, () => floor, v => floor = v);
+buttons('fmt', FMTS, () => FMTS.find(f => f.k === fmt), v => fmt = v.k);
+load();
+
+// exposed so the page can be checked from the console (and by QA) without
+// guessing from pixels: __view.dist() is the camera's distance to the target
+window.__view = {camera, controls, dist: () => camera.position.distanceTo(controls.target)};
+
+(function tick(){ requestAnimationFrame(tick); controls.update(); renderer.render(scene, camera); })();
+</script>

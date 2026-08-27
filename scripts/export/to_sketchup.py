@@ -166,28 +166,47 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dir", required=True, help="a model directory")
     ap.add_argument("--out", default=None, help="defaults to <dir>/sketch")
+    ap.add_argument("--solid", default=None,
+                    help="the OBJ of solids to convert; defaults to "
+                         "<dir>/modular_solid.obj. Point it at boxes.obj for the "
+                         "box model, which is the cleaner thing to edit.")
+    ap.add_argument("--stem", default="sketch", help="output file stem")
     a = ap.parse_args()
     d = Path(a.dir)
     out = Path(a.out) if a.out else d/"sketch"
     out.mkdir(parents=True, exist_ok=True)
     man = json.load(open(d/"manifest.json"))
-    solid = d/"modular_solid.obj"
+    solid = Path(a.solid) if a.solid else d/"modular_solid.obj"
     if not solid.exists():
         raise SystemExit(f"{solid} is missing -- run solidify_walls.py first")
     parts = read_groups(solid)
     log(f"{len(parts)} solid parts, "
         f"{sum(len(f) for _, f in parts.values()):,} faces")
-    write_dae(parts, man, out/"sketch.dae")
-    write_stl(parts, out/"sketch.stl")
-    write_dxf(man, out/"sketch.dxf", CUT)
+    write_dae(parts, man, out/f"{a.stem}.dae")
+    write_stl(parts, out/f"{a.stem}.stl")
+    if a.stem == "sketch":
+        write_dxf(man, out/"sketch.dxf", CUT)
     (out/"README.txt").write_text(
-        "Open sketch.dae in SketchUp (File > Import > Collada), then File >\n"
-        "Save As to get a .skp. Every wall and slab arrives as its own named\n"
-        "group. sketch.dxf is the 2D plan to trace over, with the openings and\n"
-        "the measured thicknesses on their own layers. sketch.stl is for the\n"
-        "web version of SketchUp, which takes STL but not Collada.\n\n"
-        "There is no .skp here because the format is closed: nothing outside\n"
-        "SketchUp's own SDK can write one.\n", encoding="utf-8")
+        "For tracing in SketchUp.\n"
+        "\n"
+        "boxes.dae   the box model -- flat faces, sharp edges, one named group\n"
+        "            per wall, slab, beam and column, with its niches and\n"
+        "            pilasters already cut into it. Import this and push/pull.\n"
+        "sketch.dae  the same rooms taken from the scan surface itself, so the\n"
+        "            faces follow what was measured. Heavier, less tidy, truer.\n"
+        "sketch.dxf  the 2D plan cut at 1.2 m, on layers WALLS, OPENINGS, SLABS,\n"
+        "            DIMENSIONS and LABELS. This is the drawing to trace.\n"
+        "*.stl       the same solids welded, for SketchUp Web, which takes STL\n"
+        "            but neither Collada nor OBJ.\n"
+        "\n"
+        "File > Import > Collada for a .dae, then File > Save As for a .skp. The\n"
+        "units are metres and Z is up.\n"
+        "\n"
+        "There is no .skp here: the format is closed, and nothing outside\n"
+        "SketchUp's own SDK can write one.\n"
+        "\n"
+        , encoding="utf-8")
+
     log(f"done -> {out}")
 
 

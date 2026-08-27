@@ -76,6 +76,7 @@ FREE_OPEN  = 0.25     # a void in a wall that the scanner looked through this
                       # much of is a real opening, not an occlusion shadow     # a peak carrying less than this share of the strongest
                       # one is not a thickness the building repeats -- it is a
                       # few panels standing off a few walls
+MARCH      = os.environ.get("PM_MARCH", "0") == "1"   # see solid_run()
 PAIR_ZCOVER = 0.70    # the opposite face must span this much of the face's own
                       # height. A wall is bounded by a wall; a wardrobe front
                       # stops at 2 m and is not the other side of anything.
@@ -396,6 +397,51 @@ def interior_free(free, ax, c0, c1, stations, z0, z1, nv=9, nw=5):
     return float(through.mean())
 
 
+def solid_run(free, ax, c_face, sign, stations, z0, z1, reach=0.60, step=0.01):
+    """How far the masonry actually goes, marched from the face into the wall.
+
+    The free-space veto only rejects a pair the scanner looked THROUGH. It says
+    nothing about a pair that is simply the wrong two planes -- a wall face and
+    something 90 mm behind it that the scanner never had a line of sight into.
+    Both scans kept pairing at ~90 mm where the true opposite face was 190-250
+    away, and the veto could not see it.
+
+    This asks the question the other way round. Standing on the face and
+    walking into the material, where does free space start again? That
+    distance is the thickness, measured rather than chosen, and it needs no
+    candidate at all. It is coarse -- the grid is 30 mm -- but 86 against 177
+    is not a 30 mm question.
+
+    Returns the median run over the stations, or None if the far side was never
+    reached (the far room was not walked, so there is nothing to find).
+    """
+    if free is None or len(stations) == 0:
+        return None
+    ss = np.asarray(stations, float)
+    if len(ss) > 40:
+        ss = ss[np.linspace(0, len(ss)-1, 40).astype(int)]
+    zs = np.linspace(z0 + 0.20, z1 - 0.20, 5)
+    if zs[-1] <= zs[0]:
+        return None
+    depths = np.arange(step, reach, step)
+    runs = []
+    for s in ss:
+        for z in zs:
+            Q = np.empty((len(depths), 3))
+            Q[:, ax] = c_face + sign*depths
+            Q[:, 1-ax] = s
+            Q[:, 2] = z
+            got = fs_seen(free, Q)
+            # the first free cell at least 40 mm in: closer than that is the
+            # surface itself, which the carve deliberately leaves alone
+            k = np.flatnonzero(got & (depths > 0.04))
+            if len(k):
+                runs.append(float(depths[k[0]]))
+    if len(runs) < 5:
+        return None
+    return float(np.median(runs))
+
+
 def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
     """Pair the faces into walls, and measure each wall where it stands.
 
@@ -412,7 +458,7 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
     for f in planes:
         prof.append(profile(f, C, A, lo[1-f["axis"]], hi[1-f["axis"]]))
     ST_AREA = 0.002          # m2 of surface in a 50 mm station = material there
-    n_free = [0]
+    n_free = [0]; n_march = [0]
 
     modes = thickness_modes(planes, prof, ST_AREA, free, lo)
 
@@ -424,6 +470,13 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
         thick = np.zeros(len(has))
         score = np.full(len(has), 1e9)
         vouched = np.zeros(len(has), bool)
+        # Score every candidate over the WHOLE face first, then let the
+        # stations choose among them. Choosing station by station on "nearest
+        # vouched" makes the answer depend on which face happened to be
+        # occluded at that station -- and two scans of one flat then paired the
+        # same wall at 90 mm and 207 mm. How far a candidate runs WITH the face
+        # is a property of the building; which station saw what is not.
+        cand = []
         for j, g in enumerate(planes):
             if g["axis"] != f["axis"] or g["sign"] == f["sign"]:
                 continue
@@ -436,15 +489,54 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
                 continue
             pj = prof[j]
             n = min(len(has), len(pj))
-            # the opposite face may be occluded for a few stations; smear it
             gh = np.convolve((pj > ST_AREA).astype(float), np.ones(7), "same")[:n] > 0
-            # rank: a thickness the building repeats beats a nearer one that
-            # matches nothing, and among equals the thinner wins
+            together = has[:n] & gh
+            if not together.any():
+                continue
+            # The scanner's own answer to "is this one wall?": if it saw
+            # straight through the space between the two faces where both
+            # claim material, they are two walls with a room between them.
+            # This veto already existed -- it was only ever applied when
+            # building the thickness vocabulary, never when pairing.
+            if free is not None:
+                c0, c1 = sorted((f["coord"], g["coord"]))
+                st = L0 + (np.flatnonzero(together) + 0.5)*STATION
+                if interior_free(free, f["axis"], c0, c1, st,
+                                 max(f["z0"], g["z0"]),
+                                 min(f["z1"], g["z1"])) > FREE_MAX:
+                    n_free[0] += 1
+                    continue
             near = min((abs(t-m) for m in modes), default=1e9)
-            rank = (0.0 if near < MODE_TOL else 1.0) + t/100.0
-            take = has[:n] & gh & ((partner[:n] < 0) | (rank < score[:n]))
-            partner[:n][take] = j; thick[:n][take] = t; score[:n][take] = rank
-            vouched[:n][take] = near < MODE_TOL
+            cand.append(dict(j=j, t=t, n=n, gh=gh, run=int(together.sum()),
+                             vouched=near < MODE_TOL))
+        # Where two candidates disagree by more than the grid can be blamed
+        # for, march into the wall and see where the far side really is.
+        # Measured, and it made things worse: thickness agreement between two
+        # scans of one flat went from 9 mm to 90 mm with this ranking on. The
+        # march is too easily fooled -- a doorway or a gap a few stations away
+        # lets a ray reach the sampled depth, and the median first-free
+        # distance then reports a wall far thinner than it is. Kept, and off,
+        # because the idea is sound and only the evidence for it is missing.
+        if MARCH and free is not None and len(cand) > 1 and                 max(c["t"] for c in cand) - min(c["t"] for c in cand) > 0.05:
+            st = L0 + (np.flatnonzero(has) + 0.5)*STATION
+            marched = solid_run(free, f["axis"], f["coord"], f["sign"], st,
+                                f["z0"], f["z1"])
+            if marched is not None:
+                for c in cand:
+                    c["off"] = abs(c["t"] - marched)
+                best = min(c["off"] for c in cand)
+                for c in cand:
+                    c["agrees"] = c["off"] < max(0.045, best + 1e-9)
+                n_march[0] += 1
+        # the thickness the scanner marched out first, then one the building
+        # repeats, then the candidate that stays with this face the longest
+        cand.sort(key=lambda c: (0 if c.get("agrees", True) else 1,
+                                 0 if c["vouched"] else 1, -c["run"], c["t"]))
+        for r, c in enumerate(cand):
+            j, n = c["j"], c["n"]
+            take = has[:n] & c["gh"] & ((partner[:n] < 0) | (r < score[:n]))
+            partner[:n][take] = j; thick[:n][take] = c["t"]; score[:n][take] = r
+            vouched[:n][take] = c["vouched"]
         # cut the face into runs of constant partner
         cut = np.r_[True, (partner[1:] != partner[:-1]) | (~has[1:]) | (~has[:-1])]
         starts = np.flatnonzero(cut & has)
@@ -469,6 +561,9 @@ def physical_walls(planes, C, A, z_floor, z_ceil, label, name_of, free=None):
             joined[-1]["s1"] = max(joined[-1]["s1"], r["s1"])
             continue
         joined.append(dict(r))
+    if n_march[0]:
+        log(f"{n_march[0]} faces had candidates far enough apart to be worth "
+            f"marching into the wall for; the far side was measured, not chosen")
     if n_free[0]:
         log(f"{n_free[0]} candidate pairs had free space between their faces "
             f"-- the scanner looked through them, so they are not one wall")
@@ -1228,6 +1323,57 @@ def dropped_report(label, C, A, ea, eb, z_floor, z_ceil, n=8):
 
 
 # ------------------------------------------------------------------ main ---
+def fuse_levels(label, name_of, C, A, z_floor, tol=0.05, min_area=0.15):
+    """One slab per level, not one slab per room.
+
+    A plateau is grown from a seed and stops at a step, so a floor poured in
+    one piece comes back as a part per room: 33 floor parts on one storey,
+    sitting at two heights. That is not what the building is made of, and it
+    makes the model tedious to work with -- a designer wants "the floor", not
+    thirty-three of them.
+
+    So slabs of the same kind whose surfaces agree to `tol` become one part.
+    Levels that genuinely differ -- a sunken balcony, a dropped ceiling over
+    the wet rooms -- stay apart, because their heights differ by far more than
+    a tolerance meant for the wobble within one pour.
+    """
+    kinds = ("floor", "ceiling", "dropped_ceiling")
+    by_kind = {}
+    for pid, nm in enumerate(name_of):
+        k = nm.rsplit("_", 1)[0]
+        if k not in kinds:
+            continue
+        m = label == pid
+        if not m.any():
+            continue
+        a = float(A[m].sum())
+        by_kind.setdefault(k, []).append((pid, float(np.average(C[m][:, 2], weights=A[m])), a))
+    remap = {}
+    merged = 0
+    for k, items in by_kind.items():
+        items.sort(key=lambda r: r[1])
+        groups = []
+        for pid, z, a in items:
+            if groups and abs(z - groups[-1][-1][1]) <= tol:
+                groups[-1].append((pid, z, a))
+            else:
+                groups.append([(pid, z, a)])
+        for g in groups:
+            if len(g) == 1:
+                continue
+            keep = max(g, key=lambda r: r[2])[0]     # the biggest keeps its id
+            for pid, z, a in g:
+                if pid != keep:
+                    remap[pid] = keep
+                    merged += 1
+    if remap:
+        for src, dst in remap.items():
+            label[label == src] = dst
+        log(f"levels fused: {merged} slab parts folded into the level they "
+            f"belong to ({len(set(remap.values()))} levels kept)")
+    return label
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cache", default="output/model/poisson_koushik.npz")
@@ -1237,6 +1383,9 @@ def main(argv=None):
                     help="write modular.obj even if the disk is nearly full")
     ap.add_argument("--las", default=None,
                     help="the scan itself: face planes are checked against it")
+    ap.add_argument("--keep-split", action="store_true",
+                    help="leave every plateau as its own part instead of "
+                         "fusing the ones at the same level")
     ap.add_argument("--freespace", default=None,
                     help="a grid from freespace_carve.py: walls must be solid "
                          "inside and openings must have been seen through")
@@ -1280,6 +1429,8 @@ def main(argv=None):
                     for k in ("door", "window", "arch", "opening", "niche",
                               "pilaster", "void", "shadow")))
 
+    if not args.keep_split:
+        label = fuse_levels(label, name_of, C, A, z_floor)
     cov = audit(label, ea, eb, C, A, name_of)
     junk = dropped_report(label, C, A, ea, eb, z_floor, z_ceil)
 

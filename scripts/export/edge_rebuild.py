@@ -126,6 +126,13 @@ def main():
     ap.add_argument("--bite", type=float, default=0.05,
                     help="m: how wide the fillet band at a junction is -- only "
                          "material this close to the intersection line is fake")
+    ap.add_argument("--island", type=float, default=0.25,
+                    help="m2: an unlabelled island bigger than this is real "
+                         "surface and is kept, not dissolved into a junction")
+    ap.add_argument("--fillet-width", type=float, default=0.06,
+                    help="m: a plane this thin, lying between two bigger ones, "
+                         "is the rounded band at their junction, not a surface")
+    ap.add_argument("--fillet-area", type=float, default=0.8, help="m2")
     ap.add_argument("--grow", type=float, default=0.15,
                     help="m: how far a patch may be extended to reach the seam")
     ap.add_argument("--max-cut", type=float, default=0.35,
@@ -157,10 +164,93 @@ def main():
             contact[(px, py)].append(e)
             contact[(py, px)].append(e)
 
+    # Faces the segmentation could not place are mostly the rounded band ITSELF,
+    # and they sit between the wall and the floor -- which means those two
+    # planes are nowhere adjacent, so no seam is ever computed between them and
+    # nothing closes the space where the band was. Each small island of
+    # unlabelled faces therefore introduces the planes around it to each other
+    # and is then deleted.
+    unlab = np.flatnonzero(flab < 0)
+    bridged_u = 0
+    dissolved = np.zeros(len(F), bool)
+    if len(unlab):
+        pair = tm.face_adjacency
+        both = (flab[pair[:, 0]] < 0) & (flab[pair[:, 1]] < 0)
+        sub = trimesh.graph.connected_components(pair[both], nodes=unlab)
+        touch = defaultdict(lambda: defaultdict(list))
+        for (x, y), e in zip(pair, tm.face_adjacency_edges):
+            if flab[x] < 0 and flab[y] >= 0:
+                touch[x][int(flab[y])].append(e)
+            elif flab[y] < 0 and flab[x] >= 0:
+                touch[y][int(flab[x])].append(e)
+        for grp in sub:
+            if A[grp].sum() > a.island:
+                continue                       # big enough to be real surface
+            near = defaultdict(list)
+            for f in grp:
+                for q, ee in touch.get(int(f), {}).items():
+                    near[q].extend(ee)
+            ks = sorted(near)
+            if len(ks) < 2:
+                continue
+            for i in range(len(ks)):
+                for j in range(i + 1, len(ks)):
+                    x, y = ks[i], ks[j]
+                    if abs(PN[x] @ PN[y]) > 0.98:
+                        continue
+                    adj[x].add(y)
+                    adj[y].add(x)
+                    ee = near[x] + near[y]
+                    contact[(x, y)] = contact[(x, y)] + ee
+                    contact[(y, x)] = contact[(y, x)] + ee
+                    bridged_u += 1
+            dissolved[grp] = True
+        print(f"{len(unlab):,} unlabelled faces: {dissolved.sum():,} dissolved into "
+              f"{bridged_u:,} joins, {len(unlab)-dissolved.sum():,} kept as surface")
+
     pa = np.zeros(len(PN))
     for p in range(len(PN)):
         pa[p] = A[flab == p].sum()
-    keep = [p for p in range(len(PN)) if pa[p] >= a.min_area]
+
+    # The rounded band at a junction often survives segmentation as a plane of
+    # its own -- a long thin sliver wedged between the wall and the floor. Left
+    # in, it is the fillet we set out to delete; taken out, it leaves a gap of
+    # exactly its own width, which is the dark stripe along the floor line. So
+    # it is removed AND its two neighbours are introduced to each other, and
+    # they close over where it was.
+    perim = np.zeros(len(PN))
+    for p in range(len(PN)):
+        ff = np.flatnonzero(flab == p)
+        if not len(ff):
+            continue
+        e = np.sort(F[ff][:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+        uu, cc = np.unique(e, axis=0, return_counts=True)
+        bb = uu[cc == 1]
+        if len(bb):
+            perim[p] = np.linalg.norm(V[bb[:, 0]] - V[bb[:, 1]], axis=1).sum()
+    width = np.where(perim > 0, 2 * pa / np.maximum(perim, 1e-9), 0.0)
+    fillet = set(int(p) for p in range(len(PN))
+                 if 0 < pa[p] < a.fillet_area and width[p] < a.fillet_width
+                 and len(adj[p]) >= 2)
+    bridged = 0
+    for f in fillet:
+        big = sorted(q for q in adj[f] if q not in fillet)
+        for i in range(len(big)):
+            for j in range(i + 1, len(big)):
+                x, y = big[i], big[j]
+                if abs(PN[x] @ PN[y]) > 0.98:      # the same surface, not a join
+                    continue
+                adj[x].add(y)
+                adj[y].add(x)
+                ee = contact[(f, x)] + contact[(f, y)]
+                contact[(x, y)] = contact[(x, y)] + ee
+                contact[(y, x)] = contact[(y, x)] + ee
+                bridged += 1
+    print(f"{len(fillet):,} planes are junction fillets "
+          f"({pa[list(fillet)].sum():.0f} m2); {bridged:,} pairs joined across them")
+
+    keep = [p for p in range(len(PN))
+            if pa[p] >= a.min_area and p not in fillet]
     print(f"{len(keep):,} planes carry more than {a.min_area} m2 "
           f"({100*pa[keep].sum()/total:.1f}% of area)")
 
@@ -259,6 +349,9 @@ def main():
         if emitted:
             done[sel] = True
 
+    for p in fillet:
+        done[flab == p] = True          # deleted on purpose, not missed
+    done[dissolved] = True
     miss = np.flatnonzero(~done)
     print("  " + ", ".join(f"{k}={v}" for k, v in sorted(stats.items())))
     print(f"  rebuilt covers {100*A[done].sum()/total:.1f}% of the scan area; "
