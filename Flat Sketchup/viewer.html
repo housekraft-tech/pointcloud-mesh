@@ -46,8 +46,8 @@ import {ColladaLoader} from 'three/addons/loaders/ColladaLoader.js';
 import {STLLoader} from 'three/addons/loaders/STLLoader.js';
 
 const FLOORS = [{"key": "Koushik_flat", "label": "Koushik flat", "stem": "Koushik_flat"}, {"key": "Mujammel_flat", "label": "Mujammel flat", "stem": "Mujammel_flat"}];
-const FMTS = [{k:'rect.stl', label:'rectangles only'},
-              {k:'edges.stl', label:'planes, true edges'},
+const FMTS = [{k:'edges.stl', label:'planes, true edges'},
+              {k:'rect.stl', label:'rectangles only'},
               {k:'parts.dae', label:'boxes, per part'},
               {k:'dae', label:'boxes, fused'}, {k:'stl', label:'boxes .stl'},
               {k:'detail.stl', label:'full relief'},
@@ -68,7 +68,7 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x2b2f3d, 2.1));
 const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(4, -6, 9); scene.add(key);
 
 const root = new THREE.Group(); root.rotation.x = -Math.PI/2; scene.add(root);   // Z up -> Y up
-let current = null, floor = FLOORS[0], fmt = 'rect.stl';
+let current = null, floor = FLOORS[0], fmt = 'edges.stl';
 
 function resize(){
   const w = innerWidth, h = innerHeight;

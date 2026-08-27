@@ -35,28 +35,79 @@ import trimesh
 AXES = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
 
 
-def runs(mask):
-    """Rectangles covering a boolean mask: identical row runs merged downward."""
+def largest(mask):
+    """The biggest all-true axis-aligned rectangle, by the histogram method."""
     h, w = mask.shape
+    heights = np.zeros(w, int)
+    best = (0, 0, 0, 0, 0)               # area, y0, y1, x0, x1
+    for y in range(h):
+        heights = np.where(mask[y], heights + 1, 0)
+        stack = []
+        for x in range(w + 1):
+            cur = heights[x] if x < w else 0
+            start = x
+            while stack and stack[-1][1] >= cur:
+                sx, sh = stack.pop()
+                area = sh * (x - sx)
+                if area > best[0]:
+                    best = (area, y - sh + 1, y + 1, sx, x)
+                start = sx
+            stack.append((start, cur))
+    return best
+
+
+def declutter(mask):
+    """Kill single-cell jitter on the boundary: close, then open.
+
+    Without this the decomposition is hostage to one stray cell. Row runs that
+    differ by a single pixel cannot merge, so a plain wall comes out as fifty
+    stacked strips and the model reads as corduroy -- which is exactly what it
+    looked like.
+    """
+    m = mask
+    for _ in range(1):
+        m = _dilate(m)
+    for _ in range(2):
+        m = _erode(m)
+    for _ in range(1):
+        m = _dilate(m)
+    return m
+
+
+def _shift(m, dy, dx):
+    out = np.zeros_like(m)
+    ys = slice(max(dy, 0), m.shape[0] + min(dy, 0))
+    xs = slice(max(dx, 0), m.shape[1] + min(dx, 0))
+    yd = slice(max(-dy, 0), m.shape[0] + min(-dy, 0))
+    xd = slice(max(-dx, 0), m.shape[1] + min(-dx, 0))
+    out[ys, xs] = m[yd, xd]
+    return out
+
+
+def _dilate(m):
+    o = m.copy()
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        o |= _shift(m, dy, dx)
+    return o
+
+
+def _erode(m):
+    o = m.copy()
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        o &= _shift(m, dy, dx)
+    return o
+
+
+def rectangles(mask, min_cells, cap=400):
+    """Cut a mask into few big rectangles: always take the biggest one left."""
+    m = mask.copy()
     out = []
-    open_runs = {}                       # (x0, x1) -> y0
-    for y in range(h + 1):
-        row = mask[y] if y < h else np.zeros(w, bool)
-        cur = {}
-        x = 0
-        while x < w:
-            if row[x]:
-                x0 = x
-                while x < w and row[x]:
-                    x += 1
-                cur[(x0, x)] = True
-            else:
-                x += 1
-        for k in list(open_runs):
-            if k not in cur:
-                out.append((open_runs.pop(k), y, k[0], k[1]))
-        for k in cur:
-            open_runs.setdefault(k, y)
+    for _ in range(cap):
+        area, y0, y1, x0, x1 = largest(m)
+        if area < min_cells:
+            break
+        out.append((y0, y1, x0, x1))
+        m[y0:y1, x0:x1] = False
     return out
 
 
@@ -188,7 +239,9 @@ def main():
                 ij[:, 0] = np.clip(ij[:, 0], 0, ncell[0]-1)
                 ij[:, 1] = np.clip(ij[:, 1], 0, ncell[1]-1)
                 mask[ij[:, 1], ij[:, 0]] = True
-        for y0, y1, x0, x1 in runs(mask):
+        mask = declutter(mask)
+        mcell = max(1, int(round(a.min_area / (a.grid*a.grid))))
+        for y0, y1, x0, x1 in rectangles(mask, mcell):
             u0, u1 = lo[0] + x0*a.grid, lo[0] + x1*a.grid
             v0, v1 = lo[1] + y0*a.grid, lo[1] + y1*a.grid
             if (u1-u0) * (v1-v0) < a.min_area:
