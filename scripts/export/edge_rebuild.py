@@ -184,8 +184,22 @@ def main():
             elif flab[y] < 0 and flab[x] >= 0:
                 touch[y][int(flab[x])].append(e)
         for grp in sub:
-            if A[grp].sum() > a.island:
-                continue                       # big enough to be real surface
+            # Area alone is the wrong test. The rounded strip where a wall meets
+            # a floor runs the length of the room, so it is easily bigger than
+            # --island and gets kept as "real surface" -- which leaves the wall
+            # and the floor with no adjacency between them, no seam line, and
+            # therefore nothing to grow towards. That is the gap you can see
+            # along the bottom of the walls: 91 m of wall boundary sitting more
+            # than 20 mm off the floor. A fillet is THIN, however long it is.
+            ar = float(A[grp].sum())
+            ee = np.sort(F[grp][:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+            uu, cc2 = np.unique(ee, axis=0, return_counts=True)
+            bb = uu[cc2 == 1]
+            per = (float(np.linalg.norm(V[bb[:, 0]] - V[bb[:, 1]], axis=1).sum())
+                   if len(bb) else 0.0)
+            wide = 2 * ar / per if per > 0 else 1e9
+            if ar > a.island and wide > a.fillet_width:
+                continue                       # big AND thick: real surface
             near = defaultdict(list)
             for f in grp:
                 for q, ee in touch.get(int(f), {}).items():

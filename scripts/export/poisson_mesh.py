@@ -1,3 +1,25 @@
+"""
+NOTE, after measuring: do not try to make this produce sharp creases.
+
+Screened Poisson solves for a smooth indicator function, and a crease is a
+discontinuity in its gradient -- no parameterisation yields one. Shrinking the
+octree cell only trades one artefact for another: at depth 11 the corner is a
+40 mm arc, and at depth 12, once the cell falls below the scan's 5-10 mm noise
+band, the isosurface stops averaging THROUGH the noise and starts wrapping
+AROUND it -- two floor sheets 45 mm apart with a void between them. There is no
+depth in between where both go away.
+
+Crease-aware normals make it worse here specifically: the solver wants a
+smoothly rotating vector field at a junction and a step function is exactly the
+conflicting evidence that produces bulges. Higher screening weight is worse
+again -- it pulls the surface onto the noisy points.
+
+So this stage is a SCAFFOLD. Its job is topology, adjacency and coverage. The
+delivered geometry comes from planes fitted to the points (2.82 mm RMS, offsets
+to 0.019 mm), which are three orders of magnitude more certain than this
+surface (9 mm std). The knobs below are left in place for experiments; the
+defaults are deliberately the boring ones.
+"""
 """Screened Poisson reconstruction of the scan -- the real thing, via open3d.
 
 This replaces the voxel isosurface, which could never have crisp edges: a voxel
@@ -27,6 +49,12 @@ import open3d as o3d
 SRC = sys.argv[1] if len(sys.argv) > 1 else "output/mujammel_aligned_z0.las"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "output/model/poisson.ply"
 VOXEL = float(os.environ.get("PM_VOXEL", 0.012))
+NRAD = float(os.environ.get("PM_NRAD", 4.0))       # normal radius, in voxels
+NMAXNN = int(os.environ.get("PM_NMAXNN", 30))
+CREASE = int(os.environ.get("PM_CREASE", 0))       # crease-aware refit rounds
+NCOS = float(os.environ.get("PM_NCOS", 0.906))     # 25 deg
+SCALE = float(os.environ.get("PM_SCALE", 1.1))
+LINEAR = os.environ.get("PM_LINEAR", "0") == "1"
 DEPTH = int(os.environ.get("PM_DEPTH", 11))
 TRIM = float(os.environ.get("PM_TRIM", 1.5))
 MIN_TRI = int(os.environ.get("PM_MINTRI", 4000))
@@ -76,7 +104,48 @@ stage("statistical outlier removal")
 pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
 stage(f"  {len(pcd.points):,} points")
 stage("normals")
-pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=VOXEL*4, max_nn=30))
+# A normal estimated over a 48 mm ball is the AVERAGE of both surfaces for
+# every point within 48 mm of a corner, so the crease is rounded away before
+# Poisson ever sees it -- and Poisson then faithfully reconstructs the rounded
+# thing it was handed. Estimate tight, then refine each normal using only the
+# neighbours that agree with it, which keeps a corner's two sides apart instead
+# of blending them.
+pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(
+    radius=VOXEL*NRAD, max_nn=NMAXNN))
+if CREASE:
+    # Vectorised: a per-point Python KD query over five million points takes
+    # hours. One batched k-NN, then a masked covariance per point, does the
+    # same arithmetic in numpy -- in chunks, because P[idx] for 5.6 M points
+    # and k=24 is 1.6 GB on its own.
+    from scipy.spatial import cKDTree as _KD
+    stage(f"  crease-aware refit ({CREASE} rounds, "
+          f"{np.degrees(np.arccos(NCOS)):.0f} deg, k={NMAXNN})")
+    _P = np.asarray(pcd.points)
+    _N = np.asarray(pcd.normals).copy()
+    _kd = _KD(_P)
+    _, _idx = _kd.query(_P, k=NMAXNN, workers=-1)
+    for _r in range(CREASE):
+        _out = np.empty_like(_N)
+        for s0 in range(0, len(_P), 400_000):
+            s1 = min(s0 + 400_000, len(_P))
+            nb = _idx[s0:s1]
+            Q = _P[nb]                                   # (m,k,3)
+            NB = _N[nb]                                  # (m,k,3)
+            w = (np.abs(np.einsum('mkj,mj->mk', NB, _N[s0:s1])) > NCOS)
+            w = w.astype(np.float64)
+            cnt = w.sum(1, keepdims=True)
+            w = np.where(cnt >= 6, w, 1.0)               # too few agree: use all
+            cnt = w.sum(1, keepdims=True)
+            mu = (Q * w[:, :, None]).sum(1) / cnt
+            d = (Q - mu[:, None, :]) * np.sqrt(w)[:, :, None]
+            cov = np.einsum('mki,mkj->mij', d, d)
+            ev, evec = np.linalg.eigh(cov)
+            n = evec[:, :, 0]
+            flip = np.einsum('mj,mj->m', n, _N[s0:s1]) < 0
+            n[flip] *= -1
+            _out[s0:s1] = n
+        _N = _out
+    pcd.normals = o3d.utility.Vector3dVector(_N)
 
 # Orienting the normals is where this used to spend most of its life.
 # orient_normals_consistent_tangent_plane builds a k-NN graph over every point
@@ -117,8 +186,13 @@ if not oriented:
     except Exception as e:
         stage(f"  orientation skipped ({e})")
 stage(f"poisson depth={DEPTH}  (this is the slow part)")
+# scale inflates the reconstruction cube beyond the data -- on an already
+# isolated unit that only makes every octree cell bigger, and Poisson cannot
+# represent a feature sharper than about two cells. linear_fit places the
+# iso-vertices by interpolation instead of at cell centres, which pulls the
+# surface onto the samples.
 mesh, dens = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-    pcd, depth=DEPTH, n_threads=-1)
+    pcd, depth=DEPTH, scale=SCALE, linear_fit=LINEAR, n_threads=-1)
 dens = np.asarray(dens)
 stage(f"  {len(mesh.vertices):,} verts / {len(mesh.triangles):,} tris")
 stage(f"trim lowest {TRIM}% density")
