@@ -1,0 +1,926 @@
+{
+ "report": {
+  "run": "robust_c95_swin",
+  "mode": "nearest",
+  "mm_per_px": [
+   62.44,
+   62.89
+  ],
+  "n_rooms": 15,
+  "n_faces_x": 191,
+  "n_faces_y": 170,
+  "median_face_stderr_um": 159.1,
+  "edges_total": 64,
+  "edges_snapped": 64,
+  "edge_move_mm": {
+   "median": 20.0,
+   "p90": 63.8,
+   "max": 149.9
+  }
+ },
+ "rooms": [
+  {
+   "id": 0,
+   "polygon_m": [
+    [
+     5.73876,
+     6.45967
+    ],
+    [
+     5.73876,
+     4.68038
+    ],
+    [
+     4.87048,
+     4.68038
+    ],
+    [
+     4.87048,
+     6.45967
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": 6.4596684118406555,
+     "moved_mm": 39.78,
+     "stderr_mm": 0.026,
+     "n_points": 17443,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 5.738761441298017,
+     "moved_mm": -149.93,
+     "stderr_mm": 0.119,
+     "n_points": 4517,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 4.680384256342333,
+     "moved_mm": 21.45,
+     "stderr_mm": 0.1563,
+     "n_points": 3233,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 4.870483300632452,
+     "moved_mm": -19.2,
+     "stderr_mm": 0.0322,
+     "n_points": 31783,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "polygon_m": [
+    [
+     5.73876,
+     3.17461
+    ],
+    [
+     5.73876,
+     -4.77458
+    ],
+    [
+     4.93832,
+     -4.77458
+    ],
+    [
+     4.93832,
+     -1.84877
+    ],
+    [
+     3.87799,
+     -1.84877
+    ],
+    [
+     3.87799,
+     3.17461
+    ]
+   ],
+   "n_edges": 6,
+   "n_snapped": 6,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": 3.1746085145177805,
+     "moved_mm": 25.06,
+     "stderr_mm": 0.183,
+     "n_points": 2516,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 5.738761441298017,
+     "moved_mm": -149.93,
+     "stderr_mm": 0.119,
+     "n_points": 4517,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -4.774583173649484,
+     "moved_mm": 31.6,
+     "stderr_mm": 0.1364,
+     "n_points": 4108,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 4.938319977660599,
+     "moved_mm": 17.42,
+     "stderr_mm": 0.1329,
+     "n_points": 3653,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -1.8487681187432259,
+     "moved_mm": 1.53,
+     "stderr_mm": 0.0098,
+     "n_points": 112559,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 3.8779903199710457,
+     "moved_mm": -12.68,
+     "stderr_mm": 0.1931,
+     "n_points": 2236,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "polygon_m": [
+    [
+     4.87048,
+     -5.52853
+    ],
+    [
+     1.36514,
+     -5.52853
+    ],
+    [
+     1.36514,
+     -2.09989
+    ],
+    [
+     4.87048,
+     -2.09989
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": 4.870483300632452,
+     "moved_mm": 12.02,
+     "stderr_mm": 0.0322,
+     "n_points": 31783,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -5.528532779371873,
+     "moved_mm": 63.79,
+     "stderr_mm": 0.0427,
+     "n_points": 61324,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 1.3651367256243465,
+     "moved_mm": -28.02,
+     "stderr_mm": 0.0308,
+     "n_points": 36610,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -2.099888389499592,
+     "moved_mm": -29.47,
+     "stderr_mm": 0.0411,
+     "n_points": 20039,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "polygon_m": [
+    [
+     -1.87392,
+     6.45967
+    ],
+    [
+     0.52382,
+     6.45967
+    ],
+    [
+     0.52382,
+     4.86689
+    ],
+    [
+     -1.87392,
+     4.86689
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -1.8739158239028075,
+     "moved_mm": -20.29,
+     "stderr_mm": 0.1108,
+     "n_points": 6037,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 6.4596684118406555,
+     "moved_mm": 39.78,
+     "stderr_mm": 0.026,
+     "n_points": 17443,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 0.5238201712409587,
+     "moved_mm": 4.8,
+     "stderr_mm": 0.1309,
+     "n_points": 4753,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 4.8668928092060915,
+     "moved_mm": -43.61,
+     "stderr_mm": 0.1538,
+     "n_points": 3864,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "polygon_m": [
+    [
+     -2.79629,
+     4.86689
+    ],
+    [
+     -1.12574,
+     4.86689
+    ],
+    [
+     -1.12574,
+     3.30608
+    ],
+    [
+     -2.79629,
+     3.30608
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -2.7962878011355854,
+     "moved_mm": -6.09,
+     "stderr_mm": 0.0505,
+     "n_points": 9233,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 4.8668928092060915,
+     "moved_mm": 19.29,
+     "stderr_mm": 0.1538,
+     "n_points": 3864,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -1.1257435401189295,
+     "moved_mm": -21.37,
+     "stderr_mm": 0.1162,
+     "n_points": 5524,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 3.3060847861400586,
+     "moved_mm": 30.76,
+     "stderr_mm": 0.0096,
+     "n_points": 92011,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "polygon_m": [
+    [
+     -5.07808,
+     -0.32084
+    ],
+    [
+     -3.37081,
+     -0.32084
+    ],
+    [
+     -3.37081,
+     -1.84877
+    ],
+    [
+     -5.07808,
+     -1.84877
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -5.0780819617914235,
+     "moved_mm": 22.32,
+     "stderr_mm": 0.2092,
+     "n_points": 1820,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -0.3208447369880123,
+     "moved_mm": 20.07,
+     "stderr_mm": 0.2163,
+     "n_points": 1520,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -3.370809667707074,
+     "moved_mm": -18.67,
+     "stderr_mm": 0.2195,
+     "n_points": 1737,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -1.8487681187432259,
+     "moved_mm": 1.53,
+     "stderr_mm": 0.0098,
+     "n_points": 112559,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "polygon_m": [
+    [
+     -2.87159,
+     3.22486
+    ],
+    [
+     -5.07808,
+     3.22486
+    ],
+    [
+     -5.07808,
+     4.86689
+    ],
+    [
+     -2.87159,
+     4.86689
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -2.871588740587771,
+     "moved_mm": -18.95,
+     "stderr_mm": 0.1801,
+     "n_points": 2618,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 3.2248578610333603,
+     "moved_mm": 12.42,
+     "stderr_mm": 0.182,
+     "n_points": 2425,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -5.0780819617914235,
+     "moved_mm": 22.32,
+     "stderr_mm": 0.2092,
+     "n_points": 1820,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 4.8668928092060915,
+     "moved_mm": 19.29,
+     "stderr_mm": 0.1538,
+     "n_points": 3864,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "polygon_m": [
+    [
+     4.77267,
+     3.41486
+    ],
+    [
+     0.67612,
+     3.41486
+    ],
+    [
+     0.67612,
+     6.45967
+    ],
+    [
+     4.77267,
+     6.45967
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": 4.772667451845183,
+     "moved_mm": 7.86,
+     "stderr_mm": 0.0168,
+     "n_points": 48362,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 3.414859891982359,
+     "moved_mm": 13.75,
+     "stderr_mm": 0.139,
+     "n_points": 4519,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 0.6761151036751074,
+     "moved_mm": 32.22,
+     "stderr_mm": 0.1415,
+     "n_points": 3913,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 6.4596684118406555,
+     "moved_mm": 39.78,
+     "stderr_mm": 0.026,
+     "n_points": 17443,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "polygon_m": [
+    [
+     4.87048,
+     -2.03547
+    ],
+    [
+     5.73876,
+     -2.03547
+    ],
+    [
+     5.73876,
+     -4.85179
+    ],
+    [
+     4.87048,
+     -4.85179
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": 4.870483300632452,
+     "moved_mm": -19.2,
+     "stderr_mm": 0.0322,
+     "n_points": 31783,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -2.0354668012034,
+     "moved_mm": -90.83,
+     "stderr_mm": 0.0098,
+     "n_points": 106615,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 5.738761441298017,
+     "moved_mm": -118.71,
+     "stderr_mm": 0.119,
+     "n_points": 4517,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -4.851786471166612,
+     "moved_mm": -14.16,
+     "stderr_mm": 0.0517,
+     "n_points": 20977,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "polygon_m": [
+    [
+     -0.27438,
+     -5.52853
+    ],
+    [
+     -0.27438,
+     -3.15695
+    ],
+    [
+     1.18894,
+     -3.15695
+    ],
+    [
+     1.18894,
+     -5.52853
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": -5.528532779371873,
+     "moved_mm": 63.79,
+     "stderr_mm": 0.0427,
+     "n_points": 61324,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -0.27437645836416386,
+     "moved_mm": 18.3,
+     "stderr_mm": 0.0134,
+     "n_points": 55138,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -3.1569503105517316,
+     "moved_mm": -17.38,
+     "stderr_mm": 0.0148,
+     "n_points": 33003,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 1.1889386146125531,
+     "moved_mm": -16.9,
+     "stderr_mm": 0.017,
+     "n_points": 32902,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "polygon_m": [
+    [
+     1.12256,
+     -3.07611
+    ],
+    [
+     1.12256,
+     -5.52853
+    ],
+    [
+     -0.27438,
+     -5.52853
+    ],
+    [
+     -0.27438,
+     -3.07611
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": -3.076113667136383,
+     "moved_mm": 32.01,
+     "stderr_mm": 0.1648,
+     "n_points": 3058,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 1.122556704985661,
+     "moved_mm": -20.84,
+     "stderr_mm": 0.1468,
+     "n_points": 3775,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -5.528532779371873,
+     "moved_mm": 63.79,
+     "stderr_mm": 0.0427,
+     "n_points": 61324,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -0.27437645836416386,
+     "moved_mm": -12.92,
+     "stderr_mm": 0.0134,
+     "n_points": 55138,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "polygon_m": [
+    [
+     -5.07808,
+     -2.09989
+    ],
+    [
+     -2.12323,
+     -2.09989
+    ],
+    [
+     -2.12323,
+     -6.88887
+    ],
+    [
+     -5.07808,
+     -6.88887
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -5.0780819617914235,
+     "moved_mm": -8.9,
+     "stderr_mm": 0.2092,
+     "n_points": 1820,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -2.099888389499592,
+     "moved_mm": 1.98,
+     "stderr_mm": 0.0411,
+     "n_points": 20039,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -2.12322598551668,
+     "moved_mm": -19.85,
+     "stderr_mm": 0.0901,
+     "n_points": 9756,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -6.8888686100770355,
+     "moved_mm": -38.72,
+     "stderr_mm": 0.0345,
+     "n_points": 54220,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "polygon_m": [
+    [
+     -1.87392,
+     -5.52853
+    ],
+    [
+     -1.87392,
+     -3.15695
+    ],
+    [
+     -0.3253,
+     -3.15695
+    ],
+    [
+     -0.3253,
+     -5.52853
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": -5.528532779371873,
+     "moved_mm": 63.79,
+     "stderr_mm": 0.0427,
+     "n_points": 61324,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -1.8739158239028075,
+     "moved_mm": -20.29,
+     "stderr_mm": 0.1108,
+     "n_points": 6037,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -3.1569503105517316,
+     "moved_mm": -17.38,
+     "stderr_mm": 0.0148,
+     "n_points": 33003,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -0.32530499049216927,
+     "moved_mm": 29.81,
+     "stderr_mm": 0.161,
+     "n_points": 3070,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "polygon_m": [
+    [
+     -5.02437,
+     3.17461
+    ],
+    [
+     3.66508,
+     3.17461
+    ],
+    [
+     3.66508,
+     -1.84877
+    ],
+    [
+     -3.29399,
+     -1.84877
+    ],
+    [
+     -3.29399,
+     -0.12602
+    ],
+    [
+     -5.02437,
+     -0.12602
+    ]
+   ],
+   "n_edges": 6,
+   "n_snapped": 6,
+   "edges": [
+    {
+     "axis": "x",
+     "snapped": -5.0243669911234035,
+     "moved_mm": 13.6,
+     "stderr_mm": 0.2102,
+     "n_points": 1756,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 3.1746085145177805,
+     "moved_mm": 25.06,
+     "stderr_mm": 0.183,
+     "n_points": 2516,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 3.6650770308708465,
+     "moved_mm": 24.16,
+     "stderr_mm": 0.0313,
+     "n_points": 29980,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -1.8487681187432259,
+     "moved_mm": 1.53,
+     "stderr_mm": 0.0098,
+     "n_points": 112559,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -3.2939922133480817,
+     "moved_mm": -4.29,
+     "stderr_mm": 0.0365,
+     "n_points": 10265,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": -0.12602106812502717,
+     "moved_mm": -5.23,
+     "stderr_mm": 0.2125,
+     "n_points": 1698,
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "polygon_m": [
+    [
+     0.52382,
+     4.86689
+    ],
+    [
+     0.52382,
+     3.41486
+    ],
+    [
+     -1.0585,
+     3.41486
+    ],
+    [
+     -1.0585,
+     4.86689
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "snapped": 4.8668928092060915,
+     "moved_mm": -12.16,
+     "stderr_mm": 0.1538,
+     "n_points": 3864,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": 0.5238201712409587,
+     "moved_mm": 36.02,
+     "stderr_mm": 0.1309,
+     "n_points": 4753,
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "snapped": 3.414859891982359,
+     "moved_mm": 13.75,
+     "stderr_mm": 0.139,
+     "n_points": 4519,
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "snapped": -1.0584971662335247,
+     "moved_mm": -16.57,
+     "stderr_mm": 0.0209,
+     "n_points": 31679,
+     "matched": true
+    }
+   ]
+  }
+ ]
+}

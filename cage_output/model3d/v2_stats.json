@@ -1,0 +1,15 @@
+{
+ "run": "robust_c95_swin_clean",
+ "wall_segments": {
+  "full": 48,
+  "partial": 17
+ },
+ "n_openings_built": 20,
+ "n_openings_flagged": 1,
+ "floor_area_m2": 145.25,
+ "net_internal_area_m2": 129.06,
+ "clear_height_mm": 2719.7,
+ "dropped_ceiling_walls": 17,
+ "faces": 1518,
+ "floor_holes_filled": true
+}

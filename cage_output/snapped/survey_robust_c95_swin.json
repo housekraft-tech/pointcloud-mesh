@@ -1,0 +1,362 @@
+[
+ {
+  "set": "cage_raw",
+  "n_matched": 6,
+  "median_abs_err_mm": 48.1,
+  "mean_abs_err_mm": 64.4,
+  "p90_abs_err_mm": 122.5,
+  "max_abs_err_mm": 144.7,
+  "rows": [
+   {
+    "room": "MBR",
+    "poly": 1,
+    "matched": false,
+    "survey_w": 3103,
+    "survey_l": 5823,
+    "pred_w": 1998.0,
+    "pred_l": 7987.2,
+    "dw_mm": -1105.0,
+    "dl_mm": 2164.2
+   },
+   {
+    "room": "GBR",
+    "poly": 2,
+    "matched": true,
+    "survey_w": 3390,
+    "survey_l": 3398,
+    "pred_w": 3496.5,
+    "pred_l": 3521.9,
+    "dw_mm": 106.5,
+    "dl_mm": 123.9
+   },
+   {
+    "room": "Common washroom",
+    "poly": 3,
+    "matched": true,
+    "survey_w": 1451,
+    "survey_l": 2369,
+    "pred_w": 1509.4,
+    "pred_l": 2372.6,
+    "dw_mm": 58.4,
+    "dl_mm": 3.6
+   },
+   {
+    "room": "Foyer",
+    "poly": 5,
+    "matched": true,
+    "survey_w": 1462,
+    "survey_l": 1893,
+    "pred_w": 1572.3,
+    "pred_l": 1748.3,
+    "dw_mm": 110.3,
+    "dl_mm": -144.7
+   },
+   {
+    "room": "KBR",
+    "poly": 7,
+    "matched": false,
+    "survey_w": 2951,
+    "survey_l": 4790,
+    "pred_w": 3018.8,
+    "pred_l": 4120.9,
+    "dw_mm": 67.8,
+    "dl_mm": -669.1
+   },
+   {
+    "room": "MBR washroom",
+    "poly": 9,
+    "matched": true,
+    "survey_w": 1470,
+    "survey_l": 2415,
+    "pred_w": 1498.5,
+    "pred_l": 2452.8,
+    "dw_mm": 28.5,
+    "dl_mm": 37.8
+   },
+   {
+    "room": "Kitchen",
+    "poly": 11,
+    "matched": false,
+    "survey_w": 2210,
+    "survey_l": 4991,
+    "pred_w": 2997.0,
+    "pred_l": 4779.7,
+    "dw_mm": 787.0,
+    "dl_mm": -211.3
+   },
+   {
+    "room": "KBR washroom",
+    "poly": 12,
+    "matched": true,
+    "survey_w": 1472,
+    "survey_l": 2356,
+    "pred_w": 1498.5,
+    "pred_l": 2452.8,
+    "dw_mm": 26.5,
+    "dl_mm": 96.8
+   },
+   {
+    "room": "Living",
+    "poly": 13,
+    "matched": false,
+    "survey_w": 4947,
+    "survey_l": 6540,
+    "pred_w": 5031.3,
+    "pred_l": 8678.9,
+    "dw_mm": 84.3,
+    "dl_mm": 2138.9
+   },
+   {
+    "room": "Utility",
+    "poly": 14,
+    "matched": true,
+    "survey_w": 1521,
+    "survey_l": 1537,
+    "pred_w": 1509.4,
+    "pred_l": 1561.0,
+    "dw_mm": -11.6,
+    "dl_mm": 24.0
+   }
+  ]
+ },
+ {
+  "set": "snapped_strict",
+  "n_matched": 7,
+  "median_abs_err_mm": 12.0,
+  "mean_abs_err_mm": 19.1,
+  "p90_abs_err_mm": 44.3,
+  "max_abs_err_mm": 55.8,
+  "rows": [
+   {
+    "room": "Kitchen",
+    "poly": 1,
+    "matched": false,
+    "survey_w": 2210,
+    "survey_l": 4991,
+    "pred_w": 2223.6,
+    "pred_l": 7964.5,
+    "dw_mm": 13.6,
+    "dl_mm": 2973.5
+   },
+   {
+    "room": "GBR",
+    "poly": 2,
+    "matched": true,
+    "survey_w": 3390,
+    "survey_l": 3398,
+    "pred_w": 3407.5,
+    "pred_l": 3428.6,
+    "dw_mm": 17.5,
+    "dl_mm": 30.6
+   },
+   {
+    "room": "Utility",
+    "poly": 4,
+    "matched": true,
+    "survey_w": 1521,
+    "survey_l": 1537,
+    "pred_w": 1514.8,
+    "pred_l": 1544.8,
+    "dw_mm": -6.2,
+    "dl_mm": 7.8
+   },
+   {
+    "room": "Foyer",
+    "poly": 5,
+    "matched": true,
+    "survey_w": 1462,
+    "survey_l": 1893,
+    "pred_w": 1473.0,
+    "pred_l": 1837.2,
+    "dw_mm": 11.0,
+    "dl_mm": -55.8
+   },
+   {
+    "room": "MBR",
+    "poly": 7,
+    "matched": false,
+    "survey_w": 3103,
+    "survey_l": 5823,
+    "pred_w": 3140.5,
+    "pred_l": 4128.8,
+    "dw_mm": 37.5,
+    "dl_mm": -1694.2
+   },
+   {
+    "room": "Common washroom",
+    "poly": 9,
+    "matched": true,
+    "survey_w": 1451,
+    "survey_l": 2369,
+    "pred_w": 1463.3,
+    "pred_l": 2371.6,
+    "dw_mm": 12.3,
+    "dl_mm": 2.6
+   },
+   {
+    "room": "MBR washroom",
+    "poly": 10,
+    "matched": true,
+    "survey_w": 1470,
+    "survey_l": 2415,
+    "pred_w": 1463.3,
+    "pred_l": 2371.6,
+    "dw_mm": -6.7,
+    "dl_mm": -43.4
+   },
+   {
+    "room": "KBR",
+    "poly": 11,
+    "matched": true,
+    "survey_w": 2951,
+    "survey_l": 4790,
+    "pred_w": 2995.6,
+    "pred_l": 4789.0,
+    "dw_mm": 44.6,
+    "dl_mm": -1.0
+   },
+   {
+    "room": "KBR washroom",
+    "poly": 12,
+    "matched": true,
+    "survey_w": 1472,
+    "survey_l": 2356,
+    "pred_w": 1483.7,
+    "pred_l": 2371.6,
+    "dw_mm": 11.7,
+    "dl_mm": 15.6
+   },
+   {
+    "room": "Living",
+    "poly": 13,
+    "matched": false,
+    "survey_w": 4947,
+    "survey_l": 6540,
+    "pred_w": 4961.5,
+    "pred_l": 8854.4,
+    "dw_mm": 14.5,
+    "dl_mm": 2314.4
+   }
+  ]
+ },
+ {
+  "set": "snapped_hybrid",
+  "n_matched": 7,
+  "median_abs_err_mm": 12.6,
+  "mean_abs_err_mm": 21.4,
+  "p90_abs_err_mm": 47.6,
+  "max_abs_err_mm": 59.9,
+  "rows": [
+   {
+    "room": "Kitchen",
+    "poly": 1,
+    "matched": false,
+    "survey_w": 2210,
+    "survey_l": 4991,
+    "pred_w": 2223.8,
+    "pred_l": 7965.1,
+    "dw_mm": 13.8,
+    "dl_mm": 2974.1
+   },
+   {
+    "room": "GBR",
+    "poly": 2,
+    "matched": true,
+    "survey_w": 3390,
+    "survey_l": 3398,
+    "pred_w": 3406.5,
+    "pred_l": 3442.0,
+    "dw_mm": 16.5,
+    "dl_mm": 44.0
+   },
+   {
+    "room": "Utility",
+    "poly": 4,
+    "matched": true,
+    "survey_w": 1521,
+    "survey_l": 1537,
+    "pred_w": 1513.2,
+    "pred_l": 1544.9,
+    "dw_mm": -7.8,
+    "dl_mm": 7.9
+   },
+   {
+    "room": "Foyer",
+    "poly": 5,
+    "matched": true,
+    "survey_w": 1462,
+    "survey_l": 1893,
+    "pred_w": 1475.1,
+    "pred_l": 1833.1,
+    "dw_mm": 13.1,
+    "dl_mm": -59.9
+   },
+   {
+    "room": "MBR",
+    "poly": 7,
+    "matched": false,
+    "survey_w": 3103,
+    "survey_l": 5823,
+    "pred_w": 3114.1,
+    "pred_l": 4129.6,
+    "dw_mm": 11.1,
+    "dl_mm": -1693.4
+   },
+   {
+    "room": "KBR washroom",
+    "poly": 9,
+    "matched": true,
+    "survey_w": 1472,
+    "survey_l": 2356,
+    "pred_w": 1463.1,
+    "pred_l": 2363.7,
+    "dw_mm": -8.9,
+    "dl_mm": 7.7
+   },
+   {
+    "room": "Common washroom",
+    "poly": 10,
+    "matched": true,
+    "survey_w": 1451,
+    "survey_l": 2369,
+    "pred_w": 1463.2,
+    "pred_l": 2364.0,
+    "dw_mm": 12.2,
+    "dl_mm": -5.0
+   },
+   {
+    "room": "KBR",
+    "poly": 11,
+    "matched": true,
+    "survey_w": 2951,
+    "survey_l": 4790,
+    "pred_w": 2996.3,
+    "pred_l": 4795.7,
+    "dw_mm": 45.3,
+    "dl_mm": 5.7
+   },
+   {
+    "room": "MBR washroom",
+    "poly": 12,
+    "matched": true,
+    "survey_w": 1470,
+    "survey_l": 2415,
+    "pred_w": 1487.4,
+    "pred_l": 2366.4,
+    "dw_mm": 17.4,
+    "dl_mm": -48.6
+   },
+   {
+    "room": "Living",
+    "poly": 13,
+    "matched": false,
+    "survey_w": 4947,
+    "survey_l": 6540,
+    "pred_w": 4959.1,
+    "pred_l": 8853.7,
+    "dw_mm": 12.1,
+    "dl_mm": 2313.7
+   }
+  ]
+ }
+]

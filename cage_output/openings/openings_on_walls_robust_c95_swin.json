@@ -1,0 +1,716 @@
+{
+ "report": {
+  "n_walls": 61,
+  "n_openings": 23,
+  "n_confident": 21,
+  "counts": {
+   "door": 16,
+   "wide_opening": 2,
+   "balcony_door": 4,
+   "window": 1
+  },
+  "room_pairs_connected": [
+   [
+    1,
+    2
+   ],
+   [
+    3,
+    7
+   ],
+   [
+    6,
+    13
+   ],
+   [
+    7,
+    14
+   ],
+   [
+    11,
+    12
+   ],
+   [
+    13,
+    14
+   ]
+  ],
+  "z_floor": -0.23026,
+  "z_ceiling": 2.48939
+ },
+ "openings": [
+  {
+   "wall": 0,
+   "kind": "door",
+   "axis": "x",
+   "coord": 4.821575376238817,
+   "wall_kind": "interior",
+   "rooms": [
+    1,
+    2
+   ],
+   "exterior": false,
+   "thickness_m": 0.09782,
+   "p0": [
+    4.8216,
+    -4.6176
+   ],
+   "p1": [
+    4.8216,
+    -3.8776
+   ],
+   "width_m": 0.74,
+   "height_m": 2.22,
+   "sill_m": 0.0103,
+   "head_m": 2.2303,
+   "z0": -0.22,
+   "z1": 2.0,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 3,
+   "kind": "door",
+   "axis": "x",
+   "coord": -2.0919253987466835,
+   "wall_kind": "interior",
+   "rooms": [
+    11,
+    12
+   ],
+   "exterior": false,
+   "thickness_m": 0.20349,
+   "p0": [
+    -2.0919,
+    -3.8523
+   ],
+   "p1": [
+    -2.0919,
+    -3.2323
+   ],
+   "width_m": 0.62,
+   "height_m": 2.0511,
+   "sill_m": -0.0104,
+   "head_m": 2.0407,
+   "z0": -0.24065,
+   "z1": 1.81047,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 5,
+   "kind": "wide_opening",
+   "axis": "y",
+   "coord": 3.2094038220435257,
+   "wall_kind": "interior",
+   "rooms": [
+    6,
+    13
+   ],
+   "exterior": false,
+   "thickness_m": 0.19336,
+   "p0": [
+    -5.038,
+    3.2094
+   ],
+   "p1": [
+    -2.978,
+    3.2094
+   ],
+   "width_m": 2.06,
+   "height_m": 2.2512,
+   "sill_m": -0.0103,
+   "head_m": 2.2408,
+   "z0": -0.24059,
+   "z1": 2.01059,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 10,
+   "kind": "door",
+   "axis": "x",
+   "coord": 0.581457707790122,
+   "wall_kind": "interior",
+   "rooms": [
+    3,
+    7
+   ],
+   "exterior": false,
+   "thickness_m": 0.12488,
+   "p0": [
+    0.5815,
+    5.0905
+   ],
+   "p1": [
+    0.5815,
+    5.7105
+   ],
+   "width_m": 0.62,
+   "height_m": 2.04,
+   "sill_m": -0.0097,
+   "head_m": 2.0303,
+   "z0": -0.24,
+   "z1": 1.8,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 13,
+   "kind": "wide_opening",
+   "axis": "x",
+   "coord": 0.5658481967699824,
+   "wall_kind": "interior",
+   "rooms": [
+    7,
+    14
+   ],
+   "exterior": false,
+   "thickness_m": 0.1561,
+   "p0": [
+    0.5658,
+    3.3605
+   ],
+   "p1": [
+    0.5658,
+    4.812
+   ],
+   "width_m": 1.4515,
+   "height_m": 2.42,
+   "sill_m": -0.0097,
+   "head_m": 2.4103,
+   "z0": -0.24,
+   "z1": 2.18,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 15,
+   "kind": "door",
+   "axis": "y",
+   "coord": 3.2309051071854116,
+   "wall_kind": "interior",
+   "rooms": [
+    13,
+    14
+   ],
+   "exterior": false,
+   "thickness_m": 0.23636,
+   "p0": [
+    -0.393,
+    3.2309
+   ],
+   "p1": [
+    0.3995,
+    3.2309
+   ],
+   "width_m": 0.7925,
+   "height_m": 2.0306,
+   "sill_m": -0.0003,
+   "head_m": 2.0303,
+   "z0": -0.23056,
+   "z1": 1.8,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 24,
+   "kind": "balcony_door",
+   "axis": "x",
+   "coord": 5.888691454637545,
+   "wall_kind": "exterior",
+   "rooms": [
+    1
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    5.8887,
+    -4.8548
+   ],
+   "p1": [
+    5.8887,
+    3.1154
+   ],
+   "width_m": 7.9703,
+   "height_m": 2.28,
+   "sill_m": -0.0097,
+   "head_m": 2.2703,
+   "z0": -0.24,
+   "z1": 2.04,
+   "seen_through": true,
+   "confident": false,
+   "note": "spans an exterior wall - likely unscanned"
+  },
+  {
+   "wall": 26,
+   "kind": "door",
+   "axis": "x",
+   "coord": 3.6650770308708465,
+   "wall_kind": "exterior",
+   "rooms": [
+    1
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    3.6651,
+    0.1783
+   ],
+   "p1": [
+    3.6651,
+    1.1783
+   ],
+   "width_m": 1.0,
+   "height_m": 2.2,
+   "sill_m": 0.0103,
+   "head_m": 2.2103,
+   "z0": -0.22,
+   "z1": 1.98,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 29,
+   "kind": "door",
+   "axis": "x",
+   "coord": 1.3651367256243465,
+   "wall_kind": "exterior",
+   "rooms": [
+    2
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    1.3651,
+    -2.9296
+   ],
+   "p1": [
+    1.3651,
+    -2.1896
+   ],
+   "width_m": 0.74,
+   "height_m": 2.0511,
+   "sill_m": -0.0003,
+   "head_m": 2.0508,
+   "z0": -0.23056,
+   "z1": 1.82056,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 32,
+   "kind": "door",
+   "axis": "x",
+   "coord": -2.7901966725600067,
+   "wall_kind": "exterior",
+   "rooms": [
+    4
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -2.7902,
+    3.3953
+   ],
+   "p1": [
+    -2.7902,
+    4.2153
+   ],
+   "width_m": 0.82,
+   "height_m": 2.0909,
+   "sill_m": -0.0202,
+   "head_m": 2.0707,
+   "z0": -0.25047,
+   "z1": 1.84047,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 34,
+   "kind": "balcony_door",
+   "axis": "x",
+   "coord": -5.1893143577249905,
+   "wall_kind": "exterior",
+   "rooms": [
+    5
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -5.1893,
+    -1.8417
+   ],
+   "p1": [
+    -5.1893,
+    -0.3817
+   ],
+   "width_m": 1.46,
+   "height_m": 2.1025,
+   "sill_m": -0.011,
+   "head_m": 2.0915,
+   "z0": -0.24124,
+   "z1": 1.86124,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 35,
+   "kind": "door",
+   "axis": "x",
+   "coord": -3.3521390692850277,
+   "wall_kind": "exterior",
+   "rooms": [
+    5
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -3.3521,
+    -1.66
+   ],
+   "p1": [
+    -3.3521,
+    -0.7689
+   ],
+   "width_m": 0.8911,
+   "height_m": 2.0312,
+   "sill_m": -0.0003,
+   "head_m": 2.0309,
+   "z0": -0.23056,
+   "z1": 1.80065,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 36,
+   "kind": "door",
+   "axis": "x",
+   "coord": -2.852634716640565,
+   "wall_kind": "exterior",
+   "rooms": [
+    6
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -2.8526,
+    3.391
+   ],
+   "p1": [
+    -2.8526,
+    4.1637
+   ],
+   "width_m": 0.7726,
+   "height_m": 2.0509,
+   "sill_m": -0.0101,
+   "head_m": 2.0407,
+   "z0": -0.2404,
+   "z1": 1.81049,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 41,
+   "kind": "door",
+   "axis": "x",
+   "coord": 4.870483300632452,
+   "wall_kind": "exterior",
+   "rooms": [
+    8
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    4.8705,
+    -4.6189
+   ],
+   "p1": [
+    4.8705,
+    -3.9076
+   ],
+   "width_m": 0.7113,
+   "height_m": 2.22,
+   "sill_m": 0.0103,
+   "head_m": 2.2303,
+   "z0": -0.22,
+   "z1": 2.0,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 42,
+   "kind": "door",
+   "axis": "y",
+   "coord": -2.0354668012034,
+   "wall_kind": "exterior",
+   "rooms": [
+    8
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    4.9785,
+    -2.0355
+   ],
+   "p1": [
+    5.9097,
+    -2.0355
+   ],
+   "width_m": 0.9312,
+   "height_m": 2.1511,
+   "sill_m": 0.0897,
+   "head_m": 2.2409,
+   "z0": -0.14053,
+   "z1": 2.01061,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 43,
+   "kind": "window",
+   "axis": "x",
+   "coord": 5.857472432597266,
+   "wall_kind": "exterior",
+   "rooms": [
+    8
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    5.8575,
+    -4.858
+   ],
+   "p1": [
+    5.8575,
+    -1.9276
+   ],
+   "width_m": 2.9304,
+   "height_m": 1.22,
+   "sill_m": 1.0403,
+   "head_m": 2.2603,
+   "z0": 0.81,
+   "z1": 2.03,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 43,
+   "kind": "balcony_door",
+   "axis": "x",
+   "coord": 5.857472432597266,
+   "wall_kind": "exterior",
+   "rooms": [
+    8
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    5.8575,
+    -4.8476
+   ],
+   "p1": [
+    5.8575,
+    -1.9276
+   ],
+   "width_m": 2.92,
+   "height_m": 0.9328,
+   "sill_m": 0.0985,
+   "head_m": 1.0313,
+   "z0": -0.13177,
+   "z1": 0.801,
+   "seen_through": false,
+   "confident": false,
+   "note": "no clear line of sight - likely a furniture shadow"
+  },
+  {
+   "wall": 46,
+   "kind": "door",
+   "axis": "y",
+   "coord": -3.1569503105517316,
+   "wall_kind": "exterior",
+   "rooms": [
+    9
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    0.4273,
+    -3.157
+   ],
+   "p1": [
+    1.0473,
+    -3.157
+   ],
+   "width_m": 0.62,
+   "height_m": 2.071,
+   "sill_m": -0.0003,
+   "head_m": 2.0707,
+   "z0": -0.23056,
+   "z1": 1.84047,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 47,
+   "kind": "door",
+   "axis": "y",
+   "coord": -3.1569503105517316,
+   "wall_kind": "exterior",
+   "rooms": [
+    10
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    0.4298,
+    -3.157
+   ],
+   "p1": [
+    1.0498,
+    -3.157
+   ],
+   "width_m": 0.62,
+   "height_m": 2.071,
+   "sill_m": -0.0003,
+   "head_m": 2.0707,
+   "z0": -0.23056,
+   "z1": 1.84047,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 53,
+   "kind": "door",
+   "axis": "x",
+   "coord": -2.19367074898873,
+   "wall_kind": "exterior",
+   "rooms": [
+    11
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -2.1937,
+    -2.9496
+   ],
+   "p1": [
+    -2.1937,
+    -2.1896
+   ],
+   "width_m": 0.76,
+   "height_m": 2.0306,
+   "sill_m": -0.0003,
+   "head_m": 2.0303,
+   "z0": -0.23056,
+   "z1": 1.8,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 58,
+   "kind": "door",
+   "axis": "x",
+   "coord": 3.6650770308708465,
+   "wall_kind": "exterior",
+   "rooms": [
+    13
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    3.6651,
+    0.1803
+   ],
+   "p1": [
+    3.6651,
+    1.1511
+   ],
+   "width_m": 0.9709,
+   "height_m": 2.2,
+   "sill_m": 0.0103,
+   "head_m": 2.2103,
+   "z0": -0.22,
+   "z1": 1.98,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 59,
+   "kind": "balcony_door",
+   "axis": "y",
+   "coord": -1.8487681187432259,
+   "wall_kind": "exterior",
+   "rooms": [
+    13
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -2.0039,
+    -1.8488
+   ],
+   "p1": [
+    0.3266,
+    -1.8488
+   ],
+   "width_m": 2.3305,
+   "height_m": 2.411,
+   "sill_m": -0.0002,
+   "head_m": 2.4107,
+   "z0": -0.23049,
+   "z1": 2.18049,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 60,
+   "kind": "door",
+   "axis": "x",
+   "coord": -3.2897010252044696,
+   "wall_kind": "exterior",
+   "rooms": [
+    13
+   ],
+   "exterior": true,
+   "thickness_m": 0.125,
+   "p0": [
+    -3.2897,
+    -1.6617
+   ],
+   "p1": [
+    -3.2897,
+    -0.7417
+   ],
+   "width_m": 0.92,
+   "height_m": 2.0306,
+   "sill_m": -0.0003,
+   "head_m": 2.0303,
+   "z0": -0.23056,
+   "z1": 1.8,
+   "seen_through": true,
+   "confident": true,
+   "note": ""
+  }
+ ]
+}

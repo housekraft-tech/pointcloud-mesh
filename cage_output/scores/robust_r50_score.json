@@ -1,0 +1,86 @@
+{
+ "result": "robust_r50",
+ "n_pred": 8,
+ "n_gt": 15,
+ "pred_total_area_m2": 112.27,
+ "gt_total_area_m2": 111.94,
+ "area_error_pct": 0.3,
+ "global_iou": 0.785,
+ "orientation": {
+  "rot90": 2,
+  "flip": false,
+  "t": [
+   9.678,
+   -7.294
+  ]
+ },
+ "n_matched_iou50": 5,
+ "mean_iou_matched": 0.877,
+ "rooms": [
+  {
+   "gt_name": "Bedroom 3",
+   "gt_area_m2": 14.44,
+   "pred_area_m2": 14.03,
+   "iou": 0.955,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bathroom 2",
+   "gt_area_m2": 3.55,
+   "pred_area_m2": 3.34,
+   "iou": 0.941,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bathroom 3",
+   "gt_area_m2": 3.62,
+   "pred_area_m2": 3.74,
+   "iou": 0.874,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bedroom",
+   "gt_area_m2": 11.74,
+   "pred_area_m2": 12.06,
+   "iou": 0.855,
+   "n_corners": 6
+  },
+  {
+   "gt_name": "Balcony 2",
+   "gt_area_m2": 7.87,
+   "pred_area_m2": 8.63,
+   "iou": 0.761,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bedroom 2",
+   "gt_area_m2": 13.05,
+   "pred_area_m2": 20.89,
+   "iou": 0.377,
+   "n_corners": 9
+  },
+  {
+   "gt_name": "Living Room",
+   "gt_area_m2": 14.84,
+   "pred_area_m2": 47.03,
+   "iou": 0.314,
+   "n_corners": 12
+  },
+  {
+   "gt_name": "Utility",
+   "gt_area_m2": 4.5,
+   "pred_area_m2": 2.55,
+   "iou": 0.091,
+   "n_corners": 4
+  }
+ ],
+ "missed_gt": [
+  "Bedroom 2",
+  "Dining Room",
+  "Kitchen",
+  "Foyer",
+  "Bathroom",
+  "Balcony",
+  "Balcony 3"
+ ]
+}

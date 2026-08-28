@@ -1,0 +1,587 @@
+{
+ "report": {
+  "run": "robust_c95_swin",
+  "mode": "strict",
+  "priors": {
+   "door_h_m": 2.05,
+   "door_h_tol_m": 0.3,
+   "balcony_min_w_m": 1.3,
+   "window_min_sill_m": 0.35
+  },
+  "n_walls": 64,
+  "n_raw": 31,
+  "n_unique": 18,
+  "counts": {
+   "window": 1,
+   "high_level_void": 1,
+   "balcony_door": 3,
+   "wide_opening": 4,
+   "door": 9
+  },
+  "z_floor": -0.23026,
+  "z_ceiling": 2.48939,
+  "trajectory_poses": 356,
+  "leaf_points_stripped": 26269
+ },
+ "openings": [
+  {
+   "wall": 5,
+   "room": 1,
+   "kind": "window",
+   "axis": "x",
+   "coord": 5.888691454637545,
+   "exterior": true,
+   "p0": [
+    5.8887,
+    -4.8548
+   ],
+   "p1": [
+    5.8887,
+    3.1154
+   ],
+   "width_m": 7.9703,
+   "sill_m": 1.0403,
+   "head_m": 2.2603,
+   "height_m": 1.22,
+   "width_coarse_m": 7.89,
+   "height_coarse_m": 1.2,
+   "z0": 0.81,
+   "z1": 2.03,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": false,
+   "note": "spans an exterior wall - likely unscanned, not glazed",
+   "also_room": [
+    8,
+    8
+   ]
+  },
+  {
+   "wall": 17,
+   "room": 3,
+   "kind": "high_level_void",
+   "axis": "y",
+   "coord": 5.00841823360337,
+   "exterior": false,
+   "p0": [
+    -1.8536,
+    5.0084
+   ],
+   "p1": [
+    0.6064,
+    5.0084
+   ],
+   "width_m": 2.46,
+   "sill_m": 2.1356,
+   "head_m": 2.7203,
+   "height_m": 0.5847,
+   "width_coarse_m": 2.4,
+   "height_coarse_m": 0.66,
+   "z0": 1.90531,
+   "z1": 2.49,
+   "walked": false,
+   "seen_through": null,
+   "gate_applies": false,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 57,
+   "room": 13,
+   "kind": "balcony_door",
+   "axis": "y",
+   "coord": -1.8487681187432259,
+   "exterior": true,
+   "p0": [
+    -1.9997,
+    -1.8488
+   ],
+   "p1": [
+    0.3403,
+    -1.8488
+   ],
+   "width_m": 2.34,
+   "sill_m": -0.0002,
+   "head_m": 2.4107,
+   "height_m": 2.411,
+   "width_coarse_m": 2.34,
+   "height_coarse_m": 2.37,
+   "z0": -0.23049,
+   "z1": 2.18049,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 27,
+   "room": 6,
+   "kind": "wide_opening",
+   "axis": "y",
+   "coord": 3.3060847861400586,
+   "exterior": false,
+   "p0": [
+    -5.1804,
+    3.3061
+   ],
+   "p1": [
+    -2.9804,
+    3.3061
+   ],
+   "width_m": 2.2,
+   "sill_m": -0.0103,
+   "head_m": 2.2408,
+   "height_m": 2.2512,
+   "width_coarse_m": 2.1,
+   "height_coarse_m": 2.25,
+   "z0": -0.24059,
+   "z1": 2.01059,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    13
+   ]
+  },
+  {
+   "wall": 19,
+   "room": 4,
+   "kind": "wide_opening",
+   "axis": "y",
+   "coord": 4.820904874415072,
+   "exterior": false,
+   "p0": [
+    -2.7909,
+    4.8209
+   ],
+   "p1": [
+    -1.0596,
+    4.8209
+   ],
+   "width_m": 1.7314,
+   "sill_m": -0.0097,
+   "head_m": 2.1012,
+   "height_m": 2.1109,
+   "width_coarse_m": 1.71,
+   "height_coarse_m": 2.19,
+   "z0": -0.24,
+   "z1": 1.87092,
+   "walked": false,
+   "seen_through": false,
+   "gate_applies": true,
+   "confident": false,
+   "note": "no clear line of sight through it - likely a furniture shadow"
+  },
+  {
+   "wall": 48,
+   "room": 11,
+   "kind": "wide_opening",
+   "axis": "x",
+   "coord": -2.19367074898873,
+   "exterior": false,
+   "p0": [
+    -2.1937,
+    -3.8501
+   ],
+   "p1": [
+    -2.1937,
+    -2.2001
+   ],
+   "width_m": 1.65,
+   "sill_m": -0.0104,
+   "head_m": 2.0407,
+   "height_m": 2.0511,
+   "width_coarse_m": 0.6,
+   "height_coarse_m": 2.01,
+   "z0": -0.24065,
+   "z1": 1.81047,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": " rejoined across an open door leaf;",
+   "leaf_gap_mm": 290.0,
+   "merged_parts": 2,
+   "also_room": [
+    12
+   ]
+  },
+  {
+   "wall": 20,
+   "room": 4,
+   "kind": "wide_opening",
+   "axis": "x",
+   "coord": -1.2454295444211103,
+   "exterior": false,
+   "p0": [
+    -1.2454,
+    3.3143
+   ],
+   "p1": [
+    -1.2454,
+    4.8263
+   ],
+   "width_m": 1.512,
+   "sill_m": -0.0097,
+   "head_m": 2.4203,
+   "height_m": 2.43,
+   "width_coarse_m": 1.59,
+   "height_coarse_m": 2.43,
+   "z0": -0.24,
+   "z1": 2.19,
+   "walked": false,
+   "seen_through": false,
+   "gate_applies": true,
+   "confident": false,
+   "note": "no clear line of sight through it - likely a furniture shadow"
+  },
+  {
+   "wall": 22,
+   "room": 5,
+   "kind": "balcony_door",
+   "axis": "x",
+   "coord": -5.1893143577249905,
+   "exterior": true,
+   "p0": [
+    -5.1893,
+    -1.8417
+   ],
+   "p1": [
+    -5.1893,
+    -0.3817
+   ],
+   "width_m": 1.46,
+   "sill_m": -0.011,
+   "head_m": 2.0915,
+   "height_m": 2.1025,
+   "width_coarse_m": 1.44,
+   "height_coarse_m": 2.1,
+   "z0": -0.24124,
+   "z1": 1.86124,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 32,
+   "room": 7,
+   "kind": "balcony_door",
+   "axis": "x",
+   "coord": 0.64389575187068,
+   "exterior": true,
+   "p0": [
+    0.6439,
+    3.3605
+   ],
+   "p1": [
+    0.6439,
+    4.812
+   ],
+   "width_m": 1.4515,
+   "sill_m": -0.0002,
+   "head_m": 2.4107,
+   "height_m": 2.411,
+   "width_coarse_m": 1.41,
+   "height_coarse_m": 2.37,
+   "z0": -0.23049,
+   "z1": 2.18049,
+   "walked": true,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    14
+   ]
+  },
+  {
+   "wall": 9,
+   "room": 1,
+   "kind": "door",
+   "axis": "x",
+   "coord": 3.6650770308708465,
+   "exterior": false,
+   "p0": [
+    3.6651,
+    0.1783
+   ],
+   "p1": [
+    3.6651,
+    1.1783
+   ],
+   "width_m": 1.0,
+   "sill_m": 0.0103,
+   "head_m": 2.2503,
+   "height_m": 2.24,
+   "width_coarse_m": 0.96,
+   "height_coarse_m": 2.16,
+   "z0": -0.22,
+   "z1": 2.02,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    13
+   ]
+  },
+  {
+   "wall": 35,
+   "room": 8,
+   "kind": "door",
+   "axis": "y",
+   "coord": -2.0354668012034,
+   "exterior": false,
+   "p0": [
+    4.9785,
+    -2.0355
+   ],
+   "p1": [
+    5.9097,
+    -2.0355
+   ],
+   "width_m": 0.9312,
+   "sill_m": 0.0897,
+   "head_m": 2.2409,
+   "height_m": 2.1511,
+   "width_coarse_m": 0.93,
+   "height_coarse_m": 2.13,
+   "z0": -0.14053,
+   "z1": 2.01061,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 24,
+   "room": 5,
+   "kind": "door",
+   "axis": "x",
+   "coord": -3.3521390692850277,
+   "exterior": false,
+   "p0": [
+    -3.3521,
+    -1.66
+   ],
+   "p1": [
+    -3.3521,
+    -0.7689
+   ],
+   "width_m": 0.8911,
+   "sill_m": 0.0003,
+   "head_m": 1.8803,
+   "height_m": 1.88,
+   "width_coarse_m": 0.87,
+   "height_coarse_m": 1.86,
+   "z0": -0.23,
+   "z1": 1.65,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    13
+   ]
+  },
+  {
+   "wall": 62,
+   "room": 14,
+   "kind": "door",
+   "axis": "y",
+   "coord": 3.3490873564238295,
+   "exterior": false,
+   "p0": [
+    -0.393,
+    3.3491
+   ],
+   "p1": [
+    0.4589,
+    3.3491
+   ],
+   "width_m": 0.8519,
+   "sill_m": -0.0003,
+   "head_m": 2.0303,
+   "height_m": 2.0306,
+   "width_coarse_m": 0.75,
+   "height_coarse_m": 2.01,
+   "z0": -0.23056,
+   "z1": 1.8,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    13
+   ]
+  },
+  {
+   "wall": 18,
+   "room": 4,
+   "kind": "door",
+   "axis": "x",
+   "coord": -2.7901966725600067,
+   "exterior": false,
+   "p0": [
+    -2.7902,
+    3.3939
+   ],
+   "p1": [
+    -2.7902,
+    4.2062
+   ],
+   "width_m": 0.8123,
+   "sill_m": -0.0101,
+   "head_m": 2.0806,
+   "height_m": 2.0907,
+   "width_coarse_m": 0.75,
+   "height_coarse_m": 1.95,
+   "z0": -0.2404,
+   "z1": 1.85031,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    6
+   ]
+  },
+  {
+   "wall": 10,
+   "room": 2,
+   "kind": "door",
+   "axis": "x",
+   "coord": 4.772667451845183,
+   "exterior": false,
+   "p0": [
+    4.7727,
+    -4.6223
+   ],
+   "p1": [
+    4.7727,
+    -3.8823
+   ],
+   "width_m": 0.74,
+   "sill_m": 0.0103,
+   "head_m": 2.2503,
+   "height_m": 2.24,
+   "width_coarse_m": 0.72,
+   "height_coarse_m": 2.16,
+   "z0": -0.22,
+   "z1": 2.02,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    1,
+    8
+   ]
+  },
+  {
+   "wall": 12,
+   "room": 2,
+   "kind": "door",
+   "axis": "x",
+   "coord": 1.3651367256243465,
+   "exterior": false,
+   "p0": [
+    1.3651,
+    -2.9223
+   ],
+   "p1": [
+    1.3651,
+    -2.1823
+   ],
+   "width_m": 0.74,
+   "sill_m": -0.0003,
+   "head_m": 2.0508,
+   "height_m": 2.0511,
+   "width_coarse_m": 0.72,
+   "height_coarse_m": 2.01,
+   "z0": -0.23056,
+   "z1": 1.82056,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": ""
+  },
+  {
+   "wall": 16,
+   "room": 3,
+   "kind": "door",
+   "axis": "x",
+   "coord": 0.5190196637095639,
+   "exterior": false,
+   "p0": [
+    0.519,
+    5.0792
+   ],
+   "p1": [
+    0.519,
+    5.712
+   ],
+   "width_m": 0.6327,
+   "sill_m": -0.0097,
+   "head_m": 2.1503,
+   "height_m": 2.16,
+   "width_coarse_m": 0.57,
+   "height_coarse_m": 2.04,
+   "z0": -0.24,
+   "z1": 1.92,
+   "walked": true,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    7
+   ]
+  },
+  {
+   "wall": 40,
+   "room": 9,
+   "kind": "door",
+   "axis": "y",
+   "coord": -3.1569503105517316,
+   "exterior": false,
+   "p0": [
+    0.4273,
+    -3.157
+   ],
+   "p1": [
+    1.0473,
+    -3.157
+   ],
+   "width_m": 0.62,
+   "sill_m": -0.0003,
+   "head_m": 2.0707,
+   "height_m": 2.071,
+   "width_coarse_m": 0.6,
+   "height_coarse_m": 2.01,
+   "z0": -0.23056,
+   "z1": 1.84047,
+   "walked": false,
+   "seen_through": true,
+   "gate_applies": true,
+   "confident": true,
+   "note": "",
+   "also_room": [
+    10
+   ]
+  }
+ ]
+}

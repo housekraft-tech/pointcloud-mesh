@@ -1,0 +1,13 @@
+{
+ "run": "robust_c95_swin",
+ "n_openings": 18,
+ "by_kind": {
+  "high_level_void": 1,
+  "balcony_door": 3,
+  "wide_opening": 3,
+  "door": 11
+ },
+ "total_opening_area_m2": 43.88,
+ "faces": 1010,
+ "watertight": true
+}

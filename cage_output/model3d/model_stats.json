@@ -1,0 +1,14 @@
+{
+ "run": "robust_c95_swin",
+ "mode": "strict",
+ "n_rooms": 15,
+ "net_internal_area_m2": 123.2,
+ "footprint_area_m2": 131.95,
+ "wall_area_m2": 15.0,
+ "floor_z": -0.23026,
+ "ceiling_z": 2.48939,
+ "clear_height_mm": 2719.6,
+ "volume_m3": 335.05,
+ "faces_solid": 644,
+ "exterior_skin_m": 0.125
+}

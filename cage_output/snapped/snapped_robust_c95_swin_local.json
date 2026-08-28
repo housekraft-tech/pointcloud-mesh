@@ -1,0 +1,1246 @@
+{
+ "report": {
+  "run": "robust_c95_swin",
+  "method": "local-per-edge",
+  "n_rooms": 15,
+  "edges_total": 64,
+  "edges_snapped": 59,
+  "edges_kept": 5,
+  "edge_move_mm": {
+   "median": 42.8,
+   "p90": 118.6,
+   "max": 281.1
+  },
+  "median_stderr_um": 31.5,
+  "floor_z": -0.23026,
+  "ceiling_z": 2.48939,
+  "clear_height_mm": 2719.6,
+  "floor_stderr_mm": 0.007,
+  "ceiling_stderr_mm": 0.0176
+ },
+ "rooms": [
+  {
+   "id": 0,
+   "polygon_m": [
+    [
+     5.88869,
+     6.53449
+    ],
+    [
+     5.88869,
+     4.69316
+    ],
+    [
+     4.96073,
+     4.69316
+    ],
+    [
+     4.96073,
+     6.53449
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 3,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": 6.419885621408129,
+     "lo": 4.889682749348619,
+     "hi": 5.888691454637545,
+     "snapped": 6.534489035971593,
+     "moved_mm": 114.6,
+     "stderr_mm": 0.0801,
+     "sigma_mm": 4.506,
+     "n_points": 3188,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 5.888691454637545,
+     "lo": 4.658933366470059,
+     "hi": 6.419885621408129,
+     "snapped": 5.888691454637545,
+     "moved_mm": null,
+     "stderr_mm": null,
+     "sigma_mm": null,
+     "n_points": null,
+     "how": "sparse",
+     "matched": false
+    },
+    {
+     "axis": "y",
+     "coord": 4.658933366470059,
+     "lo": 4.889682749348619,
+     "hi": 5.888691454637545,
+     "snapped": 4.693159967532721,
+     "moved_mm": 34.23,
+     "stderr_mm": 0.3592,
+     "sigma_mm": 6.748,
+     "n_points": 354,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 4.889682749348619,
+     "lo": 4.658933366470059,
+     "hi": 6.419885621408129,
+     "snapped": 4.960728217441345,
+     "moved_mm": 71.05,
+     "stderr_mm": 0.1114,
+     "sigma_mm": 5.824,
+     "n_points": 2789,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 1,
+   "polygon_m": [
+    [
+     5.88869,
+     3.1161
+    ],
+    [
+     5.88869,
+     -4.849
+    ],
+    [
+     4.87309,
+     -4.849
+    ],
+    [
+     4.87309,
+     -1.84801
+    ],
+    [
+     3.90856,
+     -1.84801
+    ],
+    [
+     3.90856,
+     3.1161
+    ]
+   ],
+   "n_edges": 6,
+   "n_snapped": 5,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": 3.149545719380285,
+     "lo": 3.8906740440596916,
+     "hi": 5.888691454637545,
+     "snapped": 3.116098082886454,
+     "moved_mm": -33.45,
+     "stderr_mm": 0.0245,
+     "sigma_mm": 4.069,
+     "n_points": 27706,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 5.888691454637545,
+     "lo": -4.77473942784103,
+     "hi": 3.149545719380285,
+     "snapped": 5.888691454637545,
+     "moved_mm": null,
+     "stderr_mm": null,
+     "sigma_mm": null,
+     "n_points": null,
+     "how": "no-face",
+     "matched": false
+    },
+    {
+     "axis": "y",
+     "coord": -4.806185003822067,
+     "lo": 4.9521207934291755,
+     "hi": 5.888691454637545,
+     "snapped": -4.848999739453781,
+     "moved_mm": -42.81,
+     "stderr_mm": 0.0448,
+     "sigma_mm": 5.027,
+     "n_points": 12665,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 4.920901771388897,
+     "lo": -4.837630579803104,
+     "hi": -1.8188552856235551,
+     "snapped": 4.8730935808595035,
+     "moved_mm": -47.81,
+     "stderr_mm": 0.0296,
+     "sigma_mm": 4.166,
+     "n_points": 20165,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -1.850300861604592,
+     "lo": 3.8906740440596916,
+     "hi": 4.889682749348619,
+     "snapped": -1.8480133209707672,
+     "moved_mm": 2.29,
+     "stderr_mm": 0.0352,
+     "sigma_mm": 3.256,
+     "n_points": 8615,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 3.8906740440596916,
+     "lo": -1.8817464375856288,
+     "hi": 3.149545719380285,
+     "snapped": 3.9085612753965795,
+     "moved_mm": 17.89,
+     "stderr_mm": 0.3762,
+     "sigma_mm": 7.652,
+     "n_points": 414,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "polygon_m": [
+    [
+     4.85079,
+     -5.54259
+    ],
+    [
+     1.36512,
+     -5.54259
+    ],
+    [
+     1.36512,
+     -2.1886
+    ],
+    [
+     4.85079,
+     -2.1886
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": 4.85846372730834,
+     "lo": -5.592324403347991,
+     "hi": -2.0704198934718505,
+     "snapped": 4.850790373671509,
+     "moved_mm": -7.67,
+     "stderr_mm": 0.0948,
+     "sigma_mm": 7.04,
+     "n_points": 5523,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -5.592324403347991,
+     "lo": 1.3931522808373753,
+     "hi": 4.827244705268061,
+     "snapped": -5.542593801674508,
+     "moved_mm": 49.73,
+     "stderr_mm": 0.0103,
+     "sigma_mm": 2.109,
+     "n_points": 42764,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 1.3931522808373753,
+     "lo": -5.592324403347991,
+     "hi": -2.0704198934718505,
+     "snapped": 1.3651223053502641,
+     "moved_mm": -28.03,
+     "stderr_mm": 0.0311,
+     "sigma_mm": 5.681,
+     "n_points": 33609,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -2.0704198934718505,
+     "lo": 1.3931522808373753,
+     "hi": 4.889682749348619,
+     "snapped": -2.1886020107822715,
+     "moved_mm": -118.18,
+     "stderr_mm": 0.0706,
+     "sigma_mm": 7.029,
+     "n_points": 9911,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "polygon_m": [
+    [
+     -1.98124,
+     6.48965
+    ],
+    [
+     0.50963,
+     6.48965
+    ],
+    [
+     0.50963,
+     5.00898
+    ],
+    [
+     -1.98124,
+     5.00898
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -1.853626011351638,
+     "lo": 4.910497974318355,
+     "hi": 6.419885621408129,
+     "snapped": -1.981240887287889,
+     "moved_mm": -127.61,
+     "stderr_mm": 0.0282,
+     "sigma_mm": 3.476,
+     "n_points": 15479,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 6.419885621408129,
+     "lo": -1.853626011351638,
+     "hi": 0.5190196637095639,
+     "snapped": 6.489647958822839,
+     "moved_mm": 69.76,
+     "stderr_mm": 0.0138,
+     "sigma_mm": 2.895,
+     "n_points": 45053,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 0.5190196637095639,
+     "lo": 4.910497974318355,
+     "hi": 6.419885621408129,
+     "snapped": 0.5096277421269031,
+     "moved_mm": -9.39,
+     "stderr_mm": 0.2379,
+     "sigma_mm": 7.756,
+     "n_points": 1065,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 4.910497974318355,
+     "lo": -1.853626011351638,
+     "hi": 0.5190196637095639,
+     "snapped": 5.0089791882147985,
+     "moved_mm": 98.48,
+     "stderr_mm": 0.022,
+     "sigma_mm": 3.28,
+     "n_points": 22492,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "polygon_m": [
+    [
+     -2.79643,
+     4.82056
+    ],
+    [
+     -1.24283,
+     4.82056
+    ],
+    [
+     -1.24283,
+     3.39572
+    ],
+    [
+     -2.79643,
+     3.39572
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -2.7901966725600067,
+     "lo": 3.275328023304432,
+     "hi": 4.847606822356282,
+     "snapped": -2.796425210687114,
+     "moved_mm": -6.23,
+     "stderr_mm": 0.0563,
+     "sigma_mm": 3.951,
+     "n_points": 5037,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 4.847606822356282,
+     "lo": -2.7901966725600067,
+     "hi": -1.1043694823849428,
+     "snapped": 4.820560051388662,
+     "moved_mm": -27.05,
+     "stderr_mm": 0.017,
+     "sigma_mm": 2.623,
+     "n_points": 24289,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -1.1043694823849428,
+     "lo": 3.275328023304432,
+     "hi": 4.847606822356282,
+     "snapped": -1.2428307599548991,
+     "moved_mm": -138.46,
+     "stderr_mm": 0.012,
+     "sigma_mm": 1.362,
+     "n_points": 13102,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 3.275328023304432,
+     "lo": -2.7901966725600067,
+     "hi": -1.1043694823849428,
+     "snapped": 3.3957200448571725,
+     "moved_mm": 120.39,
+     "stderr_mm": 0.1766,
+     "sigma_mm": 8.696,
+     "n_points": 2426,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "polygon_m": [
+    [
+     -5.1004,
+     -0.37639
+    ],
+    [
+     -3.42973,
+     -0.37639
+    ],
+    [
+     -3.42973,
+     -1.85145
+    ],
+    [
+     -5.1004,
+     -1.85145
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 3,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -5.10040430354065,
+     "lo": -1.8817464375856288,
+     "hi": -0.3094676385337811,
+     "snapped": -5.10040430354065,
+     "moved_mm": null,
+     "stderr_mm": null,
+     "sigma_mm": null,
+     "n_points": null,
+     "how": "no-face",
+     "matched": false
+    },
+    {
+     "axis": "y",
+     "coord": -0.34091321451481793,
+     "lo": -5.10040430354065,
+     "hi": -3.3521390692850277,
+     "snapped": -0.37639343757408483,
+     "moved_mm": -35.48,
+     "stderr_mm": 0.0236,
+     "sigma_mm": 3.007,
+     "n_points": 16590,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -3.3521390692850277,
+     "lo": -1.8188552856235551,
+     "hi": -0.37235879049585474,
+     "snapped": -3.429732945262655,
+     "moved_mm": -77.59,
+     "stderr_mm": 0.3231,
+     "sigma_mm": 8.919,
+     "n_points": 762,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -1.850300861604592,
+     "lo": -5.10040430354065,
+     "hi": -3.3521390692850277,
+     "snapped": -1.8514518878490176,
+     "moved_mm": -1.15,
+     "stderr_mm": 0.0131,
+     "sigma_mm": 2.19,
+     "n_points": 28411,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "polygon_m": [
+    [
+     -2.84407,
+     3.21565
+    ],
+    [
+     -5.1894,
+     3.21565
+    ],
+    [
+     -5.1894,
+     4.84272
+    ],
+    [
+     -2.84407,
+     4.84272
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -2.852634716640565,
+     "lo": 3.2124368713423586,
+     "hi": 4.847606822356282,
+     "snapped": -2.8440744678036487,
+     "moved_mm": 8.56,
+     "stderr_mm": 0.1758,
+     "sigma_mm": 6.903,
+     "n_points": 1547,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 3.2124368713423586,
+     "lo": -5.10040430354065,
+     "hi": -2.852634716640565,
+     "snapped": 3.215647633685641,
+     "moved_mm": 3.21,
+     "stderr_mm": 0.3193,
+     "sigma_mm": 8.697,
+     "n_points": 742,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -5.10040430354065,
+     "lo": 3.2124368713423586,
+     "hi": 4.847606822356282,
+     "snapped": -5.189396002204989,
+     "moved_mm": -88.99,
+     "stderr_mm": 0.0144,
+     "sigma_mm": 2.106,
+     "n_points": 21941,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 4.847606822356282,
+     "lo": -5.10040430354065,
+     "hi": -2.852634716640565,
+     "snapped": 4.842721999442369,
+     "moved_mm": -4.88,
+     "stderr_mm": 0.1017,
+     "sigma_mm": 6.512,
+     "n_points": 4119,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "polygon_m": [
+    [
+     4.77353,
+     3.30601
+    ],
+    [
+     0.60712,
+     3.30601
+    ],
+    [
+     0.60712,
+     6.46002
+    ],
+    [
+     4.77353,
+     6.46002
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": 4.764806661187503,
+     "lo": 3.401110327228581,
+     "hi": 6.419885621408129,
+     "snapped": 4.773529828857655,
+     "moved_mm": 8.72,
+     "stderr_mm": 0.02,
+     "sigma_mm": 2.789,
+     "n_points": 19837,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 3.401110327228581,
+     "lo": 0.64389575187068,
+     "hi": 4.764806661187503,
+     "snapped": 3.3060115195077318,
+     "moved_mm": -95.1,
+     "stderr_mm": 0.01,
+     "sigma_mm": 2.299,
+     "n_points": 53518,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 0.64389575187068,
+     "lo": 3.401110327228581,
+     "hi": 6.419885621408129,
+     "snapped": 0.60711598881765,
+     "moved_mm": -36.78,
+     "stderr_mm": 0.0367,
+     "sigma_mm": 3.415,
+     "n_points": 8988,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 6.419885621408129,
+     "lo": 0.64389575187068,
+     "hi": 4.764806661187503,
+     "snapped": 6.460016426426852,
+     "moved_mm": 40.13,
+     "stderr_mm": 0.0303,
+     "sigma_mm": 3.108,
+     "n_points": 10702,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "polygon_m": [
+    [
+     4.96765,
+     -2.22576
+    ],
+    [
+     5.85747,
+     -2.22576
+    ],
+    [
+     5.85747,
+     -4.84837
+    ],
+    [
+     4.96765,
+     -4.84837
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 3,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": 4.889682749348619,
+     "lo": -4.837630579803104,
+     "hi": -1.9446375895477033,
+     "snapped": 4.967645304136098,
+     "moved_mm": 77.96,
+     "stderr_mm": 0.0434,
+     "sigma_mm": 3.316,
+     "n_points": 6023,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -1.9446375895477033,
+     "lo": 4.889682749348619,
+     "hi": 5.888691454637545,
+     "snapped": -2.2257581383341583,
+     "moved_mm": -281.12,
+     "stderr_mm": 0.2243,
+     "sigma_mm": 5.688,
+     "n_points": 649,
+     "how": "single-face@36cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 5.857472432597266,
+     "lo": -4.837630579803104,
+     "hi": -1.9446375895477033,
+     "snapped": 5.857472432597266,
+     "moved_mm": null,
+     "stderr_mm": null,
+     "sigma_mm": null,
+     "n_points": null,
+     "how": "no-face",
+     "matched": false
+    },
+    {
+     "axis": "y",
+     "coord": -4.837630579803104,
+     "lo": 4.889682749348619,
+     "hi": 5.826253410556987,
+     "snapped": -4.8483695105698,
+     "moved_mm": -10.74,
+     "stderr_mm": 0.0432,
+     "sigma_mm": 4.756,
+     "n_points": 12205,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "polygon_m": [
+    [
+     -0.27438,
+     -5.52103
+    ],
+    [
+     -0.27438,
+     -3.24755
+    ],
+    [
+     1.18873,
+     -3.24755
+    ],
+    [
+     1.18873,
+     -5.52103
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": -5.592324403347991,
+     "lo": -0.29267490933768947,
+     "hi": 1.205838148595701,
+     "snapped": -5.521034465219173,
+     "moved_mm": 71.29,
+     "stderr_mm": 0.0306,
+     "sigma_mm": 4.418,
+     "n_points": 21134,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -0.29267490933768947,
+     "lo": -5.592324403347991,
+     "hi": -3.1395694768271074,
+     "snapped": -0.2743762031207671,
+     "moved_mm": 18.3,
+     "stderr_mm": 0.0131,
+     "sigma_mm": 2.917,
+     "n_points": 50149,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -3.1395694768271074,
+     "lo": -0.29267490933768947,
+     "hi": 1.205838148595701,
+     "snapped": -3.2475496349211768,
+     "moved_mm": -107.98,
+     "stderr_mm": 0.2724,
+     "sigma_mm": 8.756,
+     "n_points": 1033,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 1.205838148595701,
+     "lo": -5.592324403347991,
+     "hi": -3.1395694768271074,
+     "snapped": 1.188733871473077,
+     "moved_mm": -17.1,
+     "stderr_mm": 0.0161,
+     "sigma_mm": 2.694,
+     "n_points": 28470,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "polygon_m": [
+    [
+     1.05698,
+     -3.08761
+    ],
+    [
+     1.05698,
+     -5.52131
+    ],
+    [
+     -0.27443,
+     -5.52131
+    ],
+    [
+     -0.27443,
+     -3.08761
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": -3.1081239008460706,
+     "lo": -0.23023686525713138,
+     "hi": 1.143400104515143,
+     "snapped": -3.0876116623600023,
+     "moved_mm": 20.51,
+     "stderr_mm": 0.2445,
+     "sigma_mm": 7.947,
+     "n_points": 1058,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 1.143400104515143,
+     "lo": -5.592324403347991,
+     "hi": -3.1395694768271074,
+     "snapped": 1.0569848931548869,
+     "moved_mm": -86.42,
+     "stderr_mm": 0.05,
+     "sigma_mm": 4.523,
+     "n_points": 8278,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -5.592324403347991,
+     "lo": -0.29267490933768947,
+     "hi": 1.143400104515143,
+     "snapped": -5.521309944575872,
+     "moved_mm": 71.01,
+     "stderr_mm": 0.0303,
+     "sigma_mm": 4.253,
+     "n_points": 19942,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -0.2614558872974104,
+     "lo": -5.592324403347991,
+     "hi": -3.076678324865034,
+     "snapped": -0.2744252272829989,
+     "moved_mm": -12.97,
+     "stderr_mm": 0.0131,
+     "sigma_mm": 2.946,
+     "n_points": 50853,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "polygon_m": [
+    [
+     -5.18987,
+     -2.21627
+    ],
+    [
+     -2.11722,
+     -2.21627
+    ],
+    [
+     -2.11722,
+     -6.89298
+    ],
+    [
+     -5.18987,
+     -6.89298
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -5.069185281500371,
+     "lo": -6.850147442589469,
+     "hi": -2.0704198934718505,
+     "snapped": -5.189865456469452,
+     "moved_mm": -120.68,
+     "stderr_mm": 0.0093,
+     "sigma_mm": 2.208,
+     "n_points": 57607,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -2.1018654694528878,
+     "lo": -5.10040430354065,
+     "hi": -2.1033781876738695,
+     "snapped": -2.2162694738279507,
+     "moved_mm": -114.4,
+     "stderr_mm": 0.2375,
+     "sigma_mm": 9.67,
+     "n_points": 1657,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -2.1033781876738695,
+     "lo": -6.850147442589469,
+     "hi": -2.133311045433925,
+     "snapped": -2.1172163486419153,
+     "moved_mm": -13.84,
+     "stderr_mm": 0.0824,
+     "sigma_mm": 5.992,
+     "n_points": 5327,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -6.850147442589469,
+     "lo": -5.037966259460092,
+     "hi": -2.1033781876738695,
+     "snapped": -6.892983357177799,
+     "moved_mm": -42.84,
+     "stderr_mm": 0.0154,
+     "sigma_mm": 2.819,
+     "n_points": 33732,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 12,
+   "polygon_m": [
+    [
+     -1.81714,
+     -5.52289
+    ],
+    [
+     -1.81714,
+     -3.27206
+    ],
+    [
+     -0.27438,
+     -3.27206
+    ],
+    [
+     -0.27438,
+     -5.52289
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 4,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": -5.592324403347991,
+     "lo": -1.853626011351638,
+     "hi": -0.35511295341824756,
+     "snapped": -5.522886815045701,
+     "moved_mm": 69.44,
+     "stderr_mm": 0.0248,
+     "sigma_mm": 3.683,
+     "n_points": 22341,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -1.853626011351638,
+     "lo": -5.592324403347991,
+     "hi": -3.1395694768271074,
+     "snapped": -1.8171410241824746,
+     "moved_mm": 36.48,
+     "stderr_mm": 0.2895,
+     "sigma_mm": 9.292,
+     "n_points": 1030,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -3.1395694768271074,
+     "lo": -1.853626011351638,
+     "hi": -0.35511295341824756,
+     "snapped": -3.2720636764397715,
+     "moved_mm": -132.49,
+     "stderr_mm": 0.0929,
+     "sigma_mm": 5.536,
+     "n_points": 3569,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -0.35511295341824756,
+     "lo": -5.592324403347991,
+     "hi": -3.1395694768271074,
+     "snapped": -0.2743762031207671,
+     "moved_mm": 80.74,
+     "stderr_mm": 0.0131,
+     "sigma_mm": 2.917,
+     "n_points": 50149,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "polygon_m": [
+    [
+     -5.14662,
+     3.11156
+    ],
+    [
+     3.66526,
+     3.11156
+    ],
+    [
+     3.66526,
+     -1.84752
+    ],
+    [
+     -3.29396,
+     -1.84752
+    ],
+    [
+     -3.29396,
+     -0.19297
+    ],
+    [
+     -5.14662,
+     -0.19297
+    ]
+   ],
+   "n_edges": 6,
+   "n_snapped": 6,
+   "edges": [
+    {
+     "axis": "x",
+     "coord": -5.037966259460092,
+     "lo": -0.12079418264755937,
+     "hi": 3.149545719380285,
+     "snapped": -5.1466222933171615,
+     "moved_mm": -108.66,
+     "stderr_mm": 0.0488,
+     "sigma_mm": 3.504,
+     "n_points": 5309,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": 3.149545719380285,
+     "lo": -5.037966259460092,
+     "hi": 3.6409218677374593,
+     "snapped": 3.1115617429898337,
+     "moved_mm": -37.98,
+     "stderr_mm": 0.0156,
+     "sigma_mm": 4.601,
+     "n_points": 87723,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 3.6409218677374593,
+     "lo": -1.8188552856235551,
+     "hi": 3.149545719380285,
+     "snapped": 3.665261960818746,
+     "moved_mm": 24.34,
+     "stderr_mm": 0.0315,
+     "sigma_mm": 5.22,
+     "n_points": 27849,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -1.850300861604592,
+     "lo": -3.2897010252044696,
+     "hi": 3.6409218677374593,
+     "snapped": -1.8475246336562532,
+     "moved_mm": 2.78,
+     "stderr_mm": 0.0105,
+     "sigma_mm": 2.574,
+     "n_points": 61199,
+     "how": "single-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -3.2897010252044696,
+     "lo": -1.8817464375856288,
+     "hi": -0.12079418264755937,
+     "snapped": -3.2939587106146164,
+     "moved_mm": -4.26,
+     "stderr_mm": 0.0364,
+     "sigma_mm": 3.34,
+     "n_points": 8601,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "y",
+     "coord": -0.12079418264755937,
+     "lo": -5.037966259460092,
+     "hi": -3.2897010252044696,
+     "snapped": -0.1929741451561958,
+     "moved_mm": -72.18,
+     "stderr_mm": 0.0167,
+     "sigma_mm": 2.199,
+     "n_points": 17759,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "polygon_m": [
+    [
+     0.4878,
+     4.82261
+    ],
+    [
+     0.4878,
+     3.49747
+    ],
+    [
+     -1.05879,
+     3.49747
+    ],
+    [
+     -1.05879,
+     4.82261
+    ]
+   ],
+   "n_edges": 4,
+   "n_snapped": 3,
+   "edges": [
+    {
+     "axis": "y",
+     "coord": 4.879052398337318,
+     "lo": -1.0419314383043847,
+     "hi": 0.5190196637095639,
+     "snapped": 4.822612029113765,
+     "moved_mm": -56.44,
+     "stderr_mm": 0.0231,
+     "sigma_mm": 2.961,
+     "n_points": 16749,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": 0.48780064166928483,
+     "lo": 3.401110327228581,
+     "hi": 4.847606822356282,
+     "snapped": 0.48780064166928483,
+     "moved_mm": null,
+     "stderr_mm": null,
+     "sigma_mm": null,
+     "n_points": null,
+     "how": "sparse",
+     "matched": false
+    },
+    {
+     "axis": "y",
+     "coord": 3.401110327228581,
+     "lo": -1.0419314383043847,
+     "hi": 0.4565816196290058,
+     "snapped": 3.4974708427631414,
+     "moved_mm": 96.36,
+     "stderr_mm": 0.5403,
+     "sigma_mm": 9.948,
+     "n_points": 339,
+     "how": "wall-inner-face@14cm",
+     "matched": true
+    },
+    {
+     "axis": "x",
+     "coord": -1.0419314383043847,
+     "lo": 3.401110327228581,
+     "hi": 4.910497974318355,
+     "snapped": -1.0587920256858716,
+     "moved_mm": -16.86,
+     "stderr_mm": 0.0208,
+     "sigma_mm": 3.196,
+     "n_points": 23975,
+     "how": "single-face@14cm",
+     "matched": true
+    }
+   ]
+  }
+ ]
+}

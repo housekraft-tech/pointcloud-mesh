@@ -1,0 +1,122 @@
+{
+ "result": "robust_c90_swin",
+ "n_pred": 14,
+ "n_gt": 15,
+ "pred_total_area_m2": 122.62,
+ "gt_total_area_m2": 111.94,
+ "area_error_pct": 9.5,
+ "global_iou": 0.792,
+ "orientation": {
+  "rot90": 2,
+  "flip": false,
+  "t": [
+   9.704,
+   -7.326
+  ]
+ },
+ "n_matched_iou50": 6,
+ "mean_iou_matched": 0.809,
+ "rooms": [
+  {
+   "gt_name": "Bedroom 3",
+   "gt_area_m2": 14.44,
+   "pred_area_m2": 14.08,
+   "iou": 0.963,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bedroom",
+   "gt_area_m2": 11.74,
+   "pred_area_m2": 11.55,
+   "iou": 0.936,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bathroom 2",
+   "gt_area_m2": 3.55,
+   "pred_area_m2": 3.65,
+   "iou": 0.904,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bathroom 3",
+   "gt_area_m2": 3.62,
+   "pred_area_m2": 3.98,
+   "iou": 0.901,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bedroom 2",
+   "gt_area_m2": 13.05,
+   "pred_area_m2": 13.89,
+   "iou": 0.604,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Balcony 2",
+   "gt_area_m2": 7.87,
+   "pred_area_m2": 13.29,
+   "iou": 0.548,
+   "n_corners": 6
+  },
+  {
+   "gt_name": "Balcony",
+   "gt_area_m2": 2.29,
+   "pred_area_m2": 3.08,
+   "iou": 0.469,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Living Room",
+   "gt_area_m2": 14.84,
+   "pred_area_m2": 40.48,
+   "iou": 0.359,
+   "n_corners": 6
+  },
+  {
+   "gt_name": "Bathroom",
+   "gt_area_m2": 3.61,
+   "pred_area_m2": 3.58,
+   "iou": 0.3,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Utility",
+   "gt_area_m2": 4.5,
+   "pred_area_m2": 3.89,
+   "iou": 0.263,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Bedroom 2",
+   "gt_area_m2": 3.88,
+   "pred_area_m2": 2.65,
+   "iou": 0.227,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Dining Room",
+   "gt_area_m2": 13.51,
+   "pred_area_m2": 3.06,
+   "iou": 0.0,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Foyer",
+   "gt_area_m2": 4.24,
+   "pred_area_m2": 2.86,
+   "iou": 0.0,
+   "n_corners": 4
+  },
+  {
+   "gt_name": "Kitchen",
+   "gt_area_m2": 9.16,
+   "pred_area_m2": 2.58,
+   "iou": 0.0,
+   "n_corners": 4
+  }
+ ],
+ "missed_gt": [
+  "Balcony 3"
+ ]
+}
