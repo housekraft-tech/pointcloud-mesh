@@ -15,23 +15,30 @@ Sunday 19 April 2026, 10:45:45 – 11:01:18 local.
 | `20260419-104545_Hp_Imu.fmimr` | 30.9 MB | Second body IMU (`feima-i2000-imu`), 6-axis, 24/28-bit, ~999.85 Hz | **Framing + time yes; channel bit-split confirmed by correlation** |
 | `20260419-104545_Lidar_Imu.imu` | 9.2 MB | **Livox** LiDAR's built-in ICM-40609, float32 rad/s + g, ~193 Hz, mounted **on the spinning head** | **Fully (values); timestamp partially** |
 | `20260419-104545_Ec_Data.fmraster` | 24.7 MB | **Rotary encoder of the spinning LiDAR head** — absolute azimuth, 2048 counts/rev, 1351 Hz | **Fully** |
+| `20260419-104545_Lidar_Data.fmlidar` | 1.82 GB | Raw Livox MID-360 spherical returns, 96 returns/packet, packet timestamp + reflectivity + tag | **Packet and point layout fully decoded** |
+| `odometerdata.txt` | 230 KB | Vendor trajectory: 1,226 timestamped XYZ positions, Euler angles and unit quaternions at ~1.414 Hz | **Fully** |
 | `corcam_1.ts` | 356 KB | ASCII list of **27,924 camera frame timestamps**, 30.00 Hz | **Fully** |
 | `optcam_1.ts` | 356 KB | ASCII list of 27,926 frame timestamps for the *second* camera (whose video is absent) | **Fully** |
 | `corcam_1.h265` | 1.5 GB | Raw HEVC, **4000×3000**, 27,924 frames, keyframe every 30 frames | **Fully (ffprobe + frame extract)** |
 | `slam_calib.yaml` | 1.9 MB | Full sensor extrinsics + two camera models. 18 lines; 99.7 % of the bytes are one opaque LUT | **Fully (except 2 vendor blobs)** |
 
-**The single most important finding:** *every* stream — both IMUs, the encoder, both camera
-timestamp lists, **and the LAS `gps_time`** — is on **one common clock**. No offset estimation
-is needed to fuse them. See §1.
+**The single most important finding:** the raw LiDAR and vendor pose stream are present. The raw
+file contains **1,844,487 consecutive packets / 177,070,752 return slots over 885.382 s**, with
+zero packet-sequence discontinuities. `odometerdata.txt` supplies **1,226 world poses over
+865.800 s** and begins at the same instant as the processed LAS. This makes direct raw-return
+de-skewing and pose refinement possible.
+
+The body IMUs, encoder, camera timestamps, poses and LAS `gps_time` use one absolute clock. The
+raw Livox wrapper uses a sensor-relative nanosecond clock with a fixed measured offset of about
+`+9935.24916 s` to the project clock; no drifting clock fit is required. See §1.
 
 **The second most important finding:** the scanner is a **Livox head spinning at 39.5 rpm on a
 2048-count absolute encoder**, and we can read that encoder at 1351 Hz. This is what makes true
 trajectory recovery tractable (§6.1). It also explains the "~0.7 s frames" our current pipeline
 detects in the LAS `gps_time`: one revolution is **1.519 s**, so 0.7 s is a *half*-revolution.
 
-**The main gap:** there is **no pose/trajectory table anywhere** in this export, and the raw
-LiDAR file that would make trajectory recovery trivial is **listed in the manifest but missing
-from the folder** (§7).
+**The main remaining gap:** `optcam_1.h265`, the second camera video, is absent. It is useful for
+texture coverage but is not a blocker for metric reconstruction (§7).
 
 ---
 
@@ -366,24 +373,19 @@ duration/PTS metadata).
 
 ## 6. What is actually achievable — ranked by value ÷ effort
 
-### 6.1 ★★★ Recover a true sensor trajectory from the encoder — **the big one**
+### 6.1 ★★★ De-skew and refine the vendor trajectory from raw returns — **the big one**
 
-**Is the data there?** There is **no explicit pose table** — I checked `slam_calib.yaml` (18
-lines, no trajectory) and every other file; the trajectory is only implicit in the registered
-point cloud. **But it is recoverable far more rigorously than our geometric median**, because of
-a constraint we did not previously have:
+**The data is present.** `20260419-104545_Lidar_Data.fmlidar` is a Feima wrapper around official
+Livox MID-360 data-type-3 packets. Every packet holds 96 spherical returns with millimetre range,
+0.01-degree zenith/azimuth, reflectivity and a quality tag. All 1,844,487 packet sequence numbers
+are consecutive and all timestamps are monotonic. `odometerdata.txt` supplies 1,226 initial
+world poses at a median 706.811 ms interval; its quaternions are unit length to numerical error.
 
-> For a LiDAR return at time *t*, the ray from the sensor origin to that point must have, in the
-> head frame, an **azimuth equal to the encoder angle at time *t***. We now know that angle to
-> **0.176°** at **1351 Hz** on the **same clock as the LAS `gps_time`**.
-
-Concretely: with roll/pitch fixed by the IMU gravity vector and yaw as one unknown, each point
-contributes a constraint `n(t)·(p_i − s) = 0`, where `n(t)` is the normal of the plane containing
-the spin axis at `enc(t) + yaw` (mapped into the cloud frame via `lidar2rasterR`, `raster2bodyR`,
-`pcl2imuR/T`). For a short window this is a 1-D search over yaw wrapping a **linear** least
-squares for the 3-DoF position `s` — and each window has *thousands* of points, so it is
-massively over-determined. Chain the windows (or fit splines over `s(t)`, `yaw(t)`) and you get a
-smooth 6-DoF trajectory.
+The reconstruction should interpolate the vendor poses, combine them with the 1351 Hz head
+encoder and calibrated LiDAR/body transform, and map each raw return into the world at its own
+time. Then refine pose knots with IMU smoothness, loop consistency, and point-to-structural-plane
+residuals. The vendor trajectory is the initializer; the planar adjustment is what attacks the
+remaining indoor SLAM drift.
 
 **Why it matters concretely:** our current approximation is a per-0.7 s geometric median, and the
 symptom is that **~10 % of rays clip a surface before their endpoint**, which forced
@@ -392,22 +394,21 @@ origins that error rate should collapse, letting the carve drop to 1–2 rays �
 **dramatically better free-space carving, thinner spurious geometry, and better opening
 detection**. This is the highest-leverage item in the whole report.
 
-*Effort:* medium (a few hundred lines plus tuning). *Risk:* the spin axis direction in the cloud
-frame must be pinned down from `lidar2rasterR`/`raster2bodyR`, and my reading of those quaternion
-conventions (x,y,z,w order, and which direction each transform maps) is **inferred from naming,
-not verified** — expect a short sign/convention hunt at the start.
+*Effort:* medium-high (raw interpolation, de-skew and a sparse pose/plane optimizer). *Risk:* the
+spin-axis and quaternion transform conventions still need a short sign/convention validation
+against the vendor LAS before optimization is enabled.
 
 ### 6.2 ★★★ Photo-texturing from `corcam_1.h265`
 
-**What we have — everything except pose:**
+**What we have:**
 - ✔ Intrinsics: `clr_cam` Kannala-Brandt fisheye, and I verified by measurement that this is the
   right model for this video (§2).
 - ✔ Extrinsics: complete LiDAR → IMU → camera chain (`pcl2imuR/T` + `T_imu2clrcam_refine`).
 - ✔ Frame timestamps: 1:1 with frames, on the LAS clock, zero offset.
 - ✔ Images: 27,924 × 12 MP, keyframe every second so extraction is cheap.
-- ✘ **Missing: the camera pose in world** — i.e. exactly the trajectory of §6.1.
+- ✔ World-pose initializer: interpolate `odometerdata.txt` and apply the camera extrinsics.
 
-So **6.1 unlocks 6.2**. They should be planned as one project, not two.
+The refined trajectory from **6.1 improves 6.2**. They should still be planned as one project.
 
 **A strong free validation, and possibly a better solver.** The LAS is named
 `texture_optimize_…` and carries RGB — the vendor produced that colour by projecting *these same
@@ -468,19 +469,12 @@ Modest value; useful mainly as a confidence signal on a scan.
 
 ## 7. What is missing, and what to ask for
 
-1. **`20260419-104545_Lidar_Data.fmlidar` (1,820,658,129 bytes) is listed in
-   `Description_File.txt` but is NOT in `data/Soulace/`.** This is the raw per-point stream
-   (ranges, beam angles, per-point timestamps in the *sensor* frame). With it, trajectory
-   recovery becomes near-trivial — you would solve for the pose that maps raw sensor-frame rays
-   onto the registered cloud, instead of inferring geometry from the encoder. **This is the
-   single highest-value thing to request from the operator**, and it should still exist on the
-   device or in the source project folder `SN_00033/SLAM_PRJ_001/`.
-2. **`optcam_1.h265`** — the second camera's video. Its timestamps and calibration were exported
+1. **`optcam_1.h265`** — the second camera's video. Its timestamps and calibration were exported
    but the imagery was not. A second viewpoint would improve texture coverage and occlusion
    handling.
-3. **An exported trajectory.** Most vendor SLAM apps can export the solved pose stream
-   (`.traj`, TUM, or CSV). If the SLAM2000 desktop software offers this, it makes §6.1 redundant
-   and §6.2 immediate. **Worth checking before investing in 6.1.**
+2. **A higher-rate optimized pose export, if SLAM GO can produce one.** This is optional rather
+   than blocking: `odometerdata.txt`, raw LiDAR, both IMUs and the encoder are sufficient to
+   refine a continuous trajectory locally.
 
 ## 8. Things I could not determine (flagged honestly)
 
@@ -519,6 +513,7 @@ All probes are read-only and run in seconds to a couple of minutes on
 | `scripts/experiments/soulace_probe/probe_lidarimu.py` | First-pass probe of the Livox `.imu` header / divisor search |
 | `scripts/experiments/soulace_probe/probe_livox_imu.py` | Livox `.imu` header/stride derivation |
 | `scripts/experiments/soulace_probe/probe_livox_walk.py` | Livox `.imu` magic-based walk and float decode |
+| `scripts/experiments/soulace_probe/probe_fmlidar.py` | **Raw MID-360 packet/point decode and full-file continuity audit** |
 | `scripts/experiments/soulace_probe/probe_raster.py` | Encoder payload decode |
 | `scripts/experiments/soulace_probe/probe_verify.py` | **Cross-validation: encoder rev/s vs head-IMU gyro (0.81 %)** |
 | `scripts/experiments/soulace_probe/probe_fisheye.py` | Measures the image circle; identifies `corcam` as `clr_cam` |

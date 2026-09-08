@@ -392,7 +392,8 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
 
     model = RoomModel()
 
-    def _add(collection, mesh):
+    def _add(collection, mesh, kind):
+        mesh.metadata['architectural_kind'] = kind
         model.setdefault(collection, []).append(mesh)
 
     openings_by_wall = openings_by_wall or {}
@@ -414,7 +415,7 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
                 })
                 continue
             collection = seg.room_id if seg.room_id is not None else "Walls_unassigned"
-            _add(collection, mesh)
+            _add(collection, mesh, 'wall')
 
     # per-room floor panel
     for name, poly in named_rooms:
@@ -423,6 +424,7 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
         try:
             panel = trimesh.creation.extrude_polygon(poly, slab_m)
             panel.apply_translation([0.0, 0.0, z_floor - slab_m])
+            panel.metadata['architectural_kind'] = 'floor'
             model[name].append(panel)
         except Exception as exc:
             model.drops["floor_panels"].append({
@@ -431,7 +433,7 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
 
     for i, c in enumerate(columns or []):
         try:
-            _add("Columns", column_to_solid(c))
+            _add("Columns", column_to_solid(c), 'column')
         except Exception as exc:
             cid = str(_wget(c, "column_id", None) or f"column_{i:03d}")
             model.drops["columns"].append({
@@ -439,7 +441,7 @@ def build_room_model(walls, openings_by_wall, columns, beams, rooms,
             })
     for i, b in enumerate(beams or []):
         try:
-            _add("Beams", beam_to_solid(b))
+            _add("Beams", beam_to_solid(b), 'beam')
         except Exception as exc:
             bid = str(_wget(b, "beam_id", None) or f"beam_{i:03d}")
             model.drops["beams"].append({

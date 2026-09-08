@@ -71,3 +71,17 @@ def test_isolidarflow_end_to_end(tmp_path):
 
     # run() returns a summary dict pointing at the artifacts + parsed manifest
     assert result["manifest"] is manifest or result["manifest"]["walls"]
+
+    # Shared scan-support and native stages receive semantic parts and an
+    # explicit rigid scan frame, not an unregistered visual-only GLB.
+    candidates=json.loads((out_dir/'candidate.build.json').read_text())['parts']
+    assert {'wall','floor','column','beam'} <= {p['kind'] for p in candidates}
+    assert len({p['name'] for p in candidates}) == len(candidates)
+    assert all(p['thickness_verified'] is False for p in candidates)
+    flow=json.loads((out_dir/'architectural.manifest.json').read_text())
+    assert flow['units']=='metres'
+    assert flow['scans'][0]['path']==str(in_las.resolve())
+    matrix=np.asarray(flow['scans'][0]['scan_to_model'])
+    assert matrix.shape==(4,4)
+    assert np.allclose(matrix[:3,:3].T @ matrix[:3,:3],np.eye(3))
+    assert np.isclose(np.linalg.det(matrix[:3,:3]),1)

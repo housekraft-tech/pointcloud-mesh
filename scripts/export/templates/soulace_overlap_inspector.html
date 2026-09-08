@@ -1,0 +1,185 @@
+<div id="soulace-overlap-inspector">
+  <h3>Soulace · scan and model overlap</h3>
+  <div class="viz-controls">
+    <label class="form-label">Level
+      <select id="so-level" class="form-select">
+        <option value="0">Ground</option>
+        <option value="1">First</option>
+        <option value="2">Second</option>
+        <option value="all">All levels</option>
+      </select>
+    </label>
+    <label class="form-label">View
+      <select id="so-view" class="form-select">
+        <option value="top">Top</option>
+        <option value="3d">3D</option>
+      </select>
+    </label>
+    <label class="form-label">Model opacity <span id="so-opacity-value" class="tabular-nums">22%</span>
+      <input class="form-range" id="so-opacity" type="range" min="0" max="70" step="1" value="22" aria-label="Model opacity">
+    </label>
+  </div>
+  <div class="viz-row so-layers">
+    <label class="form-check"><input id="so-raw" class="form-check-input" type="checkbox" checked><span class="form-check-label"><span class="so-dot so-raw-dot"></span>LiDAR returns</span></label>
+    <label class="form-check"><input id="so-model" class="form-check-input" type="checkbox" checked><span class="form-check-label"><span class="so-dot so-model-dot"></span>Full CAD walls</span></label>
+    <label class="form-check"><input id="so-poisson" class="form-check-input" type="checkbox"><span class="form-check-label"><span class="so-dot so-poisson-dot"></span>Poisson vertices</span></label>
+  </div>
+  <div id="so-canvas" role="img" aria-label="Registered Soulace wall model overlaid with LiDAR returns and sampled Poisson mesh vertices. Switch levels or orbit to inspect overlapping and unsupported surfaces."></div>
+  <div id="so-selection" class="text-small" aria-live="polite">Drag to orbit · scroll to zoom · click a wall for scan support</div>
+  <div class="text-small text-muted">Sampled display · full-resolution LAS distance checks · fixed alignment · no accuracy certification</div>
+  <script id="so-data" type="application/json">__AUDIT_JSON__</script>
+</div>
+<style>
+  #soulace-overlap-inspector .so-layers { gap: 16px; margin: 12px 0; }
+  #soulace-overlap-inspector .so-dot { display: inline-block; width: 9px; height: 9px; margin-right: 5px; }
+  #soulace-overlap-inspector .so-raw-dot { background: var(--viz-series-1); }
+  #soulace-overlap-inspector .so-model-dot { background: var(--viz-series-2); }
+  #soulace-overlap-inspector .so-poisson-dot { background: var(--viz-series-3); }
+  #soulace-overlap-inspector #so-canvas { width: 100%; height: 440px; }
+  #soulace-overlap-inspector #so-canvas canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #soulace-overlap-inspector #so-selection { margin-top: 10px; min-height: 1.5em; }
+  @media(max-width: 480px) { #soulace-overlap-inspector #so-canvas { height: 350px; } }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(() => {
+  const root = document.getElementById('soulace-overlap-inspector');
+  const viewport = root.querySelector('#so-canvas');
+  const status = root.querySelector('#so-selection');
+  const data = JSON.parse(root.querySelector('#so-data').textContent);
+  const levelInput = root.querySelector('#so-level');
+  const viewInput = root.querySelector('#so-view');
+  const rawToggle = root.querySelector('#so-raw');
+  const modelToggle = root.querySelector('#so-model');
+  const poissonToggle = root.querySelector('#so-poisson');
+  const opacityInput = root.querySelector('#so-opacity');
+  if (typeof THREE === 'undefined' || !THREE.OrbitControls) {
+    status.textContent = '3D preview could not load. The comparison images remain available.';
+    return;
+  }
+  const probe = document.createElement('span');
+  probe.hidden = true;
+  root.appendChild(probe);
+  const colourCanvas = document.createElement('canvas');
+  colourCanvas.width = colourCanvas.height = 1;
+  const colourContext = colourCanvas.getContext('2d', {willReadFrequently: true});
+  function themeColour(token) {
+    probe.style.color = `var(${token})`;
+    colourContext.clearRect(0,0,1,1);
+    colourContext.fillStyle = getComputedStyle(probe).color;
+    colourContext.fillRect(0,0,1,1);
+    const c = colourContext.getImageData(0,0,1,1).data;
+    return new THREE.Color(c[0]/255,c[1]/255,c[2]/255);
+  }
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-12,12,9,-9,.01,200);
+  camera.up.set(0,1,0);
+  const renderer = new THREE.WebGLRenderer({antialias:true,alpha:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setClearColor(0,0);
+  viewport.appendChild(renderer.domElement);
+  const controls = new THREE.OrbitControls(camera,renderer.domElement);
+  controls.enableDamping = false;
+  controls.screenSpacePanning = true;
+  const rawMaterial = new THREE.PointsMaterial({size:2.3,sizeAttenuation:false,transparent:true,opacity:.72,depthWrite:false});
+  const poissonMaterial = new THREE.PointsMaterial({size:2.4,sizeAttenuation:false,transparent:true,opacity:.70,depthWrite:false});
+  const wallMaterial = new THREE.MeshBasicMaterial({side:THREE.DoubleSide,transparent:true,opacity:.22,depthWrite:false});
+  const edgeMaterial = new THREE.LineBasicMaterial({transparent:true,opacity:.78,depthWrite:false});
+  const floorGroups = [];
+  const clickable = [];
+  const offsets = [0,3.2,6.5];
+  function points(values,material) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position',new THREE.Float32BufferAttribute(values,3));
+    return new THREE.Points(geometry,material);
+  }
+  for (const entry of data.levels) {
+    const group = new THREE.Group();
+    const raw = points(entry.raw,rawMaterial);
+    const poisson = points(entry.poisson,poissonMaterial);
+    const model = new THREE.Group();
+    for (const part of entry.model) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position',new THREE.Float32BufferAttribute(part.v.flat(),3));
+      geometry.setIndex(part.f.flat());
+      const mesh = new THREE.Mesh(geometry,wallMaterial);
+      mesh.userData = {name:part.name,level:entry.level,score:part.score};
+      model.add(mesh);
+      model.add(new THREE.LineSegments(new THREE.EdgesGeometry(geometry,25),edgeMaterial));
+      clickable.push(mesh);
+    }
+    group.add(raw,poisson,model);
+    scene.add(group);
+    floorGroups.push({level:entry.level,group,raw,poisson,model});
+  }
+  let span = 20;
+  function draw() { renderer.render(scene,camera); }
+  function resize() {
+    const w = viewport.clientWidth, h = viewport.clientHeight;
+    renderer.setSize(w,h,false);
+    const aspect=w/h;
+    camera.left=-span*Math.max(1,aspect)/2;
+    camera.right=span*Math.max(1,aspect)/2;
+    camera.top=span*Math.max(1,1/aspect)/2;
+    camera.bottom=-span*Math.max(1,1/aspect)/2;
+    camera.updateProjectionMatrix();
+    draw();
+  }
+  function sync(fit) {
+    const all = levelInput.value === 'all';
+    const bounds = new THREE.Box3();
+    for (const item of floorGroups) {
+      item.group.visible=all || String(item.level)===levelInput.value;
+      item.group.position.z=all?offsets[item.level]:0;
+      item.raw.visible=rawToggle.checked;
+      item.poisson.visible=poissonToggle.checked;
+      item.model.visible=modelToggle.checked;
+      if(item.group.visible) bounds.union(new THREE.Box3().setFromObject(item.model));
+    }
+    wallMaterial.opacity=Number(opacityInput.value)/100;
+    root.querySelector('#so-opacity-value').textContent=`${opacityInput.value}%`;
+    if (fit && !bounds.isEmpty()) {
+      const center=bounds.getCenter(new THREE.Vector3());
+      const size=bounds.getSize(new THREE.Vector3());
+      span=Math.max(size.x,size.y,all?size.z:0)*1.10;
+      controls.target.copy(center);
+      camera.zoom=1;
+      if(viewInput.value==='top') { camera.up.set(0,1,0);camera.position.set(center.x,center.y,center.z+40); }
+      else { camera.up.set(0,0,1);camera.position.set(center.x+22,center.y-27,center.z+22); }
+      camera.lookAt(center); controls.update(); resize();
+    }
+    draw();
+  }
+  function recolour() {
+    rawMaterial.color.copy(themeColour('--viz-series-1'));
+    wallMaterial.color.copy(themeColour('--viz-series-2'));
+    edgeMaterial.color.copy(themeColour('--viz-series-2'));
+    poissonMaterial.color.copy(themeColour('--viz-series-3'));
+    draw();
+  }
+  levelInput.addEventListener('change',()=>sync(true));
+  viewInput.addEventListener('change',()=>sync(true));
+  for(const input of [rawToggle,modelToggle,poissonToggle,opacityInput]) input.addEventListener('input',()=>sync(false));
+  controls.addEventListener('change',draw);
+  new ResizeObserver(resize).observe(viewport);
+  const observer = new MutationObserver(recolour);
+  observer.observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme']});
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',recolour);
+  const raycaster = new THREE.Raycaster();
+  let down = null;
+  renderer.domElement.addEventListener('pointerdown',event=>{down=[event.clientX,event.clientY];});
+  renderer.domElement.addEventListener('pointerup',event=>{
+    if(!down || Math.hypot(event.clientX-down[0],event.clientY-down[1])>5 || !modelToggle.checked) return;
+    const rect=renderer.domElement.getBoundingClientRect();
+    raycaster.setFromCamera(new THREE.Vector2(2*(event.clientX-rect.left)/rect.width-1,1-2*(event.clientY-rect.top)/rect.height),camera);
+    const allowed=clickable.filter(mesh=>mesh.parent.parent.visible);
+    const hits=raycaster.intersectObjects(allowed,false);
+    if(hits.length) {
+      const p=hits[0].object.userData;
+      status.textContent=p.score?`L${p.level} / ${p.name} · ${p.score.within_30mm_pct.toFixed(1)}% of sampled faces within 30 mm · ${p.score.beyond_100mm_pct.toFixed(1)}% beyond 100 mm`:`L${p.level} / ${p.name}`;
+    }
+  });
+  recolour();sync(true);
+})();
+</script>

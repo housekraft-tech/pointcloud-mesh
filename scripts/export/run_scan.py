@@ -107,6 +107,9 @@ def main():
     ap.add_argument("--mem-gb", type=float, default=None,
                     help="kill the Poisson solve if it passes this many GB "
                          "resident (default: 62%% of RAM)")
+    ap.add_argument("--tolerance-mm", type=float, default=10.0,
+                    help="p95 surface-fit target written into the SketchUp "
+                         "accuracy reports (default: 10 mm)")
     ap.add_argument("--adopt-poisson", default=None,
                     help="a .ply already built for this unit; it is taken as "
                          "this run's poisson stage instead of rebuilding it")
@@ -170,7 +173,10 @@ def main():
         run([EXPORT/"boxify.py", "--dir", d/"modular", "--cache", npz,
              "--out", d/"boxes", "--z0", f"{z0:.4f}", "--z1", f"{z1:.4f}"])
         run([EXPORT/"box_accuracy.py", "--dir", d/"modular", "--cache", npz,
-             "--boxes", d/"boxes"/"boxes_union.glb", "--parts", "0"])
+             "--boxes", d/"boxes"/"boxes_union.glb", "--parts", "0",
+             "--tolerance-mm", f"{a.tolerance_mm:g}",
+             "--report-json", d/"sketchup"/"accuracy_report.json",
+             "--report-md", d/"sketchup"/"ACCURACY_REPORT.md"])
 
     if "pack" in do:
         stem = a.name.title().replace("_", "") + "_model"

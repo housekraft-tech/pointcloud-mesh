@@ -18,3 +18,4 @@ output/
 output/
 *.bin
 .venv311/
+.gstack/

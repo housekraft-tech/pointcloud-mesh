@@ -1,0 +1,22 @@
+{
+  "label": "Koushik / Mujammel",
+  "units": "metres",
+  "level": 0,
+  "candidate_model": "../../output_final/mujammel_asbuilt_final_v6/Mujammel_asbuilt.build.json",
+  "current_model": "../../output_final/coverage_restored_v1/engrance/model.build.json",
+  "source_native": "../../output_final/scan_recovered_v1/engrance/Engrance_scan_recovered.skp",
+  "source_native_audit": "../../output_final/scan_recovered_v1/engrance/native_audit.json",
+  "wall_metadata": "../../output_final/mujammel_asbuilt_final_v6/feature_manifest.json",
+  "scans": [
+    {
+      "id": "mujammel",
+      "path": "../../mujammelexport.las",
+      "scan_to_model": [[0.9999455992720193,0.010402885965259373,-0.0007605656545104775,-1.0506471576878273],[-0.01040264298938829,0.9999458389658878,0.0003227284319841631,-0.0959340478794748],[0.0007638817685638148,-0.00031479898234854965,0.9999996586930645,-0.007886310270239458],[0,0,0,1]]
+    },
+    {
+      "id": "koushik",
+      "path": "../../koushikexport.las",
+      "scan_to_model": [[0.9958383977823939,0.09113663095701154,0,-1.4199059987078653],[-0.09113663095701154,0.9958383977823939,0,0.7440541078613507],[0,0,1,0],[0,0,0,1]]
+    }
+  ]
+}

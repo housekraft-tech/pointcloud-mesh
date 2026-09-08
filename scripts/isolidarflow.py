@@ -297,6 +297,9 @@ def run(in_path, out_dir, config=None):
                                          max_nn=cfg["normals_max_nn"])
         R = frame.dominant_axes(normals)
         scan = frame.axis_align(scan, R)
+        scan_to_model = np.eye(4)
+        scan_to_model[:3, :3] = R
+        info['scan_to_model'] = scan_to_model.tolist()
         if traj.shape[0]:
             traj = traj @ np.asarray(R, dtype=float).T
 
@@ -438,6 +441,32 @@ def run(in_path, out_dir, config=None):
             info["drop_details"] = drops
         glb_path = os.path.join(out_dir, "model.glb")
         write_glb(build_scene(model), glb_path)
+        # Preserve semantic types and the exact registration for the shared
+        # raw-support/refinement/SketchUp stages. These are hypotheses, not
+        # proof that every inferred back face was observed by the scanner.
+        from pathlib import Path
+        candidate_parts = []
+        for collection in sorted(model):
+            for index, mesh in enumerate(model[collection]):
+                candidate_parts.append({
+                    'name': f'{collection}_{index:03d}',
+                    'kind': mesh.metadata.get('architectural_kind', 'unclassified'),
+                    'level': 0, 'v': np.asarray(mesh.vertices).tolist(),
+                    'f': np.asarray(mesh.faces).tolist(),
+                    'evidence_status': 'raw_detection_architectural_hypothesis',
+                    'thickness_verified': False,
+                })
+        candidate_path = Path(out_dir) / 'candidate.build.json'
+        candidate_path.write_text(json.dumps({'parts': candidate_parts}), encoding='utf-8')
+        flow_manifest_path = Path(out_dir) / 'architectural.manifest.json'
+        flow_manifest_path.write_text(json.dumps({
+            'label': Path(in_path).stem, 'units': 'metres', 'level': 0,
+            'candidate_model': 'candidate.build.json',
+            'scans': [{'id': Path(in_path).stem, 'path': str(Path(in_path).resolve()),
+                       'scan_to_model': scan_to_model.tolist()}],
+            'upstream_detection': 'isolidarflow',
+            'candidate_status': 'Requires raw-support clipping and coverage review before native handover',
+        }, indent=2), encoding='utf-8')
 
         # --- 15. 2D CAD exports ---
         opening_ns = _opening_namespaces(openings_by_wall)
@@ -464,6 +493,8 @@ def run(in_path, out_dir, config=None):
         return {
             "out_dir": out_dir,
             "glb": glb_path,
+            "candidate_build": str(candidate_path),
+            "architectural_manifest": str(flow_manifest_path),
             "dxf": dxf_path,
             "svg": svg_path,
             "manifest_path": manifest_path,

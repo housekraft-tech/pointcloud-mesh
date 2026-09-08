@@ -7,6 +7,11 @@ Everything runs locally, CPU-only, from this folder on the `isolidarflow`
 branch. The production implementation plan is
 `docs/superpowers/plans/2026-07-02-isolidarflow-sharp-3d.md`.
 
+For the evidence-constrained continuation to native SketchUp, including raw
+overlap checks, shared property/level manifests and anti-invention limitations,
+see [Architectural flow](docs/ARCHITECTURAL_FLOW.md). The upstream GLB is a
+geometric hypothesis; it is not by itself a verified as-built deliverable.
+
 ## Setup (once)
 
 ```powershell
