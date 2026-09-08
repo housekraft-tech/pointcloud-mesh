@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--fragment', action='append', required=True)
     parser.add_argument('--out', required=True); parser.add_argument('--native-name', required=True)
     parser.add_argument('--label', required=True); parser.add_argument('--note', required=True)
+    parser.add_argument('--hide', action='append', default=[], help='JSON list file of native groups to hide as references')
     args = parser.parse_args()
     previous = Path(args.previous).resolve(); out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     audit = json.loads((previous / 'native_sdk_audit.json').read_text())
@@ -36,6 +37,12 @@ def main():
     replaced = {s for p in chain.values() for s in p.get('source_group_names', [])}
     final = [p for name, p in chain.items() if name not in replaced]
     references = set()
+    for path in args.hide:
+        extra = set(json.loads(Path(path).read_text()))
+        unknown = extra - native_names
+        if unknown:
+            raise ValueError(f'Cannot hide unknown groups: {sorted(unknown)[:5]}')
+        references |= extra
     for part in final:
         sources = collect(chain, part, native_names)
         part['source_group_names'] = sorted(sources)
