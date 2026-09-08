@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image,ImageDraw,ImageFont
 
 
-def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150)):
+def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150),edges=True,edge_depth_m=.015):
     width,height=size;canvas=np.full((height,width,3),[247,248,250],dtype=np.uint8)
     depth=np.full((height,width),-np.inf,dtype=np.float32)
     look=np.asarray(offset,dtype=float);look/=np.linalg.norm(look)
@@ -45,6 +45,18 @@ def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150)):
             view=depth[ymin:ymax+1,xmin:xmax+1];keep=inside&(z>view)
             view[keep]=z[keep];canvas[ymin:ymax+1,xmin:xmax+1][keep]=colour
             total+=1
+    if edges:
+        # Dark lines where the depth buffer jumps: silhouettes, recesses and
+        # steps between parallel faces that flat shading cannot separate.
+        filled=np.isfinite(depth)
+        jump=np.zeros_like(filled)
+        for dy,dx in ((0,1),(1,0),(1,1),(1,-1)):
+            a=depth[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]
+            b=depth[max(-dy,0):height-max(dy,0),max(-dx,0):width-max(dx,0)]
+            both=np.isfinite(a)&np.isfinite(b)
+            diff=np.zeros(a.shape,bool);diff[both]=np.abs(a[both]-b[both])>edge_depth_m
+            jump[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]|=diff&(a>=np.where(both,b,-np.inf))
+        canvas[jump&filled]=(canvas[jump&filled]*.35).astype(np.uint8)
     image=Image.fromarray(canvas);draw=ImageDraw.Draw(image)
     try:
         heading=ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf',27)
