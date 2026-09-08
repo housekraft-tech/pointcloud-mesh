@@ -114,3 +114,47 @@ increase reported distances. Initial clipping uses full-density cropped LAS.
 10 mm remains the target and 20–50 mm the agreed fallback, but neither SLAM
 registration nor room dimensions are independently certified by these checks.
 Do not label nominal thickness or point-cloud fit as ±10 mm site accuracy.
+
+## Revising a checked native model
+
+The checked `.skp` is never edited in place. Bounded fixes are computed against
+`reopened_visible.build.json` (what the native file actually shows), written as
+fragments, and appended by `assemble_revision.py` as new groups while every
+replaced group is hidden as a reference. Each step keeps its own audit.
+
+```powershell
+# raw returns, one per 10 mm voxel, cached once per property (manifest or a
+# {"scans": [...]} support list in the common frame)
+.\venv311\Scripts\python.exe scripts\export\raw_evidence.py --spec <manifest> --model <reopened_visible.build.json> --cache <work>\evidence_10mm.npz
+
+# read-only: per-plane islands, pores, duplicate and cross-group overlapping
+# faces; independently detected vertical scan planes >50 mm from every visible
+# wall, compared level-aware with the nearest parallel wall plane
+.\venv311\Scripts\python.exe scripts\export\wall_surface_review.py --model <reopened> --manifest <manifest> --out <work>\review --label "..."
+
+# floor-to-wall junctions: seat floating bases (<=15 mm) and extend floors to
+# wall bases (<=150 mm) only where the strip is within 50 mm of raw returns
+.\venv311\Scripts\python.exe scripts\export\floor_wall_junctions.py --model <reopened> --out <work>\junctions --fix --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz --working-out <work>\working_after_junctions.build.json
+
+# wall faces: exact plane union, cross-group overlap assigned to the larger
+# plane, islands <0.02 m2 removed only when no previously represented scan
+# sample is lost, pores <0.005 m2 filled only inside the 50 mm raw envelope
+.\venv311\Scripts\python.exe scripts\export\wall_surface_cleanup.py --model <work>\working_after_junctions.build.json --out <work>\cleanup --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz
+
+# observed faces: audit regions that are probable opposite faces or have no
+# parallel visible plane, >=60 % unmatched, >=1 m2, planar within 15 mm and
+# inside the unit footprint, bounded to the 50 mm raw envelope
+.\venv311\Scripts\python.exe scripts\export\observed_wall_faces.py --model <work>\working_after_junctions.build.json --audit <work>\review\wall_completeness_audit.json --out <work>\observed --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz
+
+.\venv311\Scripts\python.exe scripts\export\assemble_revision.py --previous <checked folder> --fragment <work>\junctions\junction_fix.build.json --fragment <work>\cleanup\wall_cleanup.build.json --fragment <work>\observed\observed_faces.build.json --out <work> --native-name <name>.skp --label "..." --note "..."
+```
+
+`polygon_hygiene.py` prepares every exported loop: a 0.15 mm morphological
+opening with a slightly smaller dilation, so no loop repeats a vertex or comes
+within SketchUp's 0.025 mm merge tolerance of another loop, and the exact
+cleaned rings travel to the exporter as `planar_loops` instead of being
+re-derived from a triangulation. Observed faces (`wall_face_observed`, amber)
+are measured surfaces with unverified identity: they add no back face,
+thickness or opening. Rerun `wall_surface_review.py` and
+`floor_wall_junctions.py` (without `--fix`) on the new
+`reopened_visible.build.json` to confirm the saved file.

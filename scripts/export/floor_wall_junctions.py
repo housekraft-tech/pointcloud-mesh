@@ -32,6 +32,7 @@ from shapely.geometry import Polygon, LineString
 from scipy.spatial import cKDTree
 
 from filter_soulace_overlap import polygon_parts, supported_polygon, mesh_from_polygon
+from polygon_hygiene import clean_polygon
 
 MAX_FIX_M = .015        # vertical seating bound
 MAX_STRIP_M = .15       # floor strip reach towards a wall base
@@ -181,6 +182,9 @@ def rebuild_floor(part, new_region_by_datum):
     for z in datums:
         region = new_region_by_datum.get(float(z))
         if region is None:
+            continue
+        region = clean_polygon(region)
+        if region.is_empty:
             continue
         if solid:
             bottom = float(mesh.vertices[:, 2].min())

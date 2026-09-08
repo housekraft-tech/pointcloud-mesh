@@ -29,6 +29,7 @@ from scipy.spatial import cKDTree
 import open3d as o3d
 
 from filter_soulace_overlap import polygon_parts, supported_polygon, mesh_from_polygon
+from polygon_hygiene import clean_polygon
 
 ISLAND_M2 = .02
 PORE_M2 = .005
@@ -233,7 +234,7 @@ def build_parts(groups, others):
     for name, group in groups.items():
         pieces = []
         for plane in group['planes']:
-            region = plane.get('kept', plane['poly'])
+            region = clean_polygon(plane.get('kept', plane['poly']))
             if region.is_empty:
                 continue
             piece = mesh_from_polygon(region, plane['origin'], plane['u'], plane['v'])

@@ -15,6 +15,7 @@ import trimesh
 
 from native_sdk_export import export
 from render_native_geometry import render
+from polygon_hygiene import sanitize_surface_part, sanitize_solid_floor
 
 
 def main():
@@ -39,10 +40,21 @@ def main():
         sources = collect(chain, part, native_names)
         part['source_group_names'] = sorted(sources)
         references |= sources
-    for part in final:
+    sanitized = 0
+    for index, part in enumerate(final):
         if part['name'] in native_names:
             raise ValueError(f'Name collides with a native group: {part["name"]}')
-        trimesh.Trimesh(part['v'], part['f'], process=False)
+        mesh = trimesh.Trimesh(part['v'], part['f'], process=False)
+        # Open planar surfaces are re-meshed from cleaned loops so SketchUp
+        # neither merges hairline vertices nor rejects touching loops.
+        if mesh.is_watertight and 'floor' in part.get('kind', ''):
+            clean = sanitize_solid_floor(part)
+        else:
+            clean = sanitize_surface_part(part)
+            if clean is not None:
+                clean['merge_coplanar_faces'] = True
+        if clean is not None:
+            final[index] = clean; sanitized += 1
     previous_payload = json.loads((previous / 'additions.build.json').read_text())
     payload = {'label': args.label, 'source_native': source_native, 'expected_base_groups': len(native_names),
                'reference_source_names': sorted(references), 'parts': final,
@@ -50,7 +62,7 @@ def main():
                'source_label': 'Bounded junction, wall-artifact and observed-face revision of the checked native model',
                'note': args.note}
     (out / 'additions.build.json').write_text(json.dumps(payload, separators=(',', ':')))
-    print(json.dumps({'new_parts': len(final), 'hidden_references': len(references),
+    print(json.dumps({'new_parts': len(final), 'hidden_references': len(references), 'sanitized_surfaces': sanitized,
                       'kinds': sorted({p['kind'] for p in final})}, indent=2), flush=True)
     export(out / 'additions.build.json', out / args.native_name)
     parts = json.loads((out / 'reopened_visible.build.json').read_text())['parts']

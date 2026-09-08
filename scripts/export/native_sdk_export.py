@@ -132,7 +132,16 @@ class SDK:
                 if not ids or ids[-1]!=index:ids.append(index)
             if len(ids)>1 and ids[-1]==ids[0]:ids.pop()
             return ids
-        if part.get('merge_coplanar_faces'):
+        if part.get('planar_loops'):
+            # Exact cleaned loops supplied by polygon_hygiene; no re-derivation
+            # from triangles, which reintroduces slivers and pinch points.
+            for rings_xyz in part['planar_loops']:
+                rings=[]
+                for ring in rings_xyz:
+                    ids=ring_ids(np.asarray(ring,dtype=float))
+                    if len(ids)>=3:rings.append(ids)
+                if rings:faces.append(rings)
+        elif part.get('merge_coplanar_faces'):
             for poly,origin,u,v in _all_planar_patches(mesh):
                 for polygon in _polygons(poly):
                     polygon=orient(polygon,sign=1.0)

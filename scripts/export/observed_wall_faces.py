@@ -27,6 +27,7 @@ from shapely.geometry import box
 from scipy.spatial import cKDTree
 
 from filter_soulace_overlap import supported_polygon, mesh_from_polygon
+from polygon_hygiene import clean_polygon
 
 ACCEPT = ('probable_opposite_face_of_visible_wall_thickness_unverified', 'no_parallel_visible_wall_plane_nearby')
 MIN_UNMATCHED_PERCENT = 60
@@ -98,7 +99,7 @@ def main():
                 rows.append(row); continue
             rect = box(lo[tangent] - .05, lo[2] - .05, hi[tangent] + .05, hi[2] + .05)
             bounded, info = supported_polygon(rect, origin, u, v, tree, cutoff=SUPPORT_M, min_area=.02)
-            bounded = bounded.buffer(0)
+            bounded = clean_polygon(bounded)
             row['bounded_area_m2'] = float(bounded.area)
             if bounded.is_empty or bounded.area < .5:
                 row['decision'] = 'left_for_review: under 0.5 m2 survives the 50 mm envelope'
