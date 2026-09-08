@@ -63,7 +63,9 @@ def planes_of(part):
         seed = np.eye(3)[np.argmin(np.abs(n))]
         u = np.cross(n, seed); u /= np.linalg.norm(u); v = np.cross(n, u)
         projected = np.stack(((tri - origin) @ u, (tri - origin) @ v), axis=-1)
-        poly = shapely.union_all(shapely.polygons(projected)).buffer(0)
+        # Loop hygiene first, so faces that only touch at a corner are already
+        # separate pieces when islands are judged; nothing moves over 0.15 mm.
+        poly = clean_polygon(shapely.union_all(shapely.polygons(projected)).buffer(0))
         yield {'key': key, 'normal': n, 'offset': offset, 'poly': poly, 'origin': origin, 'u': u, 'v': v,
                'snap': snap, 'triangle_area': float(mesh.area_faces[ids].sum())}
 

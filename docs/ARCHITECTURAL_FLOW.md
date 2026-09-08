@@ -141,12 +141,16 @@ replaced group is hidden as a reference. Each step keeps its own audit.
 # sample is lost, pores <0.005 m2 filled only inside the 50 mm raw envelope
 .\venv311\Scripts\python.exe scripts\export\wall_surface_cleanup.py --model <work>\working_after_junctions.build.json --out <work>\cleanup --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz
 
+# run the junction pass once more on the cleaned model: removing a sub-0.02 m2
+# base strip can re-open a seated base, so seating is always the last edit
+.env311\Scripts\python.exe scripts\exportloor_wall_junctions.py --model <work>\working_after_cleanup.build.json --out <work>\junctions2 --fix --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz
+
 # observed faces: audit regions that are probable opposite faces or have no
 # parallel visible plane, >=60 % unmatched, >=1 m2, planar within 15 mm and
 # inside the unit footprint, bounded to the 50 mm raw envelope
 .\venv311\Scripts\python.exe scripts\export\observed_wall_faces.py --model <work>\working_after_junctions.build.json --audit <work>\review\wall_completeness_audit.json --out <work>\observed --evidence-spec <manifest> --evidence-cache <work>\evidence_10mm.npz
 
-.\venv311\Scripts\python.exe scripts\export\assemble_revision.py --previous <checked folder> --fragment <work>\junctions\junction_fix.build.json --fragment <work>\cleanup\wall_cleanup.build.json --fragment <work>\observed\observed_faces.build.json --out <work> --native-name <name>.skp --label "..." --note "..."
+.\venv311\Scripts\python.exe scripts\export\assemble_revision.py --previous <checked folder> --fragment <work>\junctions\junction_fix.build.json --fragment <work>\cleanup\wall_cleanup.build.json --fragment <work>\junctions2\junction_fix.build.json --fragment <work>\observed\observed_faces.build.json --out <work> --native-name <name>.skp --label "..." --note "..."
 ```
 
 `polygon_hygiene.py` prepares every exported loop: a 0.15 mm morphological
