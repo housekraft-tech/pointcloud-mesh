@@ -43,13 +43,50 @@ def is_axis_aligned(poly, tol=1e-6):
     return True
 
 
+def orthogonal_trace(poly, pitch=.05, step_m=.15):
+    """Axis-aligned polygon of any shape: rasterize at ``pitch``, remove features
+    smaller than ``step_m`` with a morphological opening and closing, and trace
+    the cells back into a staircase polygon whose edges are all axis-aligned.
+    Keeps L-shapes and notches that a bounding box would swallow."""
+    from scipy import ndimage
+    u0, v0, u1, v1 = poly.bounds
+    nu, nv = int(np.ceil((u1 - u0) / pitch)) + 2, int(np.ceil((v1 - v0) / pitch)) + 2
+    cu = u0 - pitch + (np.arange(nu) + .5) * pitch
+    cv = v0 - pitch + (np.arange(nv) + .5) * pitch
+    uu, vv = np.meshgrid(cu, cv, indexing='ij')
+    mask = shapely.contains_xy(poly, uu.ravel(), vv.ravel()).reshape(nu, nv)
+    k = max(1, int(round(step_m / pitch)))
+    structure = np.ones((k, k), bool)
+    mask = ndimage.binary_closing(ndimage.binary_opening(mask, structure), structure)
+    if not mask.any():
+        return None
+    boxes = []
+    for i in range(nu):
+        row = mask[i]
+        j = 0
+        while j < nv:
+            if row[j]:
+                start = j
+                while j < nv and row[j]:
+                    j += 1
+                boxes.append(shapely.box(u0 - pitch + i * pitch, v0 - pitch + start * pitch,
+                                         u0 - pitch + (i + 1) * pitch, v0 - pitch + j * pitch))
+            else:
+                j += 1
+    traced = shapely.union_all(boxes).buffer(0).simplify(pitch / 10, preserve_topology=True)
+    return traced
+
+
 def square_ring(coords, fallback_box):
-    """Axis-aligned ring or its bounding box; the snapper may keep diagonal
-    corners where edges are steep, so alignment is checked, never assumed."""
+    """Axis-aligned ring: snapped when close, else traced through a raster (never
+    a bare bounding box, which swallows L-shapes). Alignment is verified."""
     for tolerance in TOLERANCES:
         snapped = orthogonalize_ring(coords, tolerance)
         if snapped is not None and is_axis_aligned(snapped):
             return snapped, tolerance
+    traced = orthogonal_trace(shapely.Polygon(coords))
+    if traced is not None and not traced.is_empty:
+        return shapely.union_all([shapely.Polygon(p.exterior) for p in polygon_parts(traced)]), None
     return fallback_box, None
 
 
@@ -72,9 +109,13 @@ def rectilinear(region, min_piece_m2=.1, min_hole_m2=.3):
                 box, tolerance = square_ring(ring.coords, shapely.box(*hole.bounds))
                 holes.append(shapely.box(*box.bounds))
             elif hole.area >= min_hole_m2:
-                holes.append(shapely.box(*hole.bounds))
+                # A large irregular hole (a recess void, a wall footprint in a
+                # floor) is traced orthogonally; its bounding box would swallow
+                # whatever lies beside it.
+                squared_hole, _ = square_ring(ring.coords, shapely.box(*hole.bounds))
+                holes.append(squared_hole)
         result = outer.difference(shapely.union_all(holes)) if holes else outer
-        pieces.append(result)
+        pieces.extend(polygon_parts(result))
         report['pieces'] += 1
     if not pieces:
         return None, report

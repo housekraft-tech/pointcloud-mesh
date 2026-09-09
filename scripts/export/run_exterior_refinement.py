@@ -64,6 +64,11 @@ def main():
     parser.add_argument('--reuse', action='store_true', help='Keep an existing selection.json and walls/patches.build.json in --out')
     parser.add_argument('--all-walls', action='store_true',
                         help='Apply regularize, rectangle and rectilinear stages to every wall plane, interior faces included')
+    parser.add_argument('--box-prisms', action='store_true', help='Replace beam and column fragments by their axis-aligned boxes')
+    parser.add_argument('--rectilinear-slabs', action='store_true',
+                        help='Square floor and ceiling outlines, re-extruding solid slabs (declared inference)')
+    parser.add_argument('--hide-kinds', default='',
+                        help='Comma-separated kind substrings to hide, e.g. beam,plinth,junction_patch,wall_face_observed,floor_clean')
     parser.add_argument('--rectilinear', action='store_true',
                         help='Square every exterior ring and merge coplanar planes into rectangular blocks (declared inference)')
     parser.add_argument('--hide-duplicates', action='store_true',
@@ -137,7 +142,27 @@ def main():
         if not (args.reuse and (out / 'rectilinear' / 'patches.build.json').exists()):
             subprocess.run(command, check=True)
         fragments.append(str(out / 'rectilinear' / 'patches.build.json'))
+    if args.rectilinear_slabs:
+        if not (args.reuse and (out / 'slabs' / 'patches.build.json').exists()):
+            subprocess.run([sys.executable, str(scripts / 'rectilinear_slabs.py'), '--model', str(model),
+                            '--out', str(out / 'slabs')], check=True)
+        if json.loads((out / 'slabs' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'slabs' / 'patches.build.json'))
+    if args.box_prisms:
+        if not (args.reuse and (out / 'prisms' / 'patches.build.json').exists()):
+            subprocess.run([sys.executable, str(scripts / 'box_prisms.py'), '--model', str(model), '--out', str(out / 'prisms')], check=True)
+        if json.loads((out / 'prisms' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'prisms' / 'patches.build.json'))
     hide_files = []
+    if args.hide_kinds:
+        # Only rectangular planes and stairs remain visible: every other kind is hidden as a reference.
+        replaced_now = {s for f in fragments for p in json.loads(Path(f).read_text())['parts'] for s in p.get('source_group_names', [])}
+        kinds = tuple(k.strip() for k in args.hide_kinds.split(',') if k.strip())
+        names = [p['name'] for p in parts if p['name'] not in replaced_now and any(k in p.get('kind', '') for k in kinds)]
+        (out / 'hide_kinds.json').write_text(json.dumps(names, indent=2))
+        if names:
+            hide_files.append(str(out / 'hide_kinds.json'))
+        print(json.dumps({'hidden_by_kind': len(names)}), flush=True)
     if args.hide_duplicates:
         command = [sys.executable, str(scripts / 'hide_duplicate_faces.py'), '--model', str(model), '--out', str(out / 'hide')]
         for fragment in fragments:

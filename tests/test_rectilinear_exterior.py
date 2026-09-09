@@ -33,7 +33,8 @@ def test_jagged_wall_with_window_and_blob_becomes_rectangles_only():
     holes = [shapely.Polygon(r) for r in result.interiors]
     assert len(holes) == 2                              # window and boxed recess, speck gone
     assert any(h.symmetric_difference(window).area < .05 for h in holes)
-    assert any(h.symmetric_difference(shapely.box(*blob.bounds)).area < .05 for h in holes)
+    recess = max(holes, key=lambda h: h.symmetric_difference(window).area)
+    assert axis_aligned(recess) and abs(recess.area - blob.area) < .25 * blob.area   # traced, not boxed
 
 
 def test_a_curved_piece_comes_out_axis_aligned():
