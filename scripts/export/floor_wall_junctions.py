@@ -139,7 +139,7 @@ def summarise(rows):
             'walls_not_on_a_floor_datum': sum(r['status'] not in ('gap', 'touching') for r in rows)}
 
 
-def extension_strips(part, region):
+def extension_strips(part, region, max_reach=MAX_STRIP_M):
     """Strip between each base segment and its projection on the floor boundary."""
     base = wall_base_samples(part)
     pieces = []
@@ -159,16 +159,21 @@ def extension_strips(part, region):
             continue
         pts = shapely.line_interpolate_point(line, np.linspace(0, line.length, max(3, int(line.length / .01) + 2)))
         d = shapely.distance(pts, region)
-        if d.max() <= 1e-6 or d.min() > MAX_STRIP_M:
+        if d.max() <= 1e-6 or d.min() > max_reach:
             continue
-        reach = min(d.max(), MAX_STRIP_M)
-        # Strip between the base edge and the present floor boundary only:
-        # the sweep of the edge towards the floor, cut back to the floor's
-        # neighbourhood so nothing is added on the far side of the wall face.
-        strip = line.buffer(reach + 5e-4, cap_style='flat')
-        piece = strip.intersection(region.buffer(reach + 1e-3)).difference(region)
-        if not piece.is_empty and piece.area > 0:
-            pieces.append(piece)
+        # Connect adjacent wall samples to their nearest floor points. A
+        # symmetric line buffer extends past the wall and creates an exterior
+        # ledge; these local quadrilaterals end exactly at the wall face.
+        bridges = shapely.shortest_line(pts, region)
+        targets = shapely.get_coordinates(shapely.get_point(bridges, -1))
+        points = shapely.get_coordinates(pts)
+        for i in range(len(points) - 1):
+            if max(d[i], d[i + 1]) > max_reach:
+                continue
+            quad = Polygon([points[i], points[i + 1], targets[i + 1], targets[i]])
+            piece = quad.buffer(0).difference(region)
+            if not piece.is_empty and piece.area > 0:
+                pieces.append(piece)
     return shapely.union_all(pieces).buffer(0) if pieces else None
 
 
@@ -182,7 +187,8 @@ def rebuild_floor(part, new_region_by_datum):
     for z in datums:
         region = new_region_by_datum.get(float(z))
         if region is None:
-            continue
+            ids = np.flatnonzero(up & (abs(mesh.triangles_center[:, 2] - z) < 5e-4))
+            region = shapely.union_all(shapely.polygons(mesh.triangles[ids][:, :, :2])).buffer(0)
         region = clean_polygon(region)
         if region.is_empty:
             continue
@@ -212,10 +218,14 @@ def main():
     parser.add_argument('--model', required=True)
     parser.add_argument('--out', required=True)
     parser.add_argument('--fix', action='store_true')
+    parser.add_argument('--max-strip-mm', type=float, default=150,
+                        help='maximum horizontal gap to repair (use 15 for tiny junctions)')
     parser.add_argument('--evidence-spec', help='flow manifest or support scan list for raw support')
     parser.add_argument('--evidence-cache', help='npz cache written by raw_evidence.py')
     parser.add_argument('--working-out', help='write the full model with the fixes substituted')
     args = parser.parse_args()
+    if not 0 < args.max_strip_mm <= 150:
+        parser.error('--max-strip-mm must be greater than zero and at most 150')
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     payload = json.loads(Path(args.model).read_text()); parts = payload['parts']
     regions, rows = measure(parts)
@@ -239,7 +249,9 @@ def main():
             continue
         level, datum = row['level'], row['nearest_floor_datum_m']
         region = regions[(level, datum)]
-        strip = extension_strips(by_name[row['name']], region)
+        if abs(row['vertical_gap_mm']) > MAX_FIX_M * 1000:
+            continue
+        strip = extension_strips(by_name[row['name']], region, args.max_strip_mm / 1000)
         if strip is None or strip.is_empty:
             refused.append({'wall': row['name'], 'reason': 'base further than 150 mm from the floor everywhere; left open'})
             continue
@@ -309,6 +321,10 @@ def main():
                                   'evidence_status': 'wall_base_lowered_to_floor_datum_within_15mm'}
         wall_changes.append({'wall': part['name'], 'lowered_mm': float(dz * 1000), 'vertices': int(len(base_vertices))})
     refined = [replaced.get(p['name'], p) for p in parts]
+    # Cached native loops describe the old geometry, and would override the
+    # newly seated vertices during export. Regenerate them from the new mesh.
+    for part in replaced.values():
+        part.pop('planar_loops', None)
     _, rows_after = measure(refined)
     report.update(after=summarise(rows_after), walls_after=rows_after, floor_changes=floor_changes,
                   wall_changes=wall_changes, refused=refused)
