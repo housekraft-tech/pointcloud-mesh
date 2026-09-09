@@ -212,6 +212,18 @@ not in the reconstruction, so the same command runs on any property:
   face is added as an amber observed vertical face with unverified identity:
   measured surface, no thickness, no opening, no back face. Voids whose
   surface the model already carries are listed as `already_in_model`.
+- `complete_exterior_rectangles.py` (`--complete-rectangles`, declared
+  inference for a drawing-clean exterior): every whole-plane exterior face is
+  completed to its rectangle, horizontal extent by the level datums (floor
+  below, floor above, own top on the last level). Cells with returns on the
+  plane are measured fill; cells where the returns or a parallel model face
+  show another surface 50-350 mm away stay open (recesses, sunshades, the face
+  behind an opening); rectangular openings stay open; cells where the scan
+  shows nothing are filled and reported as `inferred_fill_m2`. The evidence
+  status of these parts ends in `INFERRED`.
+- `hide_duplicate_faces.py` (`--hide-duplicates`): native faces lying within
+  30 mm of a rebuilt plane over 70 % of their area are hidden as references,
+  which removes the doubled outlines in previews and in SketchUp.
 - `assemble_revision.py` appends the replacements and hides the replaced
   groups; `scope_verification.json` proves every unselected native group read
   back with the same face count, area and visibility, and `review_exterior_*.png`

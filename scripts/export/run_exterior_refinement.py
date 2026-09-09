@@ -53,6 +53,10 @@ def main():
     parser.add_argument('--label', default='Exterior wall refinement')
     parser.add_argument('--skip-export', action='store_true', help='Stop after selection and regularization')
     parser.add_argument('--reuse', action='store_true', help='Keep an existing selection.json and walls/patches.build.json in --out')
+    parser.add_argument('--hide-duplicates', action='store_true',
+                        help='Hide native faces that lie within 30 mm of a rebuilt plane over 70 %% of their area')
+    parser.add_argument('--complete-rectangles', action='store_true',
+                        help='Complete exterior planes to level rectangles where the scan shows nothing (declared inference)')
     parser.add_argument('--recover-recessed', action='store_true',
                         help='Add recessed/stepped faces the model lacks behind exterior voids (recover_recessed_faces.py)')
     args = parser.parse_args()
@@ -89,11 +93,30 @@ def main():
                         '--evidence-cache', args.evidence_cache], check=True)
     fragments = [str(out / 'walls' / 'patches.build.json')]
     if args.recover_recessed:
-        subprocess.run([sys.executable, str(scripts / 'recover_recessed_faces.py'), '--model', str(model),
-                        '--selection', str(out / 'selection.json'), '--evidence-cache', args.evidence_cache,
-                        '--out', str(out / 'recessed')], check=True)
+        if not (args.reuse and (out / 'recessed' / 'recessed_faces.build.json').exists()):
+            subprocess.run([sys.executable, str(scripts / 'recover_recessed_faces.py'), '--model', str(model),
+                            '--selection', str(out / 'selection.json'), '--evidence-cache', args.evidence_cache,
+                            '--out', str(out / 'recessed')], check=True)
         if json.loads((out / 'recessed' / 'recessed_faces.build.json').read_text())['parts']:
             fragments.append(str(out / 'recessed' / 'recessed_faces.build.json'))
+    if args.complete_rectangles:
+        command = [sys.executable, str(scripts / 'complete_exterior_rectangles.py'), '--model', str(model),
+                   '--patches', str(out / 'walls' / 'patches.build.json'), '--selection', str(out / 'selection.json'),
+                   '--evidence-cache', args.evidence_cache, '--out', str(out / 'rectangles')]
+        if len(fragments) > 1:
+            command.extend(['--recessed', fragments[1]])
+        if not (args.reuse and (out / 'rectangles' / 'patches.build.json').exists()):
+            subprocess.run(command, check=True)
+        if json.loads((out / 'rectangles' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'rectangles' / 'patches.build.json'))
+    hide_files = []
+    if args.hide_duplicates:
+        command = [sys.executable, str(scripts / 'hide_duplicate_faces.py'), '--model', str(model), '--out', str(out / 'hide')]
+        for fragment in fragments:
+            command.extend(['--fragment', fragment])
+        subprocess.run(command, check=True)
+        if json.loads((out / 'hide' / 'hide.json').read_text()):
+            hide_files.append(str(out / 'hide' / 'hide.json'))
     if args.skip_export:
         return
     audit = json.loads((previous / 'native_sdk_audit.json').read_text())
@@ -104,6 +127,8 @@ def main():
                          'area. Protected openings, interior faces, floors, stairs and ceilings retained.']
     for fragment in fragments:
         command.extend(['--fragment', fragment])
+    for path in hide_files:
+        command.extend(['--hide', path])
     for group in audit['groups']:
         if 'ceiling' in group['kind'] and not group['hidden']:
             command.extend(['--show', group['name']])
@@ -112,6 +137,8 @@ def main():
     groups = {g['name']: g for g in after['groups']}
     replaced = {s for p in json.loads((out / 'walls' / 'patches.build.json').read_text())['parts']
                 for s in p['source_group_names']}
+    for path in hide_files:
+        replaced.update(json.loads(Path(path).read_text()))
     unchanged = []
     for before in audit['groups']:
         if before['name'] in replaced:
