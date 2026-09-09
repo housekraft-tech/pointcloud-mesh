@@ -231,6 +231,21 @@ not in the reconstruction, so the same command runs on any property:
   `L<n> exterior block <k> - rectilinear - INFERRED outline` and list every
   part they merged; `rectilinear/audit.json` records boxed rings, dropped
   area and the offset spread absorbed by each merge.
+- Openings survive completion by a see-through test: a cell with nothing at
+  the wall but returns beyond the wall thickness (up to 3 m) in the same
+  patch is a doorway or window and stays open (`see_through_open_m2`).
+- `rectilinear_slabs.py` (`--rectilinear-slabs`): floor and ceiling outlines
+  squared; solid slabs re-extruded between their own heights; wall
+  footprints in floors are traced, never boxed (boxing removed whole rooms).
+- `box_prisms.py` (`--box-prisms`): beam and column fragments become their
+  axis-aligned boxes so the thickness steps they cause are kept.
+- `scan_detail_planes.py` (`--scan-detail-planes`): an unclassified scan
+  surface is split into axis-aligned planes by normal and 20 mm offset bins;
+  each plane with over 0.5 m2 is squared and enters the merge, replacing the
+  scan-detail group; non-axis-aligned triangles (furniture) are dropped.
+- `--all-walls` applies the regularize, rectangle and rectilinear stages to
+  interior faces too; `--hide-kinds` hides leftover non-rectangular kinds;
+  `--finish-only` re-runs verification and renders on an exported folder.
 - `hide_duplicate_faces.py` (`--hide-duplicates`): native faces lying within
   30 mm of a rebuilt plane over 70 % of their area are hidden as references,
   which removes the doubled outlines in previews and in SketchUp.
