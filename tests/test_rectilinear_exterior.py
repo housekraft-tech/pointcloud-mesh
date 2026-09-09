@@ -9,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts/export'))
 from rectilinear_exterior import rectilinear
 
 
-def axis_aligned(poly):
-    for ring in [poly.exterior, *poly.interiors]:
+def axis_aligned(geom):
+    pieces = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
+    for ring in [r for poly in pieces for r in [poly.exterior, *poly.interiors]]:
         xy = np.asarray(ring.coords)
         d = np.diff(xy, axis=0)
         if not np.all((np.abs(d[:, 0]) < 1e-6) | (np.abs(d[:, 1]) < 1e-6)):
@@ -33,8 +34,17 @@ def test_jagged_wall_with_window_and_blob_becomes_rectangles_only():
     holes = [shapely.Polygon(r) for r in result.interiors]
     assert len(holes) == 2                              # window and boxed recess, speck gone
     assert any(h.symmetric_difference(window).area < .05 for h in holes)
-    recess = max(holes, key=lambda h: h.symmetric_difference(window).area)
-    assert axis_aligned(recess) and abs(recess.area - blob.area) < .25 * blob.area   # traced, not boxed
+    assert any(h.symmetric_difference(shapely.box(*blob.bounds)).area < .05 for h in holes)   # a niche is a rectangle
+
+
+def test_floor_holes_are_traced_not_boxed_so_rooms_survive():
+    # A T-shaped wall footprint cut out of a floor: boxing it would swallow the rooms beside the stem.
+    floor = shapely.box(0, 0, 8, 6)
+    footprint = shapely.union_all([shapely.box(0, 2.9, 8, 3.1), shapely.box(3.9, 0, 4.1, 6)])
+    source = floor.difference(footprint)
+    result, _ = rectilinear(source, box_holes=False)
+    assert axis_aligned(result)
+    assert abs(result.area - source.area) < .5
 
 
 def test_a_curved_piece_comes_out_axis_aligned():
