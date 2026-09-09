@@ -122,7 +122,7 @@ def material_side(segment, returns, band=(.05, .4)):
     return 1. if plus >= minus else -1.
 
 
-def build_level(segments, walls, covered, returns, thickness_default, floor_z, slab_z, recess_planes):
+def build_level(segments, walls, covered, returns, thickness_default, floor_z, slab_z, recess_planes, walls_to_slab=False):
     # Single-sided walls for uncovered face lengths.
     for i, s in enumerate(segments):
         for lo, hi in uncovered_intervals(s, covered.get(i, [])):
@@ -132,7 +132,7 @@ def build_level(segments, walls, covered, returns, thickness_default, floor_z, s
                           'faces': [i], 'thickness': thickness_default, 'inferred': True})
     for w in walls:
         w['z0'] = floor_z if abs(w['z0'] - floor_z) <= .4 else w['z0']
-        if slab_z is not None and abs(w['z1'] - slab_z) <= .6:
+        if slab_z is not None and (abs(w['z1'] - slab_z) <= .6 or (walls_to_slab and w['z1'] < slab_z)):
             w['z1'] = slab_z
     # Openings: slots through the walls they belong to.
     slots = []
@@ -200,6 +200,7 @@ def main():
     parser.add_argument('--evidence-cache', required=True)
     parser.add_argument('--out', required=True)
     parser.add_argument('--default-thickness', type=float, default=.23)
+    parser.add_argument('--walls-to-slab', action='store_true', help='Every wall reaches the slab above (completion, marked in the name)')
     args = parser.parse_args()
     model = json.loads(Path(args.model).read_text())['parts']
     blocks = json.loads(Path(args.blocks).read_text())['parts']
@@ -222,7 +223,7 @@ def main():
         if slab_z is None and segments:
             # Last level: the ceiling is where the tallest faces stop.
             slab_z = float(np.percentile([s['z1'] for s in segments], 90))
-        walls, slots = build_level(segments, walls, covered, returns, thickness, floor_z, slab_z, recess_planes)
+        walls, slots = build_level(segments, walls, covered, returns, thickness, floor_z, slab_z, recess_planes, args.walls_to_slab)
         for inferred in (False, True):
             subset = [w for w in walls if w['inferred'] == inferred]
             if not subset:

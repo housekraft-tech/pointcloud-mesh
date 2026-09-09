@@ -246,6 +246,17 @@ not in the reconstruction, so the same command runs on any property:
 - `--all-walls` applies the regularize, rectangle and rectilinear stages to
   interior faces too; `--hide-kinds` hides leftover non-rectangular kinds;
   `--finish-only` re-runs verification and renders on an exported folder.
+- `solid_walls.py` (`--solid-walls`, `--walls-to-slab`): the user's chosen
+  deliverable, solid walls with thickness. Per level, axis-aligned face
+  blocks are paired across the wall (60-600 mm apart, overlapping at least
+  0.3 m) into wall rectangles with the measured thickness; uncovered face
+  lengths become single-sided walls with the level's median thickness on the
+  material side (more returns in the 50-400 mm band), tagged INFERRED and
+  coloured orange. Wall rectangles are unioned in plan so joins are exact,
+  then extruded in height bands between the floor datum and the slab above
+  (last level: the 90th percentile of face tops, which matches the scan's
+  ceiling return peak); openings cut through the full thickness, niches
+  only to their recessed face. Replaced face blocks are hidden.
 - `hide_duplicate_faces.py` (`--hide-duplicates`): native faces lying within
   30 mm of a rebuilt plane over 70 % of their area are hidden as references,
   which removes the doubled outlines in previews and in SketchUp.
