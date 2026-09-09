@@ -67,6 +67,8 @@ def main():
     parser.add_argument('--finish-only', action='store_true', help='Only verify and render an already exported --out folder')
     parser.add_argument('--box-prisms', action='store_true', help='Replace beam and column fragments by their axis-aligned boxes')
     parser.add_argument('--walls-to-slab', action='store_true', help='With --solid-walls: every wall reaches the slab above')
+    parser.add_argument('--recover-wall-faces', action='store_true', help='Add wall faces found as vertical return stacks where the model has none')
+    parser.add_argument('--reference', help='Reference build.json (drawing-based); its walls missing from the solids are added when the scan supports them')
     parser.add_argument('--solid-walls', action='store_true', help='Build solid walls with thickness from the rectilinear blocks (declared inference)')
     parser.add_argument('--rectilinear-slabs', action='store_true',
                         help='Square floor and ceiling outlines, re-extruding solid slabs (declared inference)')
@@ -88,7 +90,9 @@ def main():
         # Verification and renders only, for a folder whose native file already exists.
         fragments = [str(f) for f in [out / 'walls' / 'patches.build.json', out / 'recessed' / 'recessed_faces.build.json',
                                       out / 'rectangles' / 'patches.build.json', out / 'rectilinear' / 'patches.build.json',
-                                      out / 'slabs' / 'patches.build.json', out / 'prisms' / 'patches.build.json'] if f.exists()]
+                                      out / 'slabs' / 'patches.build.json', out / 'prisms' / 'patches.build.json',
+                                      out / 'solid' / 'patches.build.json', out / 'recovered_faces' / 'patches.build.json',
+                                      out / 'reference_walls' / 'patches.build.json', out / 'scan_planes' / 'patches.build.json'] if f.exists()]
         hide_files = [str(f) for f in [out / 'hide_kinds.json', out / 'hide' / 'hide.json'] if f.exists()]
         finish(previous, out, args, fragments, hide_files)
         return
@@ -160,16 +164,36 @@ def main():
         if not (args.reuse and (out / 'rectilinear' / 'patches.build.json').exists()):
             subprocess.run(command, check=True)
         fragments.append(str(out / 'rectilinear' / 'patches.build.json'))
+    if args.recover_wall_faces:
+        # Faces the model lacks, found as vertical return stacks clear of every existing face.
+        command = [sys.executable, str(scripts / 'recover_wall_faces.py'), '--model', str(model),
+                   '--evidence-cache', args.evidence_cache, '--out', str(out / 'recovered_faces')]
+        for fragment in fragments:
+            command.extend(['--fragment', fragment])
+        if not (args.reuse and (out / 'recovered_faces' / 'patches.build.json').exists()):
+            subprocess.run(command, check=True)
     if args.solid_walls:
         command = [sys.executable, str(scripts / 'solid_walls.py'), '--model', str(model),
                    '--blocks', str(out / 'rectilinear' / 'patches.build.json'), '--evidence-cache', args.evidence_cache,
                    '--out', str(out / 'solid')] + (['--walls-to-slab'] if args.walls_to_slab else [])
+        if args.recover_wall_faces and json.loads((out / 'recovered_faces' / 'patches.build.json').read_text())['parts']:
+            command.extend(['--blocks', str(out / 'recovered_faces' / 'patches.build.json')])
+            fragments.append(str(out / 'recovered_faces' / 'patches.build.json'))
         if (out / 'recessed' / 'recessed_faces.build.json').exists():
             command.extend(['--recessed', str(out / 'recessed' / 'recessed_faces.build.json')])
         if not (args.reuse and (out / 'solid' / 'patches.build.json').exists()):
             subprocess.run(command, check=True)
         if json.loads((out / 'solid' / 'patches.build.json').read_text())['parts']:
             fragments.append(str(out / 'solid' / 'patches.build.json'))
+    if args.reference:
+        # Walls the reference (drawing-based) model has and the solids lack, kept only with scan support.
+        command = [sys.executable, str(scripts / 'walls_from_reference.py'), '--model', str(model),
+                   '--reference', args.reference, '--evidence-cache', args.evidence_cache,
+                   '--out', str(out / 'reference_walls'), '--fragment', str(out / 'solid' / 'patches.build.json')]
+        if not (args.reuse and (out / 'reference_walls' / 'patches.build.json').exists()):
+            subprocess.run(command, check=True)
+        if json.loads((out / 'reference_walls' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'reference_walls' / 'patches.build.json'))
     if args.rectilinear_slabs:
         if not (args.reuse and (out / 'slabs' / 'patches.build.json').exists()):
             subprocess.run([sys.executable, str(scripts / 'rectilinear_slabs.py'), '--model', str(model),

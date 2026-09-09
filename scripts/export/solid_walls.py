@@ -38,24 +38,26 @@ MEASURED_COLOUR = [221, 190, 110]
 INFERRED_COLOUR = [232, 170, 90]
 
 
-def face_segments(part, min_area=.3):
+def face_segments(part, min_area=.15):
     """Axis-aligned vertical planes of a block as plan segments with openings."""
     segments = []
     for plane in planes_of(part):
         n = np.asarray(plane['normal'])
         if abs(n[2]) > .01:
             continue
-        axis = int(np.argmax(np.abs(n)))
-        if abs(n[axis]) < .99:
-            continue
-        along = 1 - axis
+        # Wall direction from the plane normal (any orientation, not only the axes).
+        nh = np.array([n[0], n[1]]) / np.hypot(n[0], n[1])
+        if nh[0] < 0 or (nh[0] == 0 and nh[1] < 0):
+            nh = -nh
+        along_dir = np.array([-nh[1], nh[0]])
+        axis = (round(float(nh[0]), 2), round(float(nh[1]), 2))
         mesh = mesh_from_polygon(plane['poly'], plane['origin'], plane['u'], plane['v'])
         if mesh is None or mesh.area < min_area:
             continue
         tri = mesh.triangles
-        flat = np.stack((tri[:, :, along], tri[:, :, 2]), -1)
+        flat = np.stack((tri[:, :, :2] @ along_dir, tri[:, :, 2]), -1)
         poly = shapely.union_all(shapely.polygons(flat)).buffer(0)
-        offset = float(np.median(mesh.vertices[:, axis]))
+        offset = float(np.median(mesh.vertices[:, :2] @ nh))
         for piece in polygon_parts(poly):
             if piece.area < min_area:
                 continue
@@ -65,8 +67,8 @@ def face_segments(part, min_area=.3):
             for hole in polygon_parts(frame.difference(piece)):
                 if hole.area >= .25:
                     openings.append(hole.bounds)          # (a0, z0, a1, z1)
-            segments.append({'part': part['name'], 'axis': axis, 'offset': offset, 'a0': a0, 'a1': a1,
-                             'z0': z0, 'z1': z1, 'openings': openings, 'level': part.get('level', 0)})
+            segments.append({'part': part['name'], 'axis': axis, 'nh': nh, 'along_dir': along_dir, 'offset': offset,
+                             'a0': a0, 'a1': a1, 'z0': z0, 'z1': z1, 'openings': openings, 'level': part.get('level', 0)})
     return segments
 
 
@@ -76,7 +78,9 @@ def pair_faces(segments, min_gap=.06, max_gap=.6, min_overlap=.3):
     covered = defaultdict(list)
     by_axis = defaultdict(list)
     for i, s in enumerate(segments):
-        by_axis[s['axis']].append(i)
+        angle = np.degrees(np.arctan2(s['nh'][1], s['nh'][0]))
+        s['angle_bin'] = int(round(angle / 3.))
+        by_axis[s['angle_bin']].append(i)
     for axis, ids in by_axis.items():
         for i in ids:
             for j in ids:
@@ -92,7 +96,8 @@ def pair_faces(segments, min_gap=.06, max_gap=.6, min_overlap=.3):
                 zlo, zhi = max(a['z0'], b['z0']), min(a['z1'], b['z1'])
                 if zhi - zlo < .3:
                     continue
-                walls.append({'axis': axis, 'o0': min(a['offset'], b['offset']), 'o1': max(a['offset'], b['offset']),
+                walls.append({'nh': a['nh'], 'along_dir': a['along_dir'], 'axis': a['axis'],
+                              'o0': min(a['offset'], b['offset']), 'o1': max(a['offset'], b['offset']),
                               'a0': lo, 'a1': hi, 'z0': min(a['z0'], b['z0']), 'z1': max(a['z1'], b['z1']),
                               'faces': [i, j], 'thickness': gap, 'inferred': False})
                 covered[i].append((lo, hi)); covered[j].append((lo, hi))
@@ -113,10 +118,10 @@ def uncovered_intervals(segment, covered, min_len=.3):
 
 def material_side(segment, returns, band=(.05, .4)):
     """+1 or -1 along the axis: the side with more returns just behind the face."""
-    axis, along = segment['axis'], 1 - segment['axis']
-    inside = (returns[:, along] >= segment['a0']) & (returns[:, along] <= segment['a1']) & \
+    along_c = returns[:, :2] @ segment['along_dir']
+    inside = (along_c >= segment['a0']) & (along_c <= segment['a1']) & \
              (returns[:, 2] >= segment['z0']) & (returns[:, 2] <= segment['z1'])
-    d = returns[inside, axis] - segment['offset']
+    d = returns[inside, :2] @ segment['nh'] - segment['offset']
     plus = ((d >= band[0]) & (d <= band[1])).sum()
     minus = ((d <= -band[0]) & (d >= -band[1])).sum()
     return 1. if plus >= minus else -1.
@@ -128,7 +133,8 @@ def build_level(segments, walls, covered, returns, thickness_default, floor_z, s
         for lo, hi in uncovered_intervals(s, covered.get(i, [])):
             side = material_side(s, returns)
             o0, o1 = sorted((s['offset'], s['offset'] + side * thickness_default))
-            walls.append({'axis': s['axis'], 'o0': o0, 'o1': o1, 'a0': lo, 'a1': hi, 'z0': s['z0'], 'z1': s['z1'],
+            walls.append({'nh': s['nh'], 'along_dir': s['along_dir'], 'axis': s['axis'], 'o0': o0, 'o1': o1,
+                          'a0': lo, 'a1': hi, 'z0': s['z0'], 'z1': s['z1'],
                           'faces': [i], 'thickness': thickness_default, 'inferred': True})
     for w in walls:
         w['z0'] = floor_z if abs(w['z0'] - floor_z) <= .4 else w['z0']
@@ -145,7 +151,7 @@ def build_level(segments, walls, covered, returns, thickness_default, floor_z, s
                     continue
                 depth = None
                 for rp in recess_planes:
-                    if rp['axis'] != w['axis']:
+                    if abs(float(rp['nh'] @ w['nh'])) < .999:
                         continue
                     d = rp['offset'] - s['offset']
                     if .03 <= abs(d) <= .6 and rp['a0'] <= hi and rp['a1'] >= lo and rp['z0'] <= z1 and rp['z1'] >= z0:
@@ -155,12 +161,14 @@ def build_level(segments, walls, covered, returns, thickness_default, floor_z, s
                 else:
                     across = tuple(sorted((s['offset'] - np.sign(depth) * .01, s['offset'] + depth)))
                 z_lo = floor_z if z0 - floor_z <= .15 else z0
-                slots.append({'axis': w['axis'], 'a': (lo, hi), 'across': across, 'z': (z_lo, z1), 'niche': depth is not None})
+                slots.append({'nh': w['nh'], 'along_dir': w['along_dir'], 'a': (lo, hi), 'across': across, 'z': (z_lo, z1), 'niche': depth is not None})
     return walls, slots
 
 
-def plan_box(axis, o0, o1, a0, a1):
-    return shapely.box(o0, a0, o1, a1) if axis == 0 else shapely.box(a0, o0, a1, o1)
+def plan_box(nh, along_dir, o0, o1, a0, a1):
+    """Plan rectangle of a wall in world xy from its normal offsets and along-wall extent."""
+    corners = [o0 * nh + a0 * along_dir, o1 * nh + a0 * along_dir, o1 * nh + a1 * along_dir, o0 * nh + a1 * along_dir]
+    return shapely.Polygon([tuple(c) for c in corners])
 
 
 def extrude_bands(walls, slots):
@@ -171,11 +179,11 @@ def extrude_bands(walls, slots):
         if z1 - z0 < 1e-4:
             continue
         mid = (z0 + z1) / 2
-        active = [plan_box(w['axis'], w['o0'], w['o1'], w['a0'], w['a1']) for w in walls if w['z0'] <= mid <= w['z1']]
+        active = [plan_box(w['nh'], w['along_dir'], w['o0'], w['o1'], w['a0'], w['a1']) for w in walls if w['z0'] <= mid <= w['z1']]
         if not active:
             continue
         region = shapely.union_all(active).buffer(0)
-        cuts = [plan_box(s['axis'], s['across'][0], s['across'][1], s['a'][0], s['a'][1]) for s in slots if s['z'][0] <= mid <= s['z'][1]]
+        cuts = [plan_box(s['nh'], s['along_dir'], s['across'][0], s['across'][1], s['a'][0], s['a'][1]) for s in slots if s['z'][0] <= mid <= s['z'][1]]
         if cuts:
             region = region.difference(shapely.union_all(cuts))
         for piece in polygon_parts(region):
@@ -195,7 +203,7 @@ def extrude_bands(walls, slots):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True, help='reopened_visible.build.json (for level datums)')
-    parser.add_argument('--blocks', required=True, help='rectilinear/patches.build.json')
+    parser.add_argument('--blocks', action='append', required=True, help='face block patch files (rectilinear, recovered faces)')
     parser.add_argument('--recessed', help='recessed_faces.build.json')
     parser.add_argument('--evidence-cache', required=True)
     parser.add_argument('--out', required=True)
@@ -203,7 +211,7 @@ def main():
     parser.add_argument('--walls-to-slab', action='store_true', help='Every wall reaches the slab above (completion, marked in the name)')
     args = parser.parse_args()
     model = json.loads(Path(args.model).read_text())['parts']
-    blocks = json.loads(Path(args.blocks).read_text())['parts']
+    blocks = [p for f in args.blocks for p in json.loads(Path(f).read_text())['parts']]
     recessed = json.loads(Path(args.recessed).read_text())['parts'] if args.recessed else []
     datums = level_datums(model)
     top_z = max(float(np.max(np.asarray(p['v'])[:, 2])) for p in model)
