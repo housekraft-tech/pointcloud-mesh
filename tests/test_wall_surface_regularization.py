@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import shapely
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts/export'))
@@ -47,18 +48,51 @@ def test_large_irregular_void_is_not_invented():
     assert result.intersection(void.buffer(-.06)).area < 1e-9
 
 
-def test_islands_are_bridged_only_where_the_returns_carry_the_surface():
-    # Three islands of one plane separated by 0.2 m gaps; the returns cover the
-    # first gap (a surface the cleanup dropped) but not the second.
-    islands = [shapely.box(0, 0, 1, 3), shapely.box(1.2, 0, 2.2, 3), shapely.box(2.4, 0, 3.4, 3)]
+def test_dropped_surface_is_recovered_only_where_the_returns_carry_it():
+    # Three islands of one plane separated by 0.2 m and 1.0 m gaps; the returns
+    # cover the first gap (a surface the cleanup dropped) but not the second.
+    islands = [shapely.box(0, 0, 1, 3), shapely.box(1.2, 0, 2.2, 3), shapely.box(3.2, 0, 4.2, 3)]
     source = shapely.union_all(islands)
     supported = lambda uv: uv[:, 0] < 1.3          # returns exist up to x = 1.3 only
     result, row = regularize(source, support=supported)
     assert result.intersection(shapely.box(1.0, 0, 1.2, 3)).area > .9 * .6
-    assert result.intersection(shapely.box(2.22, .1, 2.38, 2.9)).area < 1e-9
-    assert .55 < row['bridged_measured_area_m2'] < .65
-    untouched, _ = regularize(source)               # no evidence: gaps over 50 mm stay open
-    assert untouched.intersection(shapely.box(1.02, 0, 1.18, 3)).area < 1e-9
+    assert result.intersection(shapely.box(2.4, .1, 3.0, 2.9)).area < 1e-9
+    assert .55 < row['recovered_measured_area_m2'] < .65
+    untouched, _ = regularize(source)               # no evidence: gaps over the notch limit stay open
+    assert untouched.intersection(shapely.box(2.4, .1, 3.0, 2.9)).area < 1e-9
+
+
+def test_jagged_outline_snaps_to_a_rectangle_within_50mm():
+    rng = np.random.default_rng(1)
+    xs = np.linspace(0, 6, 121)
+    top = [(x, 3 + rng.uniform(-.02, .02)) for x in xs]
+    bottom = [(x, rng.uniform(-.02, .02)) for x in xs[::-1]]
+    jagged = shapely.Polygon(top + bottom)
+    result, row = regularize(jagged)
+    assert len(result.exterior.coords) <= 6
+    assert result.symmetric_difference(shapely.box(0, 0, 6, 3)).area < .05
+    assert row['snapped_rings'] == 1 and row['unsnapped_rings'] == 0
+
+
+def test_a_real_step_in_the_outline_survives_snapping():
+    stepped = shapely.union_all([shapely.box(0, 0, 3, 3), shapely.box(3, 0, 6, 2.4)])
+    result, _ = regularize(stepped)
+    assert result.symmetric_difference(stepped).area < .02
+
+
+def test_jagged_window_becomes_a_rectangle():
+    wall = shapely.box(0, 0, 6, 3)
+    rng = np.random.default_rng(2)
+    ring = [(1 + rng.uniform(-.03, .03), y) for y in np.linspace(1, 2.2, 30)] + \
+           [(x, 2.2 + rng.uniform(-.03, .03)) for x in np.linspace(1, 2.2, 30)] + \
+           [(2.2 + rng.uniform(-.03, .03), y) for y in np.linspace(2.2, 1, 30)] + \
+           [(x, 1 + rng.uniform(-.03, .03)) for x in np.linspace(2.2, 1, 30)]
+    window = shapely.Polygon(ring).buffer(0)
+    result, row = regularize(wall.difference(window))
+    hole = shapely.Polygon(result.interiors[0])
+    assert row['protected_openings'] == 1
+    assert hole.symmetric_difference(shapely.box(1, 1, 2.2, 2.2)).area < .03
+    assert len(hole.exterior.coords) <= 6
 
 
 def test_partial_mask_limits_the_repair_to_the_open_part_of_the_plane():

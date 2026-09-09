@@ -189,19 +189,29 @@ not in the reconstruction, so the same command runs on any property:
   `interior_face` and are never modified. `selection_*.png` colour every wall
   part by its strongest class from four outside viewpoints.
 - `regularize_wall_surfaces.py`: only the selected planes (only inside the
-  mask, plus 0.3 m, for partly exterior planes) are regularized. A plane that
-  earlier cleanup left as hundreds of islands is bridged across gaps up to
-  0.6 m, but only in 25 mm cells that have a raw return within 50 mm of the
-  plane (`bridged_measured_area_m2`): measured surface the model had dropped,
-  never a bridge across nothing. Then cracks up to 50 mm are closed, teeth
-  under 7.5 mm removed, outlines simplified at 15 mm, and the outline never
-  moves more than 50 mm beyond that. A hole completely surrounded by
-  the plane is filled when it is not rectangular (area / bounding box < 0.85)
-  and no larger than a scan shadow (1 m2, 1.5 m); rectangular holes wider than
-  40 mm are doors, windows, vents and service openings and stay open; larger
-  irregular voids are not invented. Filled area is reported per plane as
-  `filled_gap_area_m2` and is inferred continuity, not measured area
-  (`evidence_status` says so on every replacement part).
+  mask, plus 0.3 m, for partly exterior planes) are regularized, and every
+  plane reports what was measured and what was inferred:
+  - recovery (measured): inside the rectangle of the plane's main pieces every
+    25 mm cell with a raw return within 50 mm of the plane is restored
+    (`recovered_measured_area_m2`), surface that earlier cleanup thresholds
+    dropped, never a bridge across nothing;
+  - outline notches up to 0.15 m deep are closed (`inferred_outline_area_m2`);
+  - a hole completely surrounded by the plane is filled when it is not
+    rectangular (area / bounding box < 0.85) and no larger than a scan shadow
+    (1 m2, 1.5 m) (`filled_gap_area_m2`); rectangular holes wider than 40 mm
+    are doors, windows, vents and service openings, kept open and re-cut as
+    straight rectangles; larger irregular voids are not invented;
+  - islands under 0.02 m2 are dropped (`dropped_islands_m2`);
+  - every ring is snapped to axis-aligned edges when no vertex moves more than
+    50 mm (`snapped_rings`); rings that would need more stay as measured
+    (`unsnapped_rings`).
+- `recover_recessed_faces.py` (`--recover-recessed`): behind every void in
+  an exterior plane's rectangle where the returns show a surface 50-300 mm
+  off the plane and the model has no surface within 30 mm of those returns,
+  the dominant offset is fitted, the covered 25 mm cells are meshed and the
+  face is added as an amber observed vertical face with unverified identity:
+  measured surface, no thickness, no opening, no back face. Voids whose
+  surface the model already carries are listed as `already_in_model`.
 - `assemble_revision.py` appends the replacements and hides the replaced
   groups; `scope_verification.json` proves every unselected native group read
   back with the same face count, area and visibility, and `review_exterior_*.png`

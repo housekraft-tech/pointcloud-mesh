@@ -53,6 +53,8 @@ def main():
     parser.add_argument('--label', default='Exterior wall refinement')
     parser.add_argument('--skip-export', action='store_true', help='Stop after selection and regularization')
     parser.add_argument('--reuse', action='store_true', help='Keep an existing selection.json and walls/patches.build.json in --out')
+    parser.add_argument('--recover-recessed', action='store_true',
+                        help='Add recessed/stepped faces the model lacks behind exterior voids (recover_recessed_faces.py)')
     args = parser.parse_args()
     previous = Path(args.previous).resolve(); out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -62,13 +64,16 @@ def main():
     model = previous / 'reopened_visible.build.json'
     parts = json.loads(model.read_text())['parts']
     scripts = Path(__file__).parent
-    reusable = args.reuse and (out / 'selection.json').exists() and (out / 'selection_audit.json').exists() \
-        and (out / 'walls' / 'patches.build.json').exists()
+    reusable = args.reuse and (out / 'selection.json').exists() and (out / 'selection_audit.json').exists()
     if reusable:
         selection = json.loads((out / 'selection.json').read_text())
         selection_audit = json.loads((out / 'selection_audit.json').read_text())
         counts = summary(selection, selection_audit)
-        print('Reusing selection and wall patches in', out, flush=True)
+        print('Reusing selection in', out, flush=True)
+        if not (out / 'walls' / 'patches.build.json').exists():
+            subprocess.run([sys.executable, str(scripts / 'regularize_wall_surfaces.py'), '--model', str(model),
+                            '--out', str(out / 'walls'), '--selection', str(out / 'selection.json'),
+                            '--evidence-cache', args.evidence_cache], check=True)
     else:
         occupancy = Occupancy(load_returns(args.evidence_cache))
         selection, selection_audit = select(parts, occupancy)
@@ -82,15 +87,23 @@ def main():
         subprocess.run([sys.executable, str(scripts / 'regularize_wall_surfaces.py'), '--model', str(model),
                         '--out', str(out / 'walls'), '--selection', str(out / 'selection.json'),
                         '--evidence-cache', args.evidence_cache], check=True)
+    fragments = [str(out / 'walls' / 'patches.build.json')]
+    if args.recover_recessed:
+        subprocess.run([sys.executable, str(scripts / 'recover_recessed_faces.py'), '--model', str(model),
+                        '--selection', str(out / 'selection.json'), '--evidence-cache', args.evidence_cache,
+                        '--out', str(out / 'recessed')], check=True)
+        if json.loads((out / 'recessed' / 'recessed_faces.build.json').read_text())['parts']:
+            fragments.append(str(out / 'recessed' / 'recessed_faces.build.json'))
     if args.skip_export:
         return
     audit = json.loads((previous / 'native_sdk_audit.json').read_text())
-    command = [sys.executable, str(scripts / 'assemble_revision.py'), '--previous', str(previous),
-               '--fragment', str(out / 'walls' / 'patches.build.json'), '--out', str(out),
+    command = [sys.executable, str(scripts / 'assemble_revision.py'), '--previous', str(previous), '--out', str(out),
                '--native-name', args.native_name, '--label', args.label,
                '--note', 'Exterior faces selected in the raw returns (open air in front of the face); only those '
                          'planes regularized within 50 mm. Filled scan gaps are inferred continuity, not measured '
                          'area. Protected openings, interior faces, floors, stairs and ceilings retained.']
+    for fragment in fragments:
+        command.extend(['--fragment', fragment])
     for group in audit['groups']:
         if 'ceiling' in group['kind'] and not group['hidden']:
             command.extend(['--show', group['name']])
