@@ -88,8 +88,8 @@ def main():
     if floor:render(floor,folder/'checked_floor_planes.png',args.label+' | floor planes and actual level differences')
     if len({p['level'] for p in parts})>1:
         for level in sorted({p['level'] for p in parts}):
-            chosen=[p for p in parts if p['level']==level]
-            render(chosen,folder/f'checked_l{level}_3d.png',args.label+f' | level {level}')
+            chosen=[p for p in parts if p['level']==level and 'ceiling' not in p['kind']]
+            render(chosen,folder/f'checked_l{level}_3d.png',args.label+f' | level {level} interior cutaway')
         stairs=[p for p in parts if 'stair' in p['kind'] and p['kind'] not in ['stair_observed']]
         if stairs:render(stairs,folder/'checked_staircases.png',args.label+' | measured stair flights',offset=(1,-.3,.7))
         parking=[p for p in parts if 'plinth' in p['kind'] or p['name'] in ['Planar ground patch 29','Planar ground patch 30']]
