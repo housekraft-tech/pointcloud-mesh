@@ -74,7 +74,11 @@ def parallel_model_faces(parts, plane, band=(.02, .35), exclude_name=None, cache
     return shapely.union_all(covered) if covered else None
 
 
-def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_datum=.4):
+def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_datum=.4, own_face_gaps=()):
+    """``own_face_gaps``: distances from this plane to the other parallel planes of the same
+    wall part (its back face, plaster steps). Returns at one of those distances are the
+    wall's own other face seen through a gap in this one, not a recess, so they do not
+    block the fill."""
     poly = plane['poly']
     main = [p for p in polygon_parts(poly) if p.area >= .1]
     if not main:
@@ -110,12 +114,18 @@ def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_da
     near = tree.query_ball_point(xyz, .35, workers=-1)
     on_plane = np.zeros(len(uv), bool); other = np.zeros(len(uv), bool)
     pts = tree.data
+    gaps = np.asarray(own_face_gaps, float)
     for i, idx in enumerate(near):
         if not idx:
             continue
         d = np.abs(pts[idx] @ n - plane['offset'])
         on_plane[i] = (d <= .025).sum() >= 2
-        other[i] = not on_plane[i] and (d >= .05).sum() >= 2
+        away = d[d >= .05]
+        if on_plane[i] or len(away) < 2:
+            continue
+        if len(gaps) and np.min(np.abs(np.median(away) - gaps)) <= .03:
+            continue                       # the wall's own back face, seen through this one
+        other[i] = True
     half = pitch * .55
     boxes = lambda m: shapely.union_all(shapely.box(uv[m, 0] - half, uv[m, 1] - half, uv[m, 0] + half, uv[m, 1] + half)) if m.any() else None
     fill = candidate
@@ -165,7 +175,10 @@ def main():
             proposed, row = plane['poly'], None
             if chosen and mask is None and abs(plane['normal'][2]) < .01 and plane['poly'].area > .5:
                 other_faces = parallel_model_faces(context, plane, exclude_name=patch['name'], cache=cache)
-                proposed, row = complete_plane(plane, patch.get('level', 0), datums, tree, other_faces)
+                n = np.asarray(plane['normal'])
+                own = [abs(q['offset'] * float(np.sign(np.asarray(q['normal']) @ n)) - plane['offset'])
+                       for q in planes if q is not plane and abs(float(np.asarray(q['normal']) @ n)) > .99 and q['poly'].area > .2]
+                proposed, row = complete_plane(plane, patch.get('level', 0), datums, tree, other_faces, own_face_gaps=own)
                 if proposed is None:
                     proposed, row = plane['poly'], None
                 elif row['inferred_fill_m2'] + row['measured_fill_m2'] > 1e-3:

@@ -20,7 +20,7 @@ from filter_soulace_overlap import polygon_parts, mesh_from_polygon
 from regularize_wall_surfaces import load_selection, plane_selection, regularize
 from wall_surface_cleanup import planes_of, scene_of, distances
 
-COLOUR = [214, 176, 120]
+COLOUR = [221, 190, 110]   # wall colour: identity is still unverified in the name and evidence status
 
 
 def dominant_offset(offsets, bin_m=.01):
