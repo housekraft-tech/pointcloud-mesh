@@ -64,19 +64,8 @@ def recover_supported(region, support, pitch=.025, min_piece_m2=.1):
     ok = support(uv)
     if not ok.any():
         return region, 0.
-    # Merge supported cells into row runs first: a union of tens of thousands
-    # of single cells makes a staircase outline that later buffers choke on.
     half = pitch * .55
-    keys = np.round(uv[ok] / pitch).astype(np.int64)
-    order = np.lexsort((keys[:, 0], keys[:, 1]))
-    keys, centres = keys[order], uv[ok][order]
-    boxes = []
-    start = 0
-    for i in range(1, len(keys) + 1):
-        if i == len(keys) or keys[i, 1] != keys[start, 1] or keys[i, 0] != keys[i - 1, 0] + 1:
-            boxes.append(shapely.box(centres[start, 0] - half, centres[start, 1] - half, centres[i - 1, 0] + half, centres[i - 1, 1] + half))
-            start = i
-    cells = shapely.union_all(boxes)
+    cells = shapely.union_all(shapely.box(uv[ok, 0] - half, uv[ok, 1] - half, uv[ok, 0] + half, uv[ok, 1] + half))
     recovered = cells.intersection(candidate)
     return shapely.union_all([region, recovered]), float(recovered.area)
 
