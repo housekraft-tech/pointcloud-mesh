@@ -257,6 +257,16 @@ not in the reconstruction, so the same command runs on any property:
   (last level: the 90th percentile of face tops, which matches the scan's
   ceiling return peak); openings cut through the full thickness, niches
   only to their recessed face. Replaced face blocks are hidden.
+- `recover_wall_faces.py` (`--recover-wall-faces`): vertical return stacks
+  (25 mm plan cells whose returns span half the storey height) clear of every
+  existing face become face rectangles, so walls the checked model never had
+  still reach the solid stage.
+- `walls_from_reference.py` (`--reference <build.json>`): a drawing-based
+  reference model is registered to the scan frame by raster cross-correlation
+  of wall footprints; each reference wall the solids cover under 60 % is added
+  as a solid only when at least 3000 returns lie within 0.25 m of it at wall
+  height. Flat: 34 of 37 already present, walls 30, 33 and 35 added, tagged
+  INFERRED from drawing in a lighter colour.
 - `hide_duplicate_faces.py` (`--hide-duplicates`): native faces lying within
   30 mm of a rebuilt plane over 70 % of their area are hidden as references,
   which removes the doubled outlines in previews and in SketchUp.
