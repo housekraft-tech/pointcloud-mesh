@@ -70,6 +70,7 @@ def main():
                         help='Square floor and ceiling outlines, re-extruding solid slabs (declared inference)')
     parser.add_argument('--hide-kinds', default='',
                         help='Comma-separated kind substrings to hide, e.g. beam,plinth,junction_patch,wall_face_observed,floor_clean')
+    parser.add_argument('--scan-detail-planes', action='store_true', help='Turn unclassified scan-detail surfaces into rectilinear planes before the merge')
     parser.add_argument('--rectilinear', action='store_true',
                         help='Square every exterior ring and merge coplanar planes into rectangular blocks (declared inference)')
     parser.add_argument('--hide-duplicates', action='store_true',
@@ -143,6 +144,12 @@ def main():
             subprocess.run(command, check=True)
         if json.loads((out / 'rectangles' / 'patches.build.json').read_text())['parts']:
             fragments.append(str(out / 'rectangles' / 'patches.build.json'))
+    if args.scan_detail_planes:
+        if not (args.reuse and (out / 'scan_planes' / 'patches.build.json').exists()):
+            subprocess.run([sys.executable, str(scripts / 'scan_detail_planes.py'), '--model', str(model),
+                            '--out', str(out / 'scan_planes')], check=True)
+        if json.loads((out / 'scan_planes' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'scan_planes' / 'patches.build.json'))
     if args.rectilinear:
         command = [sys.executable, str(scripts / 'rectilinear_exterior.py'), '--selection', stage_selection,
                    '--out', str(out / 'rectilinear')]

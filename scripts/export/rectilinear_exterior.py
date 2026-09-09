@@ -97,7 +97,21 @@ def rectilinear(region, min_piece_m2=.1, min_hole_m2=.3, box_holes=True):
         if piece.area < min_piece_m2:
             report['dropped_m2'] += piece.area
             continue
-        outer, tolerance = square_ring(piece.exterior.coords, shapely.box(*piece.bounds))
+        if box_holes:
+            # Wall rule: the bounding rectangle minus rectangular notches (a door
+            # cut from the floor, a recess void at the edge); notches under
+            # ``min_hole_m2`` are filled. Only rectangles can result.
+            frame = shapely.box(*piece.bounds)
+            notches = [shapely.box(*n.bounds) for n in polygon_parts(frame.difference(shapely.Polygon(piece.exterior)))
+                       if n.area >= min_hole_m2]
+            outer = frame.difference(shapely.union_all(notches)) if notches else frame
+            if outer.is_empty or outer.area < .5 * piece.area:
+                outer, tolerance = square_ring(piece.exterior.coords, frame)
+            else:
+                tolerance = 0.
+            outer = max(polygon_parts(outer), key=lambda p: p.area) if outer.geom_type != 'Polygon' else outer
+        else:
+            outer, tolerance = square_ring(piece.exterior.coords, shapely.box(*piece.bounds))
         if tolerance is None:
             report['boxed_rings'] += 1
         else:
@@ -165,7 +179,7 @@ def main():
         source = root_source(part) or part['name']
         listed = source in selection
         chosen_planes = selection.get(source)     # None with listed=True means every plane
-        is_recess = 'recessed face' in part['name']
+        is_recess = 'recessed face' in part['name'] or 'Scan detail plane' in part['name']
         for plane in planes_of(part):
             chosen, mask = (True, None) if is_recess else plane_selection(chosen_planes, plane) if listed else (False, None)
             if chosen and abs(plane['normal'][2]) < .01:

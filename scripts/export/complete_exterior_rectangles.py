@@ -136,6 +136,28 @@ def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_da
         if len(gaps) and np.min(np.abs(np.median(away) - np.abs(gaps))) <= .03:
             continue                       # the wall's own back face, seen through this one
         other[i] = True
+    # See-through test: a doorway or window shows nothing at the wall but
+    # plenty of returns beyond the wall thickness in the same patch (the room
+    # or street behind). Such cells stay open whatever the 350 mm band says.
+    thickness = float(np.max(np.abs(gaps))) if len(gaps) else .3
+    reach = 3.
+    rect_uv = candidate.bounds
+    allp = tree.data
+    signed_all = allp @ n - plane['offset']
+    if material_sign:
+        beyond = (signed_all * material_sign > thickness + .05) & (signed_all * material_sign < reach)
+    else:
+        beyond = (np.abs(signed_all) > thickness + .05) & (np.abs(signed_all) < reach)
+    see = np.zeros(len(uv), bool)
+    if beyond.any():
+        buv = np.stack(((allp[beyond] - origin) @ up, (allp[beyond] - origin) @ vv), 1)
+        inside = (buv[:, 0] >= rect_uv[0]) & (buv[:, 0] <= rect_uv[2]) & (buv[:, 1] >= rect_uv[1]) & (buv[:, 1] <= rect_uv[3])
+        if inside.any():
+            keys, counts = np.unique(np.floor(buv[inside] / pitch).astype(np.int64), axis=0, return_counts=True)
+            dense = {tuple(k) for k, c in zip(keys, counts) if c >= 2}
+            cell = np.floor(uv / pitch).astype(np.int64)
+            see = np.array([tuple(c) in dense for c in cell]) & ~on_plane
+    other |= see
     half = pitch * .55
     boxes = lambda m: shapely.union_all(shapely.box(uv[m, 0] - half, uv[m, 1] - half, uv[m, 0] + half, uv[m, 1] + half)) if m.any() else None
     fill = candidate
@@ -148,7 +170,7 @@ def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_da
     if openings:
         completed = completed.difference(shapely.union_all(openings))
     inferred = float(fill.area - (measured.intersection(fill).area if measured is not None else 0.))
-    return completed, {'inferred_fill_m2': inferred,
+    return completed, {'inferred_fill_m2': inferred, 'see_through_open_m2': float(boxes(see).area) if see.any() else 0.,
                        'measured_fill_m2': float(measured.intersection(fill).area) if measured is not None else 0.,
                        'left_open_other_surface_m2': float(other_region.area) if other_region is not None else 0.,
                        'rectangle': [float(x) for x in rect.bounds], 'z_range': [float(z_lo), float(z_hi)]}
