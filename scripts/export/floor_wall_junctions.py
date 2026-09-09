@@ -230,6 +230,7 @@ def main():
     payload = json.loads(Path(args.model).read_text()); parts = payload['parts']
     regions, rows = measure(parts)
     report = {'source': str(Path(args.model).resolve()), 'fix_bound_mm': MAX_FIX_M * 1000,
+              'horizontal_fix_bound_mm': args.max_strip_mm,
               'support_bound_mm': SUPPORT_M * 1000, 'before': summarise(rows), 'walls_before': rows}
     print(json.dumps(report['before'], indent=2), flush=True)
     if not args.fix:
@@ -253,7 +254,7 @@ def main():
             continue
         strip = extension_strips(by_name[row['name']], region, args.max_strip_mm / 1000)
         if strip is None or strip.is_empty:
-            refused.append({'wall': row['name'], 'reason': 'base further than 150 mm from the floor everywhere; left open'})
+            refused.append({'wall': row['name'], 'reason': f'no eligible base strip within {args.max_strip_mm:g} mm; left open'})
             continue
         supported, _ = supported_polygon(strip, np.array([0, 0, datum]), np.array([1., 0, 0]), np.array([0, 1., 0]),
                                          tree, cutoff=SUPPORT_M, min_area=MIN_STRIP_M2)
@@ -299,7 +300,7 @@ def main():
         replaced[part['name']] = {**part, 'name': part['name'] + ' - junction closed',
                                   'v': rebuilt.vertices.tolist(), 'f': rebuilt.faces.tolist(),
                                   'source_group_names': [part['name']],
-                                  'evidence_status': 'floor_extended_to_wall_base_up_to_150mm_clipped_to_50mm_raw_support'}
+                                  'evidence_status': f'floor_extended_to_wall_base_up_to_{args.max_strip_mm:g}mm_clipped_to_50mm_raw_support'}
         before_area = sum(shapely.union_all(shapely.polygons(
             mesh.triangles[np.flatnonzero(up & (abs(mesh.triangles_center[:, 2] - z) < 5e-4))][:, :, :2])).area for z in own)
         floor_changes.append({'floor': part['name'], 'added_area_m2': float(sum(o.area for o in own.values()) - before_area),
