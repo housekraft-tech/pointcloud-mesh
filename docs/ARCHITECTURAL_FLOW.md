@@ -162,3 +162,47 @@ are measured surfaces with unverified identity: they add no back face,
 thickness or opening. Rerun `wall_surface_review.py` and
 `floor_wall_junctions.py` (without `--fix`) on the new
 `reopened_visible.build.json` to confirm the saved file.
+
+## Exterior face refinement
+
+Outer faces are the ones a viewer sees from the street, so they are held to a
+different standard from interior faces: scan shadows from cars, plants and
+railings are closed and outlines are straightened, while interior faces stay
+exactly as measured. Which faces are exterior is decided in the raw returns,
+not in the reconstruction, so the same command runs on any property:
+
+```powershell
+.\venv311\Scripts\python.exe scripts\export\run_exterior_refinement.py --previous <checked folder> --evidence-cache <work>\evidence_10mm.npz --out <work> --native-name <name>.skp --label "..."
+```
+
+- `select_exterior_walls.py`: for every near-exact vertical plane of every
+  wall or parapet part, a grid of in-plane samples marches away from the plane
+  on both sides through a 50 mm occupancy grid of the raw returns (solid at
+  >= 3 returns). Along the free path, from 0.35 m (past any wall thickness) to
+  4 m, a second march goes straight up; leaving the scanned volume without a
+  return means the sample looks at open air. Covered rooms always carry their
+  ceiling in the scan, terraces, compounds and streets never do, and neither
+  floor completeness nor the model's ceilings enter the decision. A plane with
+  >= 60 % open samples is an `exterior_face`; 20-60 % is a
+  `partly_exterior_face` (a wall that leaves the house and continues as a
+  garden wall) and carries the in-plane mask of its open samples; the rest are
+  `interior_face` and are never modified. `selection_*.png` colour every wall
+  part by its strongest class from four outside viewpoints.
+- `regularize_wall_surfaces.py`: only the selected planes (only inside the
+  mask, plus 0.3 m, for partly exterior planes) are regularized. A plane that
+  earlier cleanup left as hundreds of islands is bridged across gaps up to
+  0.6 m, but only in 25 mm cells that have a raw return within 50 mm of the
+  plane (`bridged_measured_area_m2`): measured surface the model had dropped,
+  never a bridge across nothing. Then cracks up to 50 mm are closed, teeth
+  under 7.5 mm removed, outlines simplified at 15 mm, and the outline never
+  moves more than 50 mm beyond that. A hole completely surrounded by
+  the plane is filled when it is not rectangular (area / bounding box < 0.85)
+  and no larger than a scan shadow (1 m2, 1.5 m); rectangular holes wider than
+  40 mm are doors, windows, vents and service openings and stay open; larger
+  irregular voids are not invented. Filled area is reported per plane as
+  `filled_gap_area_m2` and is inferred continuity, not measured area
+  (`evidence_status` says so on every replacement part).
+- `assemble_revision.py` appends the replacements and hides the replaced
+  groups; `scope_verification.json` proves every unselected native group read
+  back with the same face count, area and visibility, and `review_exterior_*.png`
+  are rendered from the reopened geometry.
