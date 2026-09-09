@@ -13,6 +13,8 @@ from PIL import Image,ImageDraw,ImageFont
 def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150),edges=True,edge_depth_m=.015):
     width,height=size;canvas=np.full((height,width,3),[247,248,250],dtype=np.uint8)
     depth=np.full((height,width),-np.inf,dtype=np.float32)
+    gradient_x=np.zeros((height,width),dtype=np.float32)
+    gradient_y=np.zeros((height,width),dtype=np.float32)
     look=np.asarray(offset,dtype=float);look/=np.linalg.norm(look)
     up=np.array([0,0,1.]) if abs(look[2])<.99 else np.array([0,1.,0])
     right=np.cross(up,look);right/=np.linalg.norm(right);up=np.cross(look,right)
@@ -22,7 +24,7 @@ def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150),edges=True,e
     centre=(hi+lo)/2;light=np.array([.3,-.4,.86]);light/=np.linalg.norm(light)
     total=0;started=time.time()
     for part in parts:
-        v=np.asarray(part['v']);faces=np.asarray(part['f']);p=v@basis
+        v=np.asarray(part['v'],dtype=float);faces=np.asarray(part['f']);p=v@basis
         p[:,0]=(p[:,0]-centre[0])*scale+width/2
         p[:,1]=-(p[:,1]-centre[1])*scale+height/2+15
         triangle=p[faces];world=v[faces]
@@ -44,6 +46,8 @@ def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150),edges=True,e
             z=w0*a[2]+w1*b[2]+w2*c[2]
             view=depth[ymin:ymax+1,xmin:xmax+1];keep=inside&(z>view)
             view[keep]=z[keep];canvas[ymin:ymax+1,xmin:xmax+1][keep]=colour
+            gradient_x[ymin:ymax+1,xmin:xmax+1][keep]=((b[1]-c[1])*(a[2]-c[2])+(c[1]-a[1])*(b[2]-c[2]))/den
+            gradient_y[ymin:ymax+1,xmin:xmax+1][keep]=((c[0]-b[0])*(a[2]-c[2])+(a[0]-c[0])*(b[2]-c[2]))/den
             total+=1
     if edges:
         # Dark lines where the depth buffer jumps: silhouettes, recesses and
@@ -54,9 +58,15 @@ def render(parts,path,title,offset=(1.3,-1.5,1.25),size=(1600,1150),edges=True,e
             a=depth[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]
             b=depth[max(-dy,0):height-max(dy,0),max(-dx,0):width-max(dx,0)]
             both=np.isfinite(a)&np.isfinite(b)
-            diff=np.zeros(a.shape,bool);diff[both]=np.abs(a[both]-b[both])>edge_depth_m
+            gx=gradient_x[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]
+            gy=gradient_y[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]
+            # Remove the depth change expected across the same flat face.
+            # Without this, sloped walls/floors turn almost entirely black.
+            diff=np.zeros(a.shape,bool)
+            diff[both]=np.abs(a[both]-b[both]-gx[both]*dx-gy[both]*dy)>edge_depth_m
             jump[max(dy,0):height-max(-dy,0),max(dx,0):width-max(-dx,0)]|=diff&(a>=np.where(both,b,-np.inf))
-        canvas[jump&filled]=(canvas[jump&filled]*.35).astype(np.uint8)
+        thick=jump.copy();thick[1:,:]|=jump[:-1,:];thick[:,1:]|=jump[:,:-1]
+        canvas[thick&filled]=(canvas[thick&filled]*.25).astype(np.uint8)
     image=Image.fromarray(canvas);draw=ImageDraw.Draw(image)
     try:
         heading=ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf',27)

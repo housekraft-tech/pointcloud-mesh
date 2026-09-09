@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--out', required=True); parser.add_argument('--native-name', required=True)
     parser.add_argument('--label', required=True); parser.add_argument('--note', required=True)
     parser.add_argument('--hide', action='append', default=[], help='JSON list file of native groups to hide as references')
+    parser.add_argument('--show', action='append', default=[], help='Exact existing group name to show, including a measured ceiling')
     args = parser.parse_args()
     previous = Path(args.previous).resolve(); out = Path(args.out).resolve(); out.mkdir(parents=True, exist_ok=True)
     audit = json.loads((previous / 'native_sdk_audit.json').read_text())
@@ -64,6 +65,7 @@ def main():
             final[index] = clean; sanitized += 1
     previous_payload = json.loads((previous / 'additions.build.json').read_text())
     payload = {'label': args.label, 'source_native': source_native, 'expected_base_groups': len(native_names),
+               'visible_source_groups': args.show,
                'reference_source_names': sorted(references), 'parts': final,
                'render_image_names': previous_payload.get('render_image_names', ['3D', 'Top', 'Front', 'Side']),
                'source_label': 'Bounded junction, wall-artifact and observed-face revision of the checked native model',
@@ -80,7 +82,7 @@ def main():
     levels = sorted({p['level'] for p in parts})
     if len(levels) > 1:
         for level in levels:
-            render([p for p in parts if p['level'] == level], out / f'checked_l{level}_3d.png', args.label + f' | level {level}')
+            render([p for p in parts if p['level'] == level and 'ceiling' not in p['kind']], out / f'checked_l{level}_3d.png', args.label + f' | level {level} interior cutaway')
     walls = [p for p in parts if p['kind'].startswith(('wall', 'parapet'))]
     render(walls, out / 'checked_walls_3d.png', args.label + ' | wall faces only', offset=(-1.3, -1.5, 1.0))
     (out / 'flow_report.json').write_text(json.dumps({

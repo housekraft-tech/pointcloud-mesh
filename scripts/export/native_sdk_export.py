@@ -228,8 +228,14 @@ class SDK:
         if old:self.call('SUModelRemoveScenes',model,C.c_size_t(len(old)),(Ref*len(old))(*old))
         xyz=np.vstack([p['v'] for p in parts]);lo,hi=xyz.min(0),xyz.max(0);centre=(lo+hi)/2;s=float(max(hi-lo))
         groups=self.groups(model)
-        for index,(name,offset,up) in enumerate([('3D',[1.3,-1.5,1.25],[0,0,1]),('Top',[0,0,2],[0,1,0]),
-                                                ('Front',[0,-2,0],[0,0,1]),('Side',[2,0,0],[0,0,1])]):
+        roof_visible = {r['name'] for r in self.snapshot(model)
+                        if 'ceiling' in r['kind'] and not r['hidden']}
+        views = [('3D',[1.3,-1.5,1.25],[0,0,1]),('Top',[0,0,2],[0,1,0]),
+                 ('Front',[0,-2,0],[0,0,1]),('Side',[2,0,0],[0,0,1])]
+        if roof_visible: views.append(('Interior cutaway',[1.3,-1.5,1.25],[0,0,1]))
+        for level in sorted({p['level'] for p in parts}):
+            views.append((f'L{level} interior',[1.3,-1.5,1.25],[0,0,1]))
+        for index,(name,offset,up) in enumerate(views):
             camera=self.new('Camera');eye=Point(*((centre+np.asarray(offset)*s)*SCALE));target=Point(*(centre*SCALE));up=Point(*up)
             self.call('SUCameraSetOrientation',camera,C.byref(eye),C.byref(target),C.byref(up))
             self.call('SUCameraSetPerspective',camera,C.c_bool(False))
@@ -241,6 +247,13 @@ class SDK:
             for group in groups:
                 drawing=self.api.SUGroupToDrawingElement(group);hidden=C.c_bool()
                 self.call('SUDrawingElementGetHidden',drawing,C.byref(hidden))
+                if name == 'Interior cutaway' and self.name(group) in roof_visible:
+                    hidden = C.c_bool(True)
+                if name.endswith(' interior'):
+                    level = self.attribute(group,'CoverageBaseline','level',0)
+                    kind = self.attribute(group,'CoverageBaseline','kind','')
+                    if name != f'L{level} interior' or 'ceiling' in kind:
+                        hidden = C.c_bool(True)
                 self.call('SUSceneSetDrawingElementHidden',scene,drawing,hidden)
             self.call('SUModelAddScenes',model,C.c_size_t(1),(Ref*1)(scene))
             if index==0:self.call('SUModelSetCamera',model,C.byref(camera))
@@ -269,7 +282,9 @@ def export(payload_path,destination,source_override=None,policy_path=None):
     policy=json.loads(Path(policy_path).read_text()) if policy_path else {}
     refs=set(payload.get('reference_source_names',[]))
     refs.update(policy.get('paired_solid_references',[]));refs.update(policy.get('demoted_stair_wall_hypotheses',[]))
-    visible=set(policy.get('bounded_wall_groups_visible',[]))|set(policy.get('entry_step_groups_visible',[]))
+    visible=set(policy.get('bounded_wall_groups_visible',[]))|set(policy.get('entry_step_groups_visible',[]))|set(payload.get('visible_source_groups',[]))
+    unknown_visible = visible - {sdk.name(g) for g in sdk.groups(model)}
+    if unknown_visible: raise ValueError(f'Unknown visible groups: {sorted(unknown_visible)}')
     for part in payload['parts']:refs.update(part.get('source_group_names',[]))
     refs.difference_update(visible)
     for group in sdk.groups(model):
@@ -278,7 +293,7 @@ def export(payload_path,destination,source_override=None,policy_path=None):
         if name in refs:reference=True
         if name in visible:reference=False
         sdk.set_attribute(group,'CoverageBaseline','reference_only',reference)
-        sdk.call('SUDrawingElementSetHidden',sdk.api.SUGroupToDrawingElement(group),C.c_bool(reference or 'ceiling' in kind))
+        sdk.call('SUDrawingElementSetHidden',sdk.api.SUGroupToDrawingElement(group),C.c_bool(reference or ('ceiling' in kind and name not in visible)))
         if kind.startswith('wall'):sdk.set_attribute(group,'ObservedEvidence','thickness_verified',False)
     after=sdk.snapshot(model);after_by_name={r['name']:r for r in after}
     for old in before:
@@ -322,7 +337,7 @@ def verify_saved(payload_path,destination,source_override=None,policy_path=None)
             raise ValueError(f'Saved source geometry changed beyond round-off: {old["name"]}, transform delta {delta}')
     policy=json.loads(Path(policy_path).read_text()) if policy_path else {}
     refs=set(payload.get('reference_source_names',[]))|set(policy.get('paired_solid_references',[]))|set(policy.get('demoted_stair_wall_hypotheses',[]))
-    visible=set(policy.get('bounded_wall_groups_visible',[]))|set(policy.get('entry_step_groups_visible',[]))
+    visible=set(policy.get('bounded_wall_groups_visible',[]))|set(policy.get('entry_step_groups_visible',[]))|set(payload.get('visible_source_groups',[]))
     for part in payload['parts']:
         refs.update(part.get('source_group_names',[]))
         expected=trimesh.Trimesh(part['v'],part['f'],process=False).area
