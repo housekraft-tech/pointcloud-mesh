@@ -71,7 +71,10 @@ def main():
     parser.add_argument('--model', required=True)
     parser.add_argument('--out', required=True)
     parser.add_argument('--kinds', default='scan_detail')
+    parser.add_argument('--thickness', type=float, default=0., help='Extrude vertical planes into single-sided walls of this thickness (m)')
+    parser.add_argument('--evidence-cache', help='raw returns; with --thickness, the wall goes to the side with more returns behind the face')
     args = parser.parse_args()
+    returns = np.load(args.evidence_cache, allow_pickle=True)['p'] if args.evidence_cache else None
     kinds = tuple(k.strip() for k in args.kinds.split(','))
     parts = json.loads(Path(args.model).read_text())['parts']
     out_parts, report = [], []
@@ -85,8 +88,25 @@ def main():
             if m is None:
                 continue
             vertical = plane['axis'] != 2
+            if vertical and args.thickness > 0:
+                n = np.zeros(3); n[plane['axis']] = 1.
+                side = 1.
+                if returns is not None:
+                    lo, hi = m.vertices.min(0), m.vertices.max(0)
+                    box = np.all((returns >= lo - .45) & (returns <= hi + .45), axis=1)
+                    d = returns[box] @ n - plane['offset']
+                    side = 1. if ((d >= .05) & (d <= .4)).sum() >= ((d <= -.05) & (d >= -.4)).sum() else -1.
+                solids = []
+                for piece in polygon_parts(plane['poly']):
+                    uv = np.asarray(piece.exterior.coords)
+                    xyz = plane['origin'] + uv[:, :1] * plane['u'] + uv[:, 1:] * plane['v']
+                    solid = trimesh.creation.extrude_polygon(shapely.Polygon(uv), args.thickness)
+                    # extrude_polygon works in the polygon's own xy: rebuild in world by mapping (u, v, w) -> origin + u*U + v*V + w*n*side
+                    verts = plane['origin'] + solid.vertices[:, :1] * plane['u'] + solid.vertices[:, 1:2] * plane['v'] + solid.vertices[:, 2:3] * (n * side)
+                    solids.append(trimesh.Trimesh(verts, solid.faces, process=False))
+                m = trimesh.util.concatenate(solids)
             name = f"Scan detail plane {'xyz'[plane['axis']]}{k:02d} at {plane['offset']:.3f} m - rectilinear - INFERRED outline"
-            out_parts.append({'name': name, 'kind': 'wall_measured' if vertical else 'ceiling_scan_plane',
+            out_parts.append({'name': name, 'kind': ('wall_solid' if args.thickness > 0 else 'wall_measured') if vertical else 'ceiling_scan_plane',
                               'level': part.get('level', 0), 'colour': WALL_COLOUR if vertical else CEILING_COLOUR,
                               'v': m.vertices.tolist(), 'f': m.faces.tolist(), 'source_group_names': [part['name']],
                               'merge_coplanar_faces': True, 'evidence_status': 'scan_detail_dominant_plane_squared_INFERRED_outline',
