@@ -221,6 +221,16 @@ not in the reconstruction, so the same command runs on any property:
   behind an opening); rectangular openings stay open; cells where the scan
   shows nothing are filled and reported as `inferred_fill_m2`. The evidence
   status of these parts ends in `INFERRED`.
+- `rectilinear_exterior.py` (`--rectilinear`, declared inference): the
+  user's "only sharp 90-degree corners" standard. Every exterior ring is
+  snapped to axis-aligned edges with a rising tolerance (50, 100, 200,
+  350 mm) or replaced by its bounding rectangle; holes survive only as
+  rectangles (straightened openings, boxed recess voids); pieces under 0.1 m2
+  are dropped; parallel planes within 15 mm on one level are merged into one
+  block on their mean plane, so one wall run is one face. Blocks are named
+  `L<n> exterior block <k> - rectilinear - INFERRED outline` and list every
+  part they merged; `rectilinear/audit.json` records boxed rings, dropped
+  area and the offset spread absorbed by each merge.
 - `hide_duplicate_faces.py` (`--hide-duplicates`): native faces lying within
   30 mm of a rebuilt plane over 70 % of their area are hidden as references,
   which removes the doubled outlines in previews and in SketchUp.

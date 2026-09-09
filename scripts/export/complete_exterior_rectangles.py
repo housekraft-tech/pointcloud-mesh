@@ -114,16 +114,26 @@ def complete_plane(plane, level, datums, tree, other_faces, pitch=.025, reach_da
     near = tree.query_ball_point(xyz, .35, workers=-1)
     on_plane = np.zeros(len(uv), bool); other = np.zeros(len(uv), bool)
     pts = tree.data
-    gaps = np.asarray(own_face_gaps, float)
+    gaps = np.asarray(own_face_gaps, float)          # signed: positive towards the wall's back face
+    # A recess or niche lies on the material side of the face. A surface on
+    # the other side (room or street) is furniture, a car, a railing: an
+    # occluder, never a reason to leave a hole in the wall.
+    material_sign = float(np.sign(gaps[np.argmax(np.abs(gaps))])) if len(gaps) else 0.
     for i, idx in enumerate(near):
         if not idx:
             continue
-        d = np.abs(pts[idx] @ n - plane['offset'])
+        signed = pts[idx] @ n - plane['offset']
+        d = np.abs(signed)
         on_plane[i] = (d <= .025).sum() >= 2
-        away = d[d >= .05]
-        if on_plane[i] or len(away) < 2:
+        if on_plane[i]:
             continue
-        if len(gaps) and np.min(np.abs(np.median(away) - gaps)) <= .03:
+        if material_sign:
+            away = signed[(signed * material_sign >= .05)] * material_sign
+        else:
+            away = d[d >= .05]
+        if len(away) < 2:
+            continue
+        if len(gaps) and np.min(np.abs(np.median(away) - np.abs(gaps))) <= .03:
             continue                       # the wall's own back face, seen through this one
         other[i] = True
     half = pitch * .55
@@ -165,9 +175,9 @@ def main():
     out_parts, report, cache = [], [], {}
     for patch in patches:
         source = patch['source_group_names'][0]
-        chosen_planes = selection.get(source)
-        if chosen_planes is None:
+        if source not in selection:
             continue
+        chosen_planes = selection[source]        # None means every plane (plain list selection)
         planes = list(planes_of(patch))
         meshes, rows, changed = [], [], False
         for plane in planes:
@@ -176,7 +186,7 @@ def main():
             if chosen and mask is None and abs(plane['normal'][2]) < .01 and plane['poly'].area > .5:
                 other_faces = parallel_model_faces(context, plane, exclude_name=patch['name'], cache=cache)
                 n = np.asarray(plane['normal'])
-                own = [abs(q['offset'] * float(np.sign(np.asarray(q['normal']) @ n)) - plane['offset'])
+                own = [q['offset'] * float(np.sign(np.asarray(q['normal']) @ n)) - plane['offset']
                        for q in planes if q is not plane and abs(float(np.asarray(q['normal']) @ n)) > .99 and q['poly'].area > .2]
                 proposed, row = complete_plane(plane, patch.get('level', 0), datums, tree, other_faces, own_face_gaps=own)
                 if proposed is None:

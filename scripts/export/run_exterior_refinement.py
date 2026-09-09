@@ -44,6 +44,15 @@ def selection_preview(parts, audit, out, label):
     render_exterior_views(painted, out, f'{label} | red exterior, amber partly exterior, grey interior', 'selection')
 
 
+def stage_selection_early(out, parts, args):
+    """Selection file for the regularize stage: every wall in all-walls mode, else the scan selection."""
+    if args.all_walls:
+        names = [p['name'] for p in parts if p.get('kind', '').startswith(('wall', 'parapet'))]
+        (out / 'selection_all_walls.json').write_text(json.dumps(names, indent=2))
+        return str(out / 'selection_all_walls.json')
+    return str(out / 'selection.json')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--previous', required=True, help='folder of the checked model being revised')
@@ -53,6 +62,10 @@ def main():
     parser.add_argument('--label', default='Exterior wall refinement')
     parser.add_argument('--skip-export', action='store_true', help='Stop after selection and regularization')
     parser.add_argument('--reuse', action='store_true', help='Keep an existing selection.json and walls/patches.build.json in --out')
+    parser.add_argument('--all-walls', action='store_true',
+                        help='Apply regularize, rectangle and rectilinear stages to every wall plane, interior faces included')
+    parser.add_argument('--rectilinear', action='store_true',
+                        help='Square every exterior ring and merge coplanar planes into rectangular blocks (declared inference)')
     parser.add_argument('--hide-duplicates', action='store_true',
                         help='Hide native faces that lie within 30 mm of a rebuilt plane over 70 %% of their area')
     parser.add_argument('--complete-rectangles', action='store_true',
@@ -76,7 +89,7 @@ def main():
         print('Reusing selection in', out, flush=True)
         if not (out / 'walls' / 'patches.build.json').exists():
             subprocess.run([sys.executable, str(scripts / 'regularize_wall_surfaces.py'), '--model', str(model),
-                            '--out', str(out / 'walls'), '--selection', str(out / 'selection.json'),
+                            '--out', str(out / 'walls'), '--selection', stage_selection_early(out, parts, args),
                             '--evidence-cache', args.evidence_cache], check=True)
     else:
         occupancy = Occupancy(load_returns(args.evidence_cache))
@@ -89,9 +102,16 @@ def main():
         (out / 'selection_audit.json').write_text(json.dumps(selection_audit, indent=2))
         selection_preview(parts, selection_audit, out, args.label)
         subprocess.run([sys.executable, str(scripts / 'regularize_wall_surfaces.py'), '--model', str(model),
-                        '--out', str(out / 'walls'), '--selection', str(out / 'selection.json'),
+                        '--out', str(out / 'walls'), '--selection', stage_selection_early(out, parts, args),
                         '--evidence-cache', args.evidence_cache], check=True)
     fragments = [str(out / 'walls' / 'patches.build.json')]
+    # All-walls mode: the regularize, rectangle and rectilinear stages take every
+    # wall plane (interior faces too); recessed-face recovery stays exterior-only.
+    stage_selection = str(out / 'selection.json')
+    if args.all_walls:
+        names = [p['name'] for p in parts if p.get('kind', '').startswith(('wall', 'parapet'))]
+        (out / 'selection_all_walls.json').write_text(json.dumps(names, indent=2))
+        stage_selection = str(out / 'selection_all_walls.json')
     if args.recover_recessed:
         if not (args.reuse and (out / 'recessed' / 'recessed_faces.build.json').exists()):
             subprocess.run([sys.executable, str(scripts / 'recover_recessed_faces.py'), '--model', str(model),
@@ -101,7 +121,7 @@ def main():
             fragments.append(str(out / 'recessed' / 'recessed_faces.build.json'))
     if args.complete_rectangles:
         command = [sys.executable, str(scripts / 'complete_exterior_rectangles.py'), '--model', str(model),
-                   '--patches', str(out / 'walls' / 'patches.build.json'), '--selection', str(out / 'selection.json'),
+                   '--patches', str(out / 'walls' / 'patches.build.json'), '--selection', stage_selection,
                    '--evidence-cache', args.evidence_cache, '--out', str(out / 'rectangles')]
         if len(fragments) > 1:
             command.extend(['--recessed', fragments[1]])
@@ -109,6 +129,14 @@ def main():
             subprocess.run(command, check=True)
         if json.loads((out / 'rectangles' / 'patches.build.json').read_text())['parts']:
             fragments.append(str(out / 'rectangles' / 'patches.build.json'))
+    if args.rectilinear:
+        command = [sys.executable, str(scripts / 'rectilinear_exterior.py'), '--selection', stage_selection,
+                   '--out', str(out / 'rectilinear')]
+        for fragment in fragments:
+            command.extend(['--fragment', fragment])
+        if not (args.reuse and (out / 'rectilinear' / 'patches.build.json').exists()):
+            subprocess.run(command, check=True)
+        fragments.append(str(out / 'rectilinear' / 'patches.build.json'))
     hide_files = []
     if args.hide_duplicates:
         command = [sys.executable, str(scripts / 'hide_duplicate_faces.py'), '--model', str(model), '--out', str(out / 'hide')]
