@@ -36,7 +36,7 @@ def square_part(part):
         outline = plan_outline(mesh)
         if outline is None:
             return None, None
-        squared, report = rectilinear(outline)
+        squared, report = rectilinear(outline, box_holes=False)
         if squared is None:
             return None, report
         z0, z1 = float(mesh.vertices[:, 2].min()), float(mesh.vertices[:, 2].max())
@@ -52,7 +52,7 @@ def square_part(part):
         if abs(plane['normal'][2]) < .99:
             m = mesh_from_polygon(plane['poly'], plane['origin'], plane['u'], plane['v'])
         else:
-            squared, report = rectilinear(plane['poly'])
+            squared, report = rectilinear(plane['poly'], box_holes=False)
             reports.append(report)
             if squared is None:
                 continue

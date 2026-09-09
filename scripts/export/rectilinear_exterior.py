@@ -90,7 +90,7 @@ def square_ring(coords, fallback_box):
     return fallback_box, None
 
 
-def rectilinear(region, min_piece_m2=.1, min_hole_m2=.3):
+def rectilinear(region, min_piece_m2=.1, min_hole_m2=.3, box_holes=True):
     """Axis-aligned version of a plane polygon; returns (polygon, report)."""
     pieces, report = [], {'pieces': 0, 'dropped_m2': 0., 'boxed_rings': 0, 'snapped_rings': 0, 'max_tolerance_m': 0.}
     for piece in polygon_parts(region):
@@ -109,11 +109,14 @@ def rectilinear(region, min_piece_m2=.1, min_hole_m2=.3):
                 box, tolerance = square_ring(ring.coords, shapely.box(*hole.bounds))
                 holes.append(shapely.box(*box.bounds))
             elif hole.area >= min_hole_m2:
-                # A large irregular hole (a recess void, a wall footprint in a
-                # floor) is traced orthogonally; its bounding box would swallow
-                # whatever lies beside it.
-                squared_hole, _ = square_ring(ring.coords, shapely.box(*hole.bounds))
-                holes.append(squared_hole)
+                # In a wall a large hole is a niche or recess void: a rectangle.
+                # In a floor it is a wall footprint, whose bounding box would
+                # swallow the rooms beside it, so there it is traced instead.
+                if box_holes:
+                    holes.append(shapely.box(*hole.bounds))
+                else:
+                    squared_hole, _ = square_ring(ring.coords, shapely.box(*hole.bounds))
+                    holes.append(squared_hole)
         result = outer.difference(shapely.union_all(holes)) if holes else outer
         pieces.extend(polygon_parts(result))
         report['pieces'] += 1
@@ -189,6 +192,7 @@ def main():
         joined.append(group)
     out_parts, report, carried = [], [], set()
     block_index = 0
+    recess_faces = [pl for part in final if 'recessed face' in part['name'] for pl in planes_of(part) if abs(pl['normal'][2]) < .01]
     for group in joined:
         parts_in = {}
         for part, plane, poly, rep in group:
@@ -214,6 +218,35 @@ def main():
         if merged is None:
             continue
         meshes = [mesh_from_polygon(merged, origin, u, v)]
+        # Niche side faces: a rectangular hole that has a recessed face behind it
+        # gets its four reveals, so the recess reads as a box rather than a hole.
+        niches = 0
+        for piece in polygon_parts(merged):
+            for ring in piece.interiors:
+                hole = shapely.Polygon(ring)
+                hu0, hv0, hu1, hv1 = hole.bounds
+                for face in recess_faces:
+                    fn = np.asarray(face['normal']); align = float(fn @ n)
+                    if abs(align) < .99:
+                        continue
+                    depth = float(np.asarray(face['origin']) @ n - offset)
+                    if not .03 <= abs(depth) <= .6:
+                        continue
+                    fm = mesh_from_polygon(face['poly'], face['origin'], face['u'], face['v'])
+                    if fm is None:
+                        continue
+                    fuv = np.stack(((fm.vertices - origin) @ u, (fm.vertices - origin) @ v), 1)
+                    fpoly = shapely.union_all(shapely.polygons(fuv[fm.faces])).buffer(0)
+                    if fpoly.intersection(hole).area < .5 * hole.area:
+                        continue
+                    corners = np.array([[hu0, hv0], [hu1, hv0], [hu1, hv1], [hu0, hv1]])
+                    front = origin + corners[:, :1] * u + corners[:, 1:] * v
+                    back = front + n * depth
+                    verts = np.vstack([front, back])
+                    faces = [[0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]]
+                    meshes.append(trimesh.Trimesh(verts, faces, process=False))
+                    niches += 1
+                    break
         for name in parts_in:
             if name in carried:
                 continue                 # its non-exterior planes already travel with an earlier block
@@ -232,7 +265,8 @@ def main():
                           'source_group_names': sorted(parts_in), 'merge_coplanar_faces': True,
                           'evidence_status': 'exterior_planes_squared_and_merged_INFERRED_outline',
                           'completion_is_measured': False})
-        report.append({'block': name, 'merged_parts': sorted(parts_in), 'offset_spread_mm': float((offsets.max() - offsets.min()) * 1000),
+        report.append({'block': name, 'merged_parts': sorted(parts_in), 'niche_boxes': niches,
+                       'offset_spread_mm': float((offsets.max() - offsets.min()) * 1000),
                        'area_m2': float(merged.area), 'planes': [{'part': p['name'], **r} for p, _, _, r in group], 'union': rep_merge})
         print(f'{name}: {len(parts_in)} parts, {merged.area:.1f} m2, offsets spread {(offsets.max() - offsets.min()) * 1000:.0f} mm', flush=True)
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)

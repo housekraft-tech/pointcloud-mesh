@@ -64,6 +64,7 @@ def main():
     parser.add_argument('--reuse', action='store_true', help='Keep an existing selection.json and walls/patches.build.json in --out')
     parser.add_argument('--all-walls', action='store_true',
                         help='Apply regularize, rectangle and rectilinear stages to every wall plane, interior faces included')
+    parser.add_argument('--finish-only', action='store_true', help='Only verify and render an already exported --out folder')
     parser.add_argument('--box-prisms', action='store_true', help='Replace beam and column fragments by their axis-aligned boxes')
     parser.add_argument('--rectilinear-slabs', action='store_true',
                         help='Square floor and ceiling outlines, re-extruding solid slabs (declared inference)')
@@ -80,6 +81,14 @@ def main():
     args = parser.parse_args()
     previous = Path(args.previous).resolve(); out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    if args.finish_only:
+        # Verification and renders only, for a folder whose native file already exists.
+        fragments = [str(f) for f in [out / 'walls' / 'patches.build.json', out / 'recessed' / 'recessed_faces.build.json',
+                                      out / 'rectangles' / 'patches.build.json', out / 'rectilinear' / 'patches.build.json',
+                                      out / 'slabs' / 'patches.build.json', out / 'prisms' / 'patches.build.json'] if f.exists()]
+        hide_files = [str(f) for f in [out / 'hide_kinds.json', out / 'hide' / 'hide.json'] if f.exists()]
+        finish(previous, out, args, fragments, hide_files)
+        return
     if not args.skip_export and (out / args.native_name).exists():
         raise FileExistsError(f'{out / args.native_name} exists; the native exporter never overwrites a checked model. '
                               'Choose another --native-name or --out.')
@@ -186,10 +195,16 @@ def main():
         if 'ceiling' in group['kind'] and not group['hidden']:
             command.extend(['--show', group['name']])
     subprocess.run(command, check=True)
+    finish(previous, out, args, fragments, hide_files)
+
+
+def finish(previous, out, args, fragments, hide_files):
+    """Scope verification against the previous audit, then exterior renders of the reopened geometry."""
+    audit = json.loads((previous / 'native_sdk_audit.json').read_text())
     after = json.loads((out / 'native_sdk_audit.json').read_text())
     groups = {g['name']: g for g in after['groups']}
-    replaced = {s for p in json.loads((out / 'walls' / 'patches.build.json').read_text())['parts']
-                for s in p['source_group_names']}
+    replaced = {s for f in fragments for p in json.loads(Path(f).read_text())['parts']
+                for s in p.get('source_group_names', [])}
     for path in hide_files:
         replaced.update(json.loads(Path(path).read_text()))
     unchanged = []
@@ -204,7 +219,8 @@ def main():
     render_exterior_views(reopened, out, args.label, 'review_exterior')
     (out / 'scope_verification.json').write_text(json.dumps({
         'unselected_groups_preserved': len(unchanged), 'replaced_wall_groups': sorted(replaced),
-        'selection': counts, 'property_specific_wall_list_used': False, 'site_accuracy_certified': False}, indent=2))
+        'selection': summary(json.loads((out / 'selection.json').read_text()), json.loads((out / 'selection_audit.json').read_text())),
+        'property_specific_wall_list_used': False, 'site_accuracy_certified': False}, indent=2))
     print(f'Verified {len(unchanged)} unselected native groups unchanged', flush=True)
 
 
