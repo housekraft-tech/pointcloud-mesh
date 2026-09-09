@@ -66,6 +66,7 @@ def main():
                         help='Apply regularize, rectangle and rectilinear stages to every wall plane, interior faces included')
     parser.add_argument('--finish-only', action='store_true', help='Only verify and render an already exported --out folder')
     parser.add_argument('--box-prisms', action='store_true', help='Replace beam and column fragments by their axis-aligned boxes')
+    parser.add_argument('--solid-walls', action='store_true', help='Build solid walls with thickness from the rectilinear blocks (declared inference)')
     parser.add_argument('--rectilinear-slabs', action='store_true',
                         help='Square floor and ceiling outlines, re-extruding solid slabs (declared inference)')
     parser.add_argument('--hide-kinds', default='',
@@ -158,6 +159,16 @@ def main():
         if not (args.reuse and (out / 'rectilinear' / 'patches.build.json').exists()):
             subprocess.run(command, check=True)
         fragments.append(str(out / 'rectilinear' / 'patches.build.json'))
+    if args.solid_walls:
+        command = [sys.executable, str(scripts / 'solid_walls.py'), '--model', str(model),
+                   '--blocks', str(out / 'rectilinear' / 'patches.build.json'), '--evidence-cache', args.evidence_cache,
+                   '--out', str(out / 'solid')]
+        if (out / 'recessed' / 'recessed_faces.build.json').exists():
+            command.extend(['--recessed', str(out / 'recessed' / 'recessed_faces.build.json')])
+        if not (args.reuse and (out / 'solid' / 'patches.build.json').exists()):
+            subprocess.run(command, check=True)
+        if json.loads((out / 'solid' / 'patches.build.json').read_text())['parts']:
+            fragments.append(str(out / 'solid' / 'patches.build.json'))
     if args.rectilinear_slabs:
         if not (args.reuse and (out / 'slabs' / 'patches.build.json').exists()):
             subprocess.run([sys.executable, str(scripts / 'rectilinear_slabs.py'), '--model', str(model),
